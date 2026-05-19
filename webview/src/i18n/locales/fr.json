@@ -1463,5 +1463,28 @@
     "providerNotConfigured": "Fournisseur non configuré",
     "providerNotConfiguredDesc": "Aucun fournisseur IA n'est encore configuré, ou l'utilisation de la configuration locale n'a pas été autorisée. Veuillez terminer la configuration dans les paramètres de gestion des fournisseurs avant de commencer une conversation.",
     "goToProviderSettings": "Aller aux paramètres"
+  },
+  "errorDiagnostic": {
+    "copyCommand": "Copier",
+    "copied": "Copié",
+    "openDependencySettings": "Ouvrir la gestion des dépendances",
+    "recommended": "Recommandé",
+    "sdkNativeBinaryMissing": {
+      "title": "Installation du SDK incomplète — binaire natif manquant",
+      "intro": "Il s'agit d'un problème connu du miroir npm de Taobao (ce n'est pas un bug du plugin). Le miroir n'a pas entièrement synchronisé les fichiers spécifiques à la plateforme. Vous pouvez le résoudre manuellement avec l'une des options ci-dessous :",
+      "reason": "Ce problème disparaîtra automatiquement une fois la synchronisation du miroir Taobao terminée — aucune action supplémentaire n'est nécessaire.",
+      "solutions": {
+        "switchRegistry": {
+          "title": "Option 1 : Basculer temporairement vers le registre officiel et réinstaller",
+          "step0": "1. Exécutez dans votre terminal (passage au registre npm officiel) :",
+          "step1": "2. Ouvrez les paramètres de gestion des dépendances du plugin et cliquez sur Réinstaller :",
+          "step2": "3. Une fois la réinstallation terminée, revenez au miroir Taobao :"
+        },
+        "downgrade": {
+          "title": "Option 2 : Revenir à une version antérieure",
+          "step0": "Dans Gestion des dépendances, passez la version du SDK à v0.2.112 ou antérieure. Redémarrez IDEA après le changement."
+        }
+      }
+    }
   }
 }

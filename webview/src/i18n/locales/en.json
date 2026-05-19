@@ -1723,5 +1723,28 @@
     "providerNotConfigured": "Provider Not Configured",
     "providerNotConfiguredDesc": "No AI provider is configured yet, or access to the local configuration has not been authorized. Please complete setup in Provider Management settings before starting a conversation.",
     "goToProviderSettings": "Go to Settings"
+  },
+  "errorDiagnostic": {
+    "copyCommand": "Copy",
+    "copied": "Copied",
+    "openDependencySettings": "Open Dependency Settings",
+    "recommended": "Recommended",
+    "sdkNativeBinaryMissing": {
+      "title": "SDK installation incomplete — native binary missing",
+      "intro": "This is a known issue with the Taobao npm mirror (not a plugin bug). The mirror hasn't fully synchronized the platform-specific files. You can resolve it manually with either of the options below:",
+      "reason": "This issue will disappear automatically once the Taobao mirror finishes syncing — no further action needed.",
+      "solutions": {
+        "switchRegistry": {
+          "title": "Option 1: Temporarily switch to the official registry and reinstall",
+          "step0": "1. Run this in your terminal (switch to the official npm registry):",
+          "step1": "2. Open the plugin's Dependency Management settings and click Reinstall:",
+          "step2": "3. After the reinstall completes, switch back to the Taobao mirror:"
+        },
+        "downgrade": {
+          "title": "Option 2: Roll back to an older version",
+          "step0": "In Dependency Management, switch the SDK version to v0.2.112 or earlier. Restart IDEA after switching."
+        }
+      }
+    }
   }
 }

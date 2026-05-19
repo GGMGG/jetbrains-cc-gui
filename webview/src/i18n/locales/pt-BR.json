@@ -1635,5 +1635,28 @@
     "providerNotConfigured": "Provedor Não Configurado",
     "providerNotConfiguredDesc": "Nenhum provedor de IA está configurado ainda, ou o acesso à configuração local não foi autorizado. Por favor, complete a configuração em Gerenciamento de Provedores antes de iniciar uma conversa.",
     "goToProviderSettings": "Ir para Configurações"
+  },
+  "errorDiagnostic": {
+    "copyCommand": "Copiar",
+    "copied": "Copiado",
+    "openDependencySettings": "Abrir Gerenciamento de Dependências",
+    "recommended": "Recomendado",
+    "sdkNativeBinaryMissing": {
+      "title": "Instalação do SDK incompleta — binário nativo ausente",
+      "intro": "Este é um problema conhecido do mirror npm da Taobao (não é um bug do plugin). O mirror não sincronizou completamente os arquivos específicos da plataforma. Você pode resolver isso manualmente com qualquer uma das opções abaixo:",
+      "reason": "Este problema desaparecerá automaticamente quando o mirror da Taobao concluir a sincronização — nenhuma ação adicional é necessária.",
+      "solutions": {
+        "switchRegistry": {
+          "title": "Opção 1: alterne temporariamente para o registro oficial e reinstale",
+          "step0": "1. Execute em seu terminal (alternar para o registro npm oficial):",
+          "step1": "2. Abra as configurações de Gerenciamento de Dependências do plugin e clique em Reinstalar:",
+          "step2": "3. Após a conclusão da reinstalação, retorne ao mirror da Taobao:"
+        },
+        "downgrade": {
+          "title": "Opção 2: reverter para uma versão anterior",
+          "step0": "Em Gerenciamento de Dependências, altere a versão do SDK para v0.2.112 ou anterior. Reinicie o IDEA após a alteração."
+        }
+      }
+    }
   }
 }

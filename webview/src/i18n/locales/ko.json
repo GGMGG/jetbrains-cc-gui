@@ -1580,5 +1580,28 @@
     "providerNotConfigured": "제공자가 설정되지 않았습니다",
     "providerNotConfiguredDesc": "아직 AI 제공자가 구성되지 않았거나 로컬 구성 사용 권한이 승인되지 않았습니다. 대화를 시작하기 전에 제공자 관리 설정에서 구성을 완료해주세요.",
     "goToProviderSettings": "설정으로 이동"
+  },
+  "errorDiagnostic": {
+    "copyCommand": "복사",
+    "copied": "복사됨",
+    "openDependencySettings": "종속성 관리 열기",
+    "recommended": "권장",
+    "sdkNativeBinaryMissing": {
+      "title": "SDK 설치 불완전 — 네이티브 바이너리 누락",
+      "intro": "이것은 Taobao npm 미러의 알려진 문제입니다(플러그인 버그가 아님). 미러가 플랫폼별 파일을 완전히 동기화하지 않았습니다. 아래 방법 중 하나로 수동 해결할 수 있습니다:",
+      "reason": "Taobao 미러가 동기화를 완료하면 이 문제가 자동으로 사라집니다. 걱정하지 마세요.",
+      "solutions": {
+        "switchRegistry": {
+          "title": "방법 1: 임시로 공식 레지스트리로 전환 후 재설치",
+          "step0": "1. 터미널에서 실행 (npm 공식 레지스트리로 전환):",
+          "step1": "2. 플러그인 설정의 '종속성 관리'를 열고 재설치 클릭:",
+          "step2": "3. 재설치 완료 후 Taobao 미러로 복원:"
+        },
+        "downgrade": {
+          "title": "방법 2: 버전 롤백",
+          "step0": "'종속성 관리'에서 SDK 버전을 v0.2.112 또는 그 이전으로 전환하세요. 전환 후 IDEA를 재시작해야 합니다."
+        }
+      }
+    }
   }
 }

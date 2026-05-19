@@ -1468,5 +1468,28 @@
     "providerNotConfigured": "供應商未設定",
     "providerNotConfiguredDesc": "尚未設定 AI 供應商或未授權使用本機設定，請先在供應商管理設定中完成設定後再開始對話。",
     "goToProviderSettings": "前往設定"
+  },
+  "errorDiagnostic": {
+    "copyCommand": "複製",
+    "copied": "已複製",
+    "openDependencySettings": "開啟相依性管理",
+    "recommended": "推薦",
+    "sdkNativeBinaryMissing": {
+      "title": "SDK 安裝不完整 — 缺少 native 二進位檔",
+      "intro": "這是淘寶 npm 鏡像源的已知問題（非外掛 bug）。鏡像源未完整同步 platform 檔案。可手動按以下方案處理：",
+      "reason": "淘寶源同步完成後此問題會自動消失，無需擔心。",
+      "solutions": {
+        "switchRegistry": {
+          "title": "方案一：暫時切換官方源重新安裝",
+          "step0": "1. 在終端機執行（切換到 npm 官方源）：",
+          "step1": "2. 開啟外掛設定中的「相依性管理」，點選重新安裝：",
+          "step2": "3. 重新安裝完成後，切回淘寶源："
+        },
+        "downgrade": {
+          "title": "方案二：版本回退",
+          "step0": "在「相依性管理」中將 SDK 版本切換到 v0.2.112 或更早版本，切換後需要重新啟動 IDEA。"
+        }
+      }
+    }
   }
 }
