@@ -534,6 +534,11 @@ describe('useWindowCallbacks integration', () => {
   });
 
   it('accepts streaming updateMessages when assistant raw blocks gain spawn_agent tool_use', () => {
+    vi.stubGlobal('setTimeout', (callback: () => void) => {
+      callback();
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    });
+    vi.stubGlobal('clearTimeout', vi.fn());
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
