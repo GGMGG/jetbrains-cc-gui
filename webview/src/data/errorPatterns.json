@@ -1,6 +1,13 @@
 {
   "patterns": [
     {
+      "code": "codexThreadResume",
+      "match": {
+        "regex": "thread/resume"
+      },
+      "solutions": []
+    },
+    {
       "code": "sdkNativeBinaryMissing",
       "match": {
         "regex": "Native CLI binary for [^ ]+ not found",

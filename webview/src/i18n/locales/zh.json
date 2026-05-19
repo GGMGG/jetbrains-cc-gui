@@ -1734,6 +1734,11 @@
     "copied": "已复制",
     "openDependencySettings": "打开依赖管理",
     "recommended": "推荐",
+    "codexThreadResume": {
+      "title": "会话线程已失效",
+      "intro": "新建会话即可解决此问题。当前会话的线程 ID 在 Codex 服务端已不存在。",
+      "reason": "Codex 服务端会在一段时间后清除旧线程，继续上一次会话时可能触发此错误。"
+    },
     "sdkNativeBinaryMissing": {
       "title": "SDK 安装不完整 — 缺少 native 二进制文件",
       "intro": "这是淘宝 npm 镜像源的已知问题（非插件 bug）。镜像源未完整同步 platform 文件。可手动按以下方案处理：",
