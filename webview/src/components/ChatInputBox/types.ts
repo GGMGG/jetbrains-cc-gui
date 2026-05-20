@@ -449,6 +449,12 @@ export const MAX_EFFORT_CLAUDE_MODELS = new Set([
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
+ * Codex execution speed mode.
+ * Standard forces service_tier empty at send time; Fast maps to service_tier=fast.
+ */
+export type CodexFastMode = 'normal' | 'fast';
+
+/**
  * Reasoning level information
  */
 export interface ReasoningInfo {
@@ -599,6 +605,10 @@ export interface ChatInputBoxProps {
   reasoningEffort?: ReasoningEffort;
   /** Switch reasoning effort callback */
   onReasoningChange?: (effort: ReasoningEffort) => void;
+  /** Codex speed mode */
+  codexFastMode?: CodexFastMode;
+  /** Switch Codex speed mode callback */
+  onCodexFastModeChange?: (mode: CodexFastMode) => void;
   /** Toggle thinking mode */
   onToggleThinking?: (enabled: boolean) => void;
   /** Whether streaming is enabled */
@@ -676,6 +686,8 @@ export interface ButtonAreaProps {
   currentProvider?: string;
   /** Current reasoning effort */
   reasoningEffort?: ReasoningEffort;
+  /** Codex speed mode */
+  codexFastMode?: CodexFastMode;
 
   // Event callbacks
   onSubmit?: () => void;
@@ -685,6 +697,8 @@ export interface ButtonAreaProps {
   onProviderSelect?: (providerId: string) => void;
   /** Switch reasoning effort callback */
   onReasoningChange?: (effort: ReasoningEffort) => void;
+  /** Switch Codex speed mode callback */
+  onCodexFastModeChange?: (mode: CodexFastMode) => void;
   /** Enhance prompt callback */
   onEnhancePrompt?: () => void;
   /** Whether always thinking enabled */

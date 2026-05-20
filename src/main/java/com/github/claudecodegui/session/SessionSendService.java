@@ -19,6 +19,8 @@ import java.util.concurrent.CompletableFuture;
 public class SessionSendService {
 
     private static final Logger LOG = Logger.getInstance(SessionSendService.class);
+    public static final String CODEX_FAST_SERVICE_TIER = "fast";
+    public static final String CODEX_STANDARD_SERVICE_TIER = "standard";
 
     private final Project project;
     private final SessionState state;
@@ -85,7 +87,8 @@ public class SessionSendService {
             JsonObject openedFilesJson,
             String externalAgentPrompt,
             List<String> fileTagPaths,
-            String requestedPermissionMode
+            String requestedPermissionMode,
+            String requestedCodexFastMode
     ) {
         String agentPrompt = externalAgentPrompt;
         if (agentPrompt == null) {
@@ -112,6 +115,10 @@ public class SessionSendService {
         );
 
         if ("codex".equals(currentProvider)) {
+            String effectiveCodexServiceTier = resolveEffectiveCodexServiceTier(
+                    requestedCodexFastMode,
+                    state.getCodexServiceTier()
+            );
             return sendToCodex(
                     channelId,
                     input,
@@ -119,7 +126,8 @@ public class SessionSendService {
                     openedFilesJson,
                     agentPrompt,
                     fileTagPaths,
-                    effectivePermissionMode
+                    effectivePermissionMode,
+                    effectiveCodexServiceTier
             );
         }
 
@@ -164,6 +172,40 @@ public class SessionSendService {
         return ClaudeCodeGuiBundle.message("error.codexLocalAccessNotAuthorized");
     }
 
+    public static String normalizeRequestedCodexServiceTier(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if ("fast".equalsIgnoreCase(trimmed) || "priority".equalsIgnoreCase(trimmed)) {
+            return CODEX_FAST_SERVICE_TIER;
+        }
+        if ("normal".equalsIgnoreCase(trimmed)
+                || "standard".equalsIgnoreCase(trimmed)
+                || "default".equalsIgnoreCase(trimmed)
+                || "none".equalsIgnoreCase(trimmed)) {
+            return CODEX_STANDARD_SERVICE_TIER;
+        }
+        LOG.warn("[Codex] Invalid fast mode/service tier ignored: " + value);
+        return null;
+    }
+
+    public static String resolveEffectiveCodexServiceTier(String requestedValue, String sessionValue) {
+        String requested = normalizeRequestedCodexServiceTier(requestedValue);
+        if (requested != null) {
+            return requested;
+        }
+
+        String session = normalizeRequestedCodexServiceTier(sessionValue);
+        if (session == null) {
+            return null;
+        }
+        return session;
+    }
+
     private CompletableFuture<Void> sendToCodex(
             String channelId,
             String input,
@@ -171,7 +213,8 @@ public class SessionSendService {
             JsonObject openedFilesJson,
             String agentPrompt,
             List<String> fileTagPaths,
-            String effectivePermissionMode
+            String effectivePermissionMode,
+            String effectiveCodexServiceTier
     ) {
         CodexMessageHandler handler = new CodexMessageHandler(state, callbackFacade.getCallbackHandler());
         String accessMode = CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE;
@@ -200,6 +243,7 @@ public class SessionSendService {
                 state.getModel(),
                 agentPrompt,
                 state.getReasoningEffort(),
+                effectiveCodexServiceTier,
                 handler
         ).thenApply(result -> null);
     }

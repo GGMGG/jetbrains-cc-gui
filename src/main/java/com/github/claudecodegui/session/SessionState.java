@@ -63,6 +63,8 @@ public class SessionState {
     private volatile String provider = "claude";
     // Reasoning effort (thinking depth)
     private volatile String reasoningEffort = "high";
+    // Codex service tier: "standard" forces default Fast opt-out; "fast" = Codex /fast.
+    private volatile String codexServiceTier = null;
 
     // Slash commands — volatile for cross-thread visibility (same reason as permissionMode/model/provider)
     private volatile List<String> slashCommands = new ArrayList<>();
@@ -125,6 +127,10 @@ public class SessionState {
 
     public String getReasoningEffort() {
         return reasoningEffort;
+    }
+
+    public String getCodexServiceTier() {
+        return codexServiceTier;
     }
 
     public String getRuntimeSessionEpoch() {
@@ -192,6 +198,10 @@ public class SessionState {
 
     public void setReasoningEffort(String reasoningEffort) {
         this.reasoningEffort = reasoningEffort;
+    }
+
+    public void setCodexServiceTier(String codexServiceTier) {
+        this.codexServiceTier = codexServiceTier;
     }
 
     public void setRuntimeSessionEpoch(String runtimeSessionEpoch) {

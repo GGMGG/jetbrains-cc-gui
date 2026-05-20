@@ -2,7 +2,7 @@ import { useCallback, type RefObject } from 'react';
 import type { TFunction } from 'i18next';
 import { sendBridgeEvent } from '../utils/bridge';
 import type { ClaudeContentBlock, ClaudeMessage } from '../types';
-import type { Attachment, ChatInputBoxHandle, PermissionMode, SelectedAgent } from '../components/ChatInputBox/types';
+import type { Attachment, ChatInputBoxHandle, CodexFastMode, PermissionMode, SelectedAgent } from '../components/ChatInputBox/types';
 import type { ViewMode } from './useModelProviderState';
 
 /**
@@ -17,6 +17,7 @@ export interface UseMessageSenderOptions {
   addToast: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
   currentProvider: string;
   permissionMode: PermissionMode;
+  codexFastMode: CodexFastMode;
   selectedAgent: SelectedAgent | null;
   sdkStatusLoaded: boolean;
   currentSdkInstalled: boolean;
@@ -44,6 +45,7 @@ export function useMessageSender({
   addToast,
   currentProvider,
   permissionMode,
+  codexFastMode,
   selectedAgent,
   sdkStatusLoaded,
   currentSdkInstalled,
@@ -202,6 +204,7 @@ export function useMessageSender({
           agent: agentInfo,
           fileTags: fileTagsInfo,
           permissionMode: effectivePermissionMode,
+          codexFastMode,
         });
         sendBridgeEvent('send_message_with_attachments', payload);
       } catch (error) {
@@ -211,6 +214,7 @@ export function useMessageSender({
           agent: agentInfo,
           fileTags: fileTagsInfo,
           permissionMode: effectivePermissionMode,
+          codexFastMode,
         });
         sendBridgeEvent('send_message', fallbackPayload);
       }
@@ -220,10 +224,11 @@ export function useMessageSender({
         agent: agentInfo,
         fileTags: fileTagsInfo,
         permissionMode: effectivePermissionMode,
+        codexFastMode,
       });
       sendBridgeEvent('send_message', payload);
     }
-  }, [currentProvider]);
+  }, [codexFastMode, currentProvider]);
 
   /**
    * Execute message sending (from queue or directly)

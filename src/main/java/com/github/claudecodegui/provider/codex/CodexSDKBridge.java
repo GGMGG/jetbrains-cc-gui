@@ -271,6 +271,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
             String model,
             String agentPrompt,  // Agent prompt (appended to message for Codex)
             String reasoningEffort,  // Codex reasoning effort (thinking depth)
+            String serviceTier,  // Codex service tier: "standard" opts out of default Fast; "fast" matches CLI /fast
             MessageCallback callback
     ) {
         return CompletableFuture.supplyAsync(() -> {
@@ -325,6 +326,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 stdinInput.addProperty("model", model != null ? model : "");
                 // Reasoning effort (thinking depth)
                 stdinInput.addProperty("reasoningEffort", reasoningEffort != null ? reasoningEffort : "medium");
+                stdinInput.addProperty("serviceTier", serviceTier != null ? serviceTier : "");
 
                 // API configuration — skip for CLI Login mode (uses native OAuth from ~/.codex/auth.json)
                 boolean isCodexCliLogin = isCodexCliLoginActive();

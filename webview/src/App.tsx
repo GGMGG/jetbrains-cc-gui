@@ -130,7 +130,7 @@ const App = () => {
     selectedAgent, sdkStatusLoaded, currentSdkInstalled,
     currentProviderRef,
     activeProviderConfig, claudeSettingsAlwaysThinkingEnabled,
-    reasoningEffort, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
+    reasoningEffort, codexFastMode, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
     longContextEnabled,
     usagePercentage, usageUsedTokens, usageMaxTokens,
     setPermissionMode,
@@ -143,7 +143,7 @@ const App = () => {
     setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens,
     syncActiveProviderModelMapping,
     handleModeSelect, handleModelSelect, handleProviderSelect,
-    handleReasoningChange, handleAgentSelect, handleToggleThinking,
+    handleReasoningChange, handleCodexFastModeChange, handleAgentSelect, handleToggleThinking,
     handleStreamingEnabledChange, handleSendShortcutChange,
     handleAutoOpenFileEnabledChange, handleLongContextChange,
   } = useModelProviderState({ addToast, t });
@@ -250,7 +250,7 @@ const App = () => {
     interruptSession,
   } = useMessageSender({
     t, addToast,
-    currentProvider, permissionMode, selectedAgent,
+    currentProvider, permissionMode, selectedAgent, codexFastMode,
     sdkStatusLoaded, currentSdkInstalled,
     sentAttachmentsRef, chatInputRef, messagesContainerRef,
     isUserAtBottomRef, userPausedRef, isStreamingRef,
@@ -418,6 +418,7 @@ const App = () => {
           activeProviderConfig={activeProviderConfig}
           claudeSettingsAlwaysThinkingEnabled={claudeSettingsAlwaysThinkingEnabled}
           reasoningEffort={reasoningEffort}
+          codexFastMode={codexFastMode}
           streamingEnabledSetting={streamingEnabledSetting}
           sendShortcut={sendShortcut}
           autoOpenFileEnabled={autoOpenFileEnabled}
@@ -429,6 +430,7 @@ const App = () => {
           onModelSelect={handleModelSelect}
           onAgentSelect={handleAgentSelect}
           onReasoningChange={handleReasoningChange}
+          onCodexFastModeChange={handleCodexFastModeChange}
           onToggleThinking={handleToggleThinking}
           onStreamingEnabledChange={handleStreamingEnabledChange}
           onAutoOpenFileEnabledChange={handleAutoOpenFileEnabledChange}

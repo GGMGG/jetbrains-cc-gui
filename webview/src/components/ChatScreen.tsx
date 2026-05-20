@@ -82,6 +82,7 @@ export interface ChatScreenProps {
   activeProviderConfig: ProviderState['activeProviderConfig'];
   claudeSettingsAlwaysThinkingEnabled: ProviderState['claudeSettingsAlwaysThinkingEnabled'];
   reasoningEffort: ProviderState['reasoningEffort'];
+  codexFastMode: ProviderState['codexFastMode'];
   streamingEnabledSetting: ProviderState['streamingEnabledSetting'];
   sendShortcut: ProviderState['sendShortcut'];
   autoOpenFileEnabled: ProviderState['autoOpenFileEnabled'];
@@ -95,6 +96,7 @@ export interface ChatScreenProps {
   onModelSelect: ProviderState['handleModelSelect'];
   onAgentSelect: ProviderState['handleAgentSelect'];
   onReasoningChange: ProviderState['handleReasoningChange'];
+  onCodexFastModeChange: ProviderState['handleCodexFastModeChange'];
   onToggleThinking: ProviderState['handleToggleThinking'];
   onStreamingEnabledChange: ProviderState['handleStreamingEnabledChange'];
   onAutoOpenFileEnabledChange: ProviderState['handleAutoOpenFileEnabledChange'];
@@ -127,9 +129,9 @@ export const ChatScreen = ({
   currentProvider, selectedModel, permissionMode, selectedAgent,
   sdkStatusLoaded, currentSdkInstalled,
   activeProviderConfig, claudeSettingsAlwaysThinkingEnabled,
-  reasoningEffort, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
+  reasoningEffort, codexFastMode, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
   longContextEnabled, usagePercentage, usageUsedTokens, usageMaxTokens,
-  onModeSelect, onModelSelect, onAgentSelect, onReasoningChange, onToggleThinking,
+  onModeSelect, onModelSelect, onAgentSelect, onReasoningChange, onCodexFastModeChange, onToggleThinking,
   onStreamingEnabledChange,
   onAutoOpenFileEnabledChange, onLongContextChange,
   messageQueue, onRemoveFromQueue,
@@ -237,6 +239,8 @@ export const ChatScreen = ({
           onProviderSelect={onProviderSelect}
           reasoningEffort={reasoningEffort}
           onReasoningChange={onReasoningChange}
+          codexFastMode={codexFastMode}
+          onCodexFastModeChange={onCodexFastModeChange}
           onToggleThinking={onToggleThinking}
           streamingEnabled={streamingEnabledSetting}
           onStreamingEnabledChange={onStreamingEnabledChange}
@@ -280,4 +284,3 @@ export const ChatScreen = ({
     </>
   );
 };
-

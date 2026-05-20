@@ -351,6 +351,19 @@ public class ClaudeSession {
     }
 
     /**
+     * Send a message with a specific agent prompt, file tags, requested permission mode, and Codex fast mode.
+     */
+    public CompletableFuture<Void> send(
+            String input,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedPermissionMode,
+            String requestedCodexFastMode
+    ) {
+        return send(input, null, agentPrompt, fileTagPaths, requestedPermissionMode, requestedCodexFastMode);
+    }
+
+    /**
      * Send a message with attachments using global agent settings.
      *
      * @deprecated Use {@link #send(String, List, String)} with explicit agent prompt instead.
@@ -397,6 +410,21 @@ public class ClaudeSession {
             List<String> fileTagPaths,
             String requestedPermissionMode
     ) {
+        return send(input, attachments, agentPrompt, fileTagPaths, requestedPermissionMode, null);
+    }
+
+    /**
+     * Send a message with attachments, agent prompt, file tags, requested permission mode, and Codex fast mode.
+     * The Codex fast mode maps to the official service tier used by Codex CLI /fast.
+     */
+    public CompletableFuture<Void> send(
+            String input,
+            List<Attachment> attachments,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedPermissionMode,
+            String requestedCodexFastMode
+    ) {
         String normalizedInput = (input != null) ? input.trim() : "";
         Message userMessage = contextService.buildUserMessage(normalizedInput, attachments);
         sendService.updateSessionStateForSend(userMessage, normalizedInput);
@@ -404,6 +432,7 @@ public class ClaudeSession {
         final String finalAgentPrompt = agentPrompt;
         final List<String> finalFileTagPaths = fileTagPaths;
         final String finalRequestedPermissionMode = requestedPermissionMode;
+        final String finalRequestedCodexFastMode = requestedCodexFastMode;
 
         return launchClaude().thenCompose(chId -> {
             sendService.prepareContextCollector(contextCollector);
@@ -416,7 +445,8 @@ public class ClaudeSession {
                             openedFilesJson,
                             finalAgentPrompt,
                             finalFileTagPaths,
-                            finalRequestedPermissionMode
+                            finalRequestedPermissionMode,
+                            finalRequestedCodexFastMode
                     )
             ).thenCompose(v -> syncUserMessageUuidsAfterSend());
         }).exceptionally(ex -> {
@@ -600,6 +630,21 @@ public class ClaudeSession {
      */
     public String getReasoningEffort() {
         return state.getReasoningEffort();
+    }
+
+    /**
+     * Set the Codex service tier. "standard" forces default Fast opt-out; "fast" matches Codex CLI /fast.
+     */
+    public void setCodexServiceTier(String serviceTier) {
+        state.setCodexServiceTier(serviceTier);
+        LOG.info("Codex service tier updated to: " + (serviceTier != null ? serviceTier : "standard"));
+    }
+
+    /**
+     * Get the Codex service tier.
+     */
+    public String getCodexServiceTier() {
+        return state.getCodexServiceTier();
     }
 
     /**

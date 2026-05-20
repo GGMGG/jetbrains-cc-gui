@@ -3,6 +3,7 @@ package com.github.claudecodegui.handler.provider;
 import com.github.claudecodegui.handler.UsagePushService;
 import com.github.claudecodegui.handler.core.HandlerContext;
 
+import com.github.claudecodegui.session.SessionSendService;
 import com.github.claudecodegui.skill.SlashCommandRegistry;
 import com.github.claudecodegui.util.EditorFileUtils;
 import com.google.gson.Gson;
@@ -151,6 +152,32 @@ public class ModelProviderHandler {
             }
         } catch (Exception e) {
             LOG.error("[ModelProviderHandler] Failed to set reasoning effort: " + e.getMessage(), e);
+        }
+    }
+
+    public void handleSetCodexFastMode(String content) {
+        try {
+            String mode = content;
+            if (content != null && !content.isEmpty()) {
+                try {
+                    JsonObject json = gson.fromJson(content, JsonObject.class);
+                    if (json.has("codexFastMode")) {
+                        mode = json.get("codexFastMode").getAsString();
+                    }
+                } catch (Exception e) {
+                    // content itself is the mode
+                }
+            }
+
+            String serviceTier = SessionSendService.resolveEffectiveCodexServiceTier(mode, null);
+            LOG.info("[ModelProviderHandler] Setting Codex fast mode to: " + mode
+                    + ", serviceTier=" + (serviceTier != null ? serviceTier : "standard"));
+
+            if (context.getSession() != null) {
+                context.getSession().setCodexServiceTier(serviceTier);
+            }
+        } catch (Exception e) {
+            LOG.error("[ModelProviderHandler] Failed to set Codex fast mode: " + e.getMessage(), e);
         }
     }
 
