@@ -430,6 +430,7 @@ const App = () => {
           setSettingsInitialTab(undefined);
           setCurrentView('settings');
         }}
+        onOpenSearch={() => setSearchOpen(true)}
         titleEditable
         onTitleChange={(newTitle) => {
           setCustomSessionTitle(newTitle);

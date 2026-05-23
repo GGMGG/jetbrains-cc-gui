@@ -99,7 +99,12 @@
       "counter": "{{current}}/{{total}}",
       "noResults": "Нет результатов",
       "searching": "Поиск…",
-      "expandedHint": "Развёрнуто {{count}} ранних сообщений"
+      "expandedHint": "Развёрнуто {{count}} ранних сообщений",
+      "matchCase": "Учитывать регистр (Alt+C)",
+      "wholeWord": "Слово целиком (Alt+W)",
+      "regex": "Регулярное выражение (Alt+R)",
+      "invalidRegex": "Недопустимое регулярное выражение",
+      "openTooltip": "Поиск в беседе (Cmd/Ctrl+F)"
     },
     "compactSummary": {
       "summarizedConversation": "Сводка беседы",

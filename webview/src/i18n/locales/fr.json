@@ -99,7 +99,12 @@
       "counter": "{{current}}/{{total}}",
       "noResults": "Aucun résultat",
       "searching": "Recherche en cours…",
-      "expandedHint": "{{count}} messages précédents développés"
+      "expandedHint": "{{count}} messages précédents développés",
+      "matchCase": "Respecter la casse (Alt+C)",
+      "wholeWord": "Mot entier (Alt+W)",
+      "regex": "Expression régulière (Alt+R)",
+      "invalidRegex": "Regex invalide",
+      "openTooltip": "Rechercher dans la conversation (Cmd/Ctrl+F)"
     },
     "compactSummary": {
       "summarizedConversation": "Conversation résumée",

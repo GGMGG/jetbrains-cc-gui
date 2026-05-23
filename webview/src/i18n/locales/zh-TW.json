@@ -99,7 +99,12 @@
       "counter": "{{current}}/{{total}}",
       "noResults": "無結果",
       "searching": "搜尋中...",
-      "expandedHint": "已展開 {{count}} 則早期訊息"
+      "expandedHint": "已展開 {{count}} 則早期訊息",
+      "matchCase": "區分大小寫 (Alt+C)",
+      "wholeWord": "全字符合 (Alt+W)",
+      "regex": "正規表達式 (Alt+R)",
+      "invalidRegex": "正規表達式無效",
+      "openTooltip": "在對話中搜尋 (Cmd/Ctrl+F)"
     },
     "compactSummary": {
       "summarizedConversation": "已總結的對話",

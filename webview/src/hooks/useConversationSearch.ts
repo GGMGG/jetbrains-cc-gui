@@ -6,20 +6,37 @@
  * is NOT driven by streaming/lifecycle events, which guarantees identical
  * behavior between live conversations and historical session replay.
  *
- * The match algorithm is intentionally simple:
- *   1. TreeWalker scans every text node inside the messages container,
+ * The match algorithm:
+ *   1. Build a single RegExp from `query` + the three search options
+ *      (matchCase / wholeWord / regex). Invalid regex returns 0 matches
+ *      and sets `isRegexInvalid` so the UI can flag it.
+ *   2. TreeWalker scans every text node inside the messages container,
  *      skipping nodes inside <pre><code> blocks (those are matched at the
  *      block level — see decision in the implementation plan).
- *   2. Plain-text matches are wrapped with <mark class="cc-search-match">.
- *   3. <pre> blocks whose `textContent` contains the query are tagged with
- *      `.cc-search-block-match`. The match index points at the <pre>; the
- *      <mark> at that index is the <pre> itself for navigation.
+ *   3. Plain-text matches are wrapped with <mark class="cc-search-match">.
+ *   4. <pre> blocks whose `textContent` matches are tagged with
+ *      `.cc-search-block-match` and counted as one navigable match each.
  *
  * Cleanup unwraps every <mark> and removes every `.cc-search-block-match`
- * class — leaving zero residue, as required by the MVP acceptance list.
+ * class — leaving zero residue.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationSearchMatch } from '../components/ConversationSearch/types';
+
+export interface SearchOptions {
+  /** Case-sensitive when true; default false. */
+  matchCase: boolean;
+  /** Whole-word matching (\b…\b) when true. */
+  wholeWord: boolean;
+  /** Treat the query as a JavaScript regex pattern when true. */
+  regex: boolean;
+}
+
+export const DEFAULT_SEARCH_OPTIONS: SearchOptions = {
+  matchCase: false,
+  wholeWord: false,
+  regex: false,
+};
 
 export interface UseConversationSearchOptions {
   /** The container we scan + decorate. Usually `.messages-container`. */
@@ -41,6 +58,12 @@ export interface UseConversationSearchOptions {
   debounceMs?: number;
   /** Whether to scan + maintain highlights at all. Toggle to enable/disable. */
   enabled: boolean;
+  /**
+   * Three search-mode toggles. Re-scan happens whenever these change.
+   * Optional; defaults to {@link DEFAULT_SEARCH_OPTIONS} for callers that
+   * don't expose the toggles (e.g. simple test setups).
+   */
+  searchOptions?: SearchOptions;
 }
 
 export interface UseConversationSearchReturn {
@@ -60,6 +83,8 @@ export interface UseConversationSearchReturn {
   isSearching: boolean;
   /** Number of messages auto-revealed by the most recent scan (0 if none). */
   expandedCount: number;
+  /** True when `searchOptions.regex` is on and the query failed to compile. */
+  isRegexInvalid: boolean;
   /** Clear query + remove all DOM highlights. */
   clear: () => void;
 }
@@ -135,17 +160,56 @@ interface MatchOccurrence {
 }
 
 /**
+ * Escape every regex metacharacter so the resulting pattern matches the
+ * literal string. Standard library implementation per MDN.
+ */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Build the compiled RegExp used for both text and code-block matching.
+ *
+ * Returns null when:
+ *   - `query` is empty/whitespace
+ *   - `options.regex` is true but the user pattern fails to compile
+ *
+ * Always uses the global flag because we step through every match via
+ * `regex.exec` and re-use the same instance across nodes (with explicit
+ * `lastIndex = 0` resets to avoid stale state).
+ */
+export function buildMatchRegex(query: string, options: SearchOptions): RegExp | null {
+  if (!query) return null;
+  let pattern: string;
+  if (options.regex) {
+    pattern = query;
+  } else {
+    pattern = escapeRegExp(query);
+  }
+  if (options.wholeWord) {
+    pattern = `\\b${pattern}\\b`;
+  }
+  const flags = options.matchCase ? 'g' : 'gi';
+  try {
+    return new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build a list of (textNode, start, end) occurrences for `query` inside
- * `container`. Case-insensitive. Skips empty queries.
+ * `container`, honoring the three search options.
  *
  * Exported for testing.
  */
 export function collectTextMatches(
   container: HTMLElement,
   query: string,
+  options: SearchOptions = DEFAULT_SEARCH_OPTIONS,
 ): MatchOccurrence[] {
-  if (!query) return [];
-  const lowerQuery = query.toLowerCase();
+  const regex = buildMatchRegex(query, options);
+  if (!regex) return [];
   const walker = container.ownerDocument.createTreeWalker(
     container,
     NodeFilter.SHOW_TEXT,
@@ -155,17 +219,19 @@ export function collectTextMatches(
   let node = walker.nextNode();
   while (node) {
     const text = node.nodeValue ?? '';
-    const lower = text.toLowerCase();
-    let from = 0;
-    while (from <= lower.length - lowerQuery.length) {
-      const found = lower.indexOf(lowerQuery, from);
-      if (found === -1) break;
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+      // Zero-width matches (e.g. /a*/ on "bbb") would loop forever — bump.
+      if (m[0].length === 0) {
+        regex.lastIndex++;
+        continue;
+      }
       occurrences.push({
         textNode: node as Text,
-        start: found,
-        end: found + query.length,
+        start: m.index,
+        end: m.index + m[0].length,
       });
-      from = found + query.length;
     }
     node = walker.nextNode();
   }
@@ -224,17 +290,22 @@ function wrapOccurrences(
 }
 
 /**
- * Tag every `<pre>` block whose `textContent` contains the query.
+ * Tag every `<pre>` block whose `textContent` matches the query.
  * Returns the list of <pre> elements that got the tag.
  */
-function tagCodeBlocks(container: HTMLElement, query: string): HTMLElement[] {
-  if (!query) return [];
-  const lowerQuery = query.toLowerCase();
+function tagCodeBlocks(
+  container: HTMLElement,
+  query: string,
+  options: SearchOptions = DEFAULT_SEARCH_OPTIONS,
+): HTMLElement[] {
+  const regex = buildMatchRegex(query, options);
+  if (!regex) return [];
   const result: HTMLElement[] = [];
   const pres = container.querySelectorAll('pre');
   pres.forEach((pre) => {
-    const text = (pre.textContent ?? '').toLowerCase();
-    if (text.includes(lowerQuery)) {
+    const text = pre.textContent ?? '';
+    regex.lastIndex = 0;
+    if (regex.test(text)) {
       pre.classList.add(BLOCK_MATCH_CLASS);
       result.push(pre as HTMLElement);
     }
@@ -245,17 +316,21 @@ function tagCodeBlocks(container: HTMLElement, query: string): HTMLElement[] {
 export function useConversationSearch(
   options: UseConversationSearchOptions,
 ): UseConversationSearchReturn {
-  const { containerRef, messagesSignal, ensureRevealed, debounceMs = 180, enabled } = options;
+  const { containerRef, messagesSignal, ensureRevealed, debounceMs = 180, enabled, searchOptions = DEFAULT_SEARCH_OPTIONS } = options;
   const [query, setQuery] = useState<string>('');
   const [matches, setMatches] = useState<ConversationSearchMatch[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [expandedCount, setExpandedCount] = useState<number>(0);
+  const [isRegexInvalid, setIsRegexInvalid] = useState<boolean>(false);
   const debounceRef = useRef<number | null>(null);
   const lastQueryRef = useRef<string>('');
 
+  // Stable shape signature so changes to a sibling option also re-trigger.
+  const optionsKey = `${searchOptions.matchCase ? '1' : '0'}|${searchOptions.wholeWord ? '1' : '0'}|${searchOptions.regex ? '1' : '0'}`;
+
   /** Actually scan the DOM. */
-  const performScan = useCallback((rawQuery: string): void => {
+  const performScan = useCallback((rawQuery: string, opts: SearchOptions): void => {
     const container = containerRef.current;
     if (!container) {
       setMatches([]);
@@ -267,19 +342,30 @@ export function useConversationSearch(
     if (!trimmed) {
       setMatches([]);
       setCurrentIndex(-1);
+      setIsRegexInvalid(false);
       return;
     }
+
+    // Regex validation — surface the error to the UI but don't crash.
+    if (opts.regex && !buildMatchRegex(trimmed, opts)) {
+      setIsRegexInvalid(true);
+      setMatches([]);
+      setCurrentIndex(-1);
+      return;
+    }
+    setIsRegexInvalid(false);
+
     const doc = container.ownerDocument;
-    const occurrences = collectTextMatches(container, trimmed);
+    const occurrences = collectTextMatches(container, trimmed, opts);
     const wrapped = wrapOccurrences(occurrences, doc);
-    const blocks = tagCodeBlocks(container, trimmed);
+    const blocks = tagCodeBlocks(container, trimmed, opts);
 
     // Merge: we want matches in document order. Each wrapped <mark> + each
     // <pre> block is one match. To sort, use compareDocumentPosition.
     const all: ConversationSearchMatch[] = [];
     wrapped.forEach((mark, i) => {
       all.push({
-        id: `m-${i}-${mark.textContent ?? ''}`,
+        id: `m-${i}`,
         markElement: mark,
         blockElement: null,
       });
@@ -295,7 +381,6 @@ export function useConversationSearch(
       const aNode = a.markElement ?? a.blockElement;
       const bNode = b.markElement ?? b.blockElement;
       if (!aNode || !bNode) return 0;
-      // Bit 4 = follows; bit 2 = precedes
       const pos = aNode.compareDocumentPosition(bNode);
       if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
       if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
@@ -306,21 +391,21 @@ export function useConversationSearch(
     setCurrentIndex(all.length > 0 ? 0 : -1);
   }, [containerRef]);
 
-  /** Debounced re-scan whenever query / signal / enabled changes. */
+  /** Debounced re-scan whenever query / signal / options / enabled changes. */
   useEffect(() => {
     if (!enabled) {
       clearSearchDecorations(containerRef.current);
       setMatches([]);
       setCurrentIndex(-1);
       setIsSearching(false);
+      setIsRegexInvalid(false);
       return;
     }
     if (debounceRef.current !== null) {
       window.clearTimeout(debounceRef.current);
     }
-    // Reveal collapsed messages before scanning so the scan sees the whole
-    // conversation. This is the critical line that makes search useful in
-    // long sessions — per the agreed design.
+    // Reveal collapsed messages on the first scan of a new query, so the
+    // scan sees the whole conversation. Critical for long sessions.
     if (ensureRevealed && lastQueryRef.current !== query) {
       const revealed = ensureRevealed();
       setExpandedCount(revealed);
@@ -329,7 +414,7 @@ export function useConversationSearch(
     setIsSearching(true);
     debounceRef.current = window.setTimeout(() => {
       debounceRef.current = null;
-      performScan(query);
+      performScan(query, searchOptions);
       setIsSearching(false);
     }, debounceMs);
     return () => {
@@ -338,7 +423,9 @@ export function useConversationSearch(
         debounceRef.current = null;
       }
     };
-  }, [query, messagesSignal, enabled, ensureRevealed, debounceMs, performScan, containerRef]);
+    // optionsKey is the canonical key for `searchOptions` content changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, messagesSignal, enabled, ensureRevealed, debounceMs, performScan, containerRef, optionsKey]);
 
   /** Sync `.is-current` class with currentIndex. */
   useEffect(() => {
@@ -384,11 +471,12 @@ export function useConversationSearch(
     setMatches([]);
     setCurrentIndex(-1);
     setExpandedCount(0);
+    setIsRegexInvalid(false);
     clearSearchDecorations(containerRef.current);
   }, [containerRef]);
 
   return useMemo(
-    () => ({ query, setQuery, matches, currentIndex, next, previous, isSearching, expandedCount, clear }),
-    [query, matches, currentIndex, next, previous, isSearching, expandedCount, clear],
+    () => ({ query, setQuery, matches, currentIndex, next, previous, isSearching, expandedCount, isRegexInvalid, clear }),
+    [query, matches, currentIndex, next, previous, isSearching, expandedCount, isRegexInvalid, clear],
   );
 }

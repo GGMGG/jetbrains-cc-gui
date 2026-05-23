@@ -99,7 +99,12 @@
       "counter": "{{current}}/{{total}}",
       "noResults": "결과 없음",
       "searching": "검색 중...",
-      "expandedHint": "이전 메시지 {{count}}개를 펼쳤습니다"
+      "expandedHint": "이전 메시지 {{count}}개를 펼쳤습니다",
+      "matchCase": "대소문자 구분 (Alt+C)",
+      "wholeWord": "단어 단위 일치 (Alt+W)",
+      "regex": "정규식 (Alt+R)",
+      "invalidRegex": "유효하지 않은 정규식",
+      "openTooltip": "대화에서 검색 (Cmd/Ctrl+F)"
     },
     "compactSummary": {
       "summarizedConversation": "요약된 대화",

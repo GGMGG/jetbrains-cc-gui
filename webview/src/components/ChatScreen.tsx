@@ -57,7 +57,7 @@ export interface ChatScreenProps {
   /** Imperative handle exposing `revealAll()` to the in-page search panel. */
   messageListRef: RefObject<MessageListRevealHandle | null>;
   /** Cooperate with useScrollBehavior to avoid pausing auto-follow during search scrolls. */
-  isAutoScrollingRef?: React.MutableRefObject<boolean>;
+  isAutoScrollingRef?: React.RefObject<boolean>;
 
   // Anchor rail
   anchorCollapsedCount: number;
