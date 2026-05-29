@@ -16,6 +16,8 @@ describe('useSettingsWindowCallbacks', () => {
     setNodeVersion: vi.fn(),
     setMinNodeVersion: vi.fn(),
     setSavingNodePath: vi.fn(),
+    setClaudeCliPath: vi.fn(),
+    setSavingClaudeCliPath: vi.fn(),
     setWorkingDirectory: vi.fn(),
     setSavingWorkingDirectory: vi.fn(),
     setCommitPrompt: vi.fn(),

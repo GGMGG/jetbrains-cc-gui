@@ -20,6 +20,7 @@ import {
 import { setupApiKey, buildCliEnv } from '../config/api-config.js';
 import { mapModelIdToSdkName } from '../utils/model-utils.js';
 import { getRealHomeDir } from '../utils/path-utils.js';
+import { getClaudeCliPathOverride } from '../utils/claude-cli-path.js';
 import { buildCodexCliEnvironment } from './codex/codex-utils.js';
 
 let claudeSdk = null;
@@ -312,6 +313,7 @@ async function enhancePromptWithClaude(originalPrompt, systemPrompt, model, cont
   const fullPrompt = buildFullPrompt(originalPrompt, context);
   console.log(`[PromptEnhancer] Full prompt length: ${fullPrompt.length}`);
 
+  const claudeCliOverride = getClaudeCliPathOverride();
   const options = {
     cwd: workingDirectory,
     permissionMode: 'bypassPermissions',
@@ -320,6 +322,7 @@ async function enhancePromptWithClaude(originalPrompt, systemPrompt, model, cont
     env: buildCliEnv(),
     systemPrompt,
     settingSources: ['user', 'project', 'local'],
+    ...(claudeCliOverride && { pathToClaudeCodeExecutable: claudeCliOverride }),
   };
 
   console.log('[PromptEnhancer] Calling Claude Agent SDK...');

@@ -32,6 +32,7 @@ import { loadMcpServersConfigAsRecord } from './mcp-status/config-loader.js';
 import { setActiveQueryResult } from './message-session-registry.js';
 import { normalizeStreamDelta, rememberStreamSnapshot } from './stream-delta-normalizer.js';
 import { generateSessionTitle } from '../session-title-service.js';
+import { getClaudeCliPathOverride } from '../../utils/claude-cli-path.js';
 
 // ========== Internal helpers for deduplication ==========
 
@@ -62,6 +63,7 @@ function resolveThinkingConfig(settings) {
  * Build query options object shared by both send functions.
  */
 function buildQueryOptions({ workingDirectory, permissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers }) {
+  const claudeCliOverride = getClaudeCliPathOverride();
   return {
     cwd: workingDirectory,
     permissionMode,
@@ -78,6 +80,7 @@ function buildQueryOptions({ workingDirectory, permissionMode, sdkModelName, max
     hooks: { PreToolUse: [{ hooks: [preToolUseHook] }] },
     settingSources: ['user', 'project', 'local'],
     ...(mcpServers && { mcpServers }),
+    ...(claudeCliOverride && { pathToClaudeCodeExecutable: claudeCliOverride }),
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',

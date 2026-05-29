@@ -52,6 +52,7 @@ import {
   shouldOutputMessage,
 } from './stream-event-processor.js';
 import { generateSessionTitle } from '../session-title-service.js';
+import { getClaudeCliPathOverride } from '../../utils/claude-cli-path.js';
 
 const SUPPORTED_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -114,6 +115,7 @@ function resolveRequestModelState(modelId, settingsEnv) {
 }
 
 function buildQueryOptions(workingDirectory, sdkModelName, permissionMode, maxThinkingTokens, reasoningEffort, streamingEnabled, systemPromptAppend, requestedSessionId, mcpServers) {
+  const claudeCliOverride = getClaudeCliPathOverride();
   return {
     cwd: workingDirectory,
     permissionMode,
@@ -132,6 +134,7 @@ function buildQueryOptions(workingDirectory, sdkModelName, permissionMode, maxTh
     canUseTool,
     settingSources: ['user', 'project', 'local'],
     ...(mcpServers && { mcpServers }),
+    ...(claudeCliOverride && { pathToClaudeCodeExecutable: claudeCliOverride }),
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',

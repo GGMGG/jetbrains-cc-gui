@@ -145,6 +145,11 @@
         "invalidFileName": "Path must end with node.exe on Windows, or node on macOS/Linux",
         "cannotExecute": "File exists but cannot be executed, please check file permissions"
       },
+      "claudeCliPath": {
+        "label": "Claude CLI Path (override)",
+        "placeholder": "e.g. /usr/local/bin/claude — leave empty to use the bundled SDK",
+        "hint": "Optional. When set, the plugin spawns this binary instead of the bundled @anthropic-ai/claude-agent-sdk. Daemon restarts on save."
+      },
       "workingDirectory": {
         "label": "Working Directory",
         "placeholder": "e.g. project1 or leave empty to use project root",
