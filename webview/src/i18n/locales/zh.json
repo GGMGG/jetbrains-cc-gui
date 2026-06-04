@@ -177,16 +177,28 @@
         "level6": "最大（140%）"
       },
       "editorFont": {
-        "label": "字体",
-        "hint": "这里修改的是插件界面字体；字号和行高仍跟随编辑器。",
-        "followOption": "跟随编辑器（{{font}}）",
-        "customOption": "自定义字体文件",
-        "customPathLabel": "字体文件路径",
-        "customPathPlaceholder": "选择或输入 .ttf / .otf 字体文件路径",
+        "label": "UI 字体",
+        "hint": "这里修改的是插件界面字体。代码可以使用单独的代码字体。",
+        "followOption": "跟随 IDEA UI 字体（{{font}}）",
+        "customOption": "自定义 UI 字体文件",
+        "customPathLabel": "UI 字体文件路径",
+        "customPathPlaceholder": "选择或输入 .ttf / .otf UI 字体文件路径",
         "browse": "浏览",
-        "warningUnavailable": "字体不可用，当前已回退到编辑器字体",
+        "warningUnavailable": "UI 字体不可用，当前已回退到 IDEA UI 字体",
+        "statusFollowEditor": "当前跟随 IDEA UI 字体：{{font}}",
+        "statusCustom": "当前使用自定义 UI 字体：{{font}}"
+      },
+      "codeFont": {
+        "label": "代码字体",
+        "hint": "Markdown 代码和命令块会使用这个字体。",
+        "followOption": "跟随编辑器字体（{{font}}）",
+        "customOption": "自定义代码字体文件",
+        "customPathLabel": "代码字体文件路径",
+        "customPathPlaceholder": "选择或输入 .ttf / .otf 代码字体文件路径",
+        "browse": "浏览",
+        "warningUnavailable": "代码字体不可用，当前已回退到编辑器字体",
         "statusFollowEditor": "当前跟随编辑器字体：{{font}}",
-        "statusCustom": "当前使用自定义字体：{{font}}"
+        "statusCustom": "当前使用自定义代码字体：{{font}}"
       },
       "streaming": {
         "label": "流式传输",

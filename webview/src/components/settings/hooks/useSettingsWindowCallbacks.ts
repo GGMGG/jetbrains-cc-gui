@@ -5,7 +5,7 @@ import type { ProviderConfig, CodexProviderConfig } from '../../../types/provide
 import type { AgentConfig } from '../../../types/agent';
 import type { PromptConfig } from '../../../types/prompt';
 import type { CommitAiConfig } from '../../../types/aiFeatureConfig';
-import type { UiFontConfig } from './useSettingsBasicActions';
+import type { UiFontConfig, CodeFontConfig } from './useSettingsBasicActions';
 import type { PromptEnhancerConfig } from '../../../types/promptEnhancer';
 import type { AlertType } from '../../AlertDialog';
 import type { ToastMessage } from '../../Toast';
@@ -38,6 +38,7 @@ export interface SettingsWindowCallbacksDeps {
   setSavingProjectCommitPrompt: (saving: boolean) => void;
   setEditorFontConfig: (config: { fontFamily: string; fontSize: number; lineSpacing: number } | undefined) => void;
   setUiFontConfig: (config: UiFontConfig | undefined) => void;
+  setCodeFontConfig: (config: CodeFontConfig | undefined) => void;
   setIdeTheme: (theme: 'light' | 'dark' | null) => void;
   setLocalStreamingEnabled: (enabled: boolean) => void;
   setCodexSandboxMode?: (mode: 'workspace-write' | 'danger-full-access') => void;
@@ -193,6 +194,16 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
         window.applyUiFontConfig?.(config);
       } catch {
         // Silently ignore malformed UI font config from backend
+      }
+    };
+
+    window.onCodeFontConfigReceived = (jsonStr: string) => {
+      try {
+        const config = JSON.parse(jsonStr);
+        d().setCodeFontConfig(config);
+        window.applyCodeFontConfig?.(config);
+      } catch {
+        // Silently ignore malformed code font config from backend
       }
     };
 
@@ -490,6 +501,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
     sendToJava('get_working_directory:');
     sendToJava('get_editor_font_config:');
     sendToJava('get_ui_font_config:');
+    sendToJava('get_code_font_config:');
     sendToJava('get_streaming_enabled:');
     sendToJava('get_codex_sandbox_mode:');
     sendToJava('get_commit_prompt:');
@@ -518,6 +530,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       window.showSuccessI18n = undefined;
       window.onEditorFontConfigReceived = undefined;
       window.onUiFontConfigReceived = undefined;
+      window.onCodeFontConfigReceived = undefined;
       window.onIdeThemeReceived = previousOnIdeThemeReceived;
       if (!d().onStreamingEnabledChangeProp) {
         window.updateStreamingEnabled = previousUpdateStreamingEnabled;

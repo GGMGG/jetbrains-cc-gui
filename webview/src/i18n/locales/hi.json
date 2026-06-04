@@ -173,16 +173,28 @@
         "level6": "सबसे बड़ा (140%)"
       },
       "editorFont": {
-        "label": "फ़ॉन्ट",
-        "hint": "यहाँ प्लगइन UI का फ़ॉन्ट बदला जाता है; फ़ॉन्ट आकार और लाइन स्पेसिंग अभी भी एडिटर का अनुसरण करते हैं।",
-        "followOption": "एडिटर का अनुसरण करें ({{font}})",
-        "customOption": "कस्टम फ़ॉन्ट फ़ाइल",
-        "customPathLabel": "फ़ॉन्ट फ़ाइल पथ",
-        "customPathPlaceholder": ".ttf / .otf फ़ॉन्ट फ़ाइल का पथ चुनें या दर्ज करें",
+        "label": "UI फ़ॉन्ट",
+        "hint": "यहाँ प्लगइन UI का फ़ॉन्ट बदला जाता है; कोड के लिए अलग फ़ॉन्ट चुना जा सकता है।",
+        "followOption": "IDEA UI फ़ॉन्ट का पालन करें ({{font}})",
+        "customOption": "कस्टम UI फ़ॉन्ट फ़ाइल",
+        "customPathLabel": "UI फ़ॉन्ट फ़ाइल पथ",
+        "customPathPlaceholder": ".ttf / .otf UI फ़ॉन्ट फ़ाइल का पथ चुनें या दर्ज करें",
         "browse": "ब्राउज़ करें",
-        "warningUnavailable": "फ़ॉन्ट उपलब्ध नहीं है, अभी एडिटर फ़ॉन्ट उपयोग में है",
+        "warningUnavailable": "UI फ़ॉन्ट उपलब्ध नहीं है, अभी IDEA UI फ़ॉन्ट उपयोग में है",
+        "statusFollowEditor": "अभी IDEA UI फ़ॉन्ट उपयोग में है: {{font}}",
+        "statusCustom": "अभी कस्टम UI फ़ॉन्ट उपयोग में है: {{font}}"
+      },
+      "codeFont": {
+        "label": "कोड फ़ॉन्ट",
+        "hint": "Markdown कोड और कमांड ब्लॉक इस फ़ॉन्ट का उपयोग करते हैं।",
+        "followOption": "एडिटर फ़ॉन्ट का पालन करें ({{font}})",
+        "customOption": "कस्टम कोड फ़ॉन्ट फ़ाइल",
+        "customPathLabel": "कोड फ़ॉन्ट फ़ाइल पथ",
+        "customPathPlaceholder": ".ttf / .otf कोड फ़ॉन्ट फ़ाइल का पथ चुनें या दर्ज करें",
+        "browse": "ब्राउज़ करें",
+        "warningUnavailable": "कोड फ़ॉन्ट उपलब्ध नहीं है, अभी एडिटर फ़ॉन्ट उपयोग में है",
         "statusFollowEditor": "अभी एडिटर फ़ॉन्ट उपयोग में है: {{font}}",
-        "statusCustom": "अभी कस्टम फ़ॉन्ट उपयोग में है: {{font}}"
+        "statusCustom": "अभी कस्टम कोड फ़ॉन्ट उपयोग में है: {{font}}"
       },
       "streaming": {
         "label": "Streaming",

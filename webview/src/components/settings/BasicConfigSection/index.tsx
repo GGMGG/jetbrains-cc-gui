@@ -2,7 +2,7 @@ import { useState } from 'react';
 import styles from './style.module.less';
 import { useTranslation } from 'react-i18next';
 import type { DiffThemeMode } from '../../../utils/diffTheme';
-import type { UiFontConfig } from '../hooks/useSettingsBasicActions';
+import type { UiFontConfig, CodeFontConfig } from '../hooks/useSettingsBasicActions';
 import AppearanceTab from './AppearanceTab';
 import BehaviorTab from './BehaviorTab';
 import EnvironmentTab from './EnvironmentTab';
@@ -36,9 +36,13 @@ interface BasicConfigSectionProps {
     lineSpacing: number;
   };
   uiFontConfig?: UiFontConfig;
+  codeFontConfig?: CodeFontConfig;
   onUiFontSelectionChange?: (selection: string) => void;
   onSaveUiFontCustomPath?: (path: string) => void;
   onBrowseUiFontFile?: () => void;
+  onCodeFontSelectionChange?: (selection: string) => void;
+  onSaveCodeFontCustomPath?: (path: string) => void;
+  onBrowseCodeFontFile?: () => void;
   // Streaming configuration
   streamingEnabled?: boolean;
   onStreamingEnabledChange?: (enabled: boolean) => void;
@@ -124,9 +128,13 @@ const BasicConfigSection = (props: BasicConfigSectionProps) => {
           onFontSizeLevelChange={props.onFontSizeLevelChange}
           editorFontConfig={props.editorFontConfig}
           uiFontConfig={props.uiFontConfig}
+          codeFontConfig={props.codeFontConfig}
           onUiFontSelectionChange={props.onUiFontSelectionChange}
           onSaveUiFontCustomPath={props.onSaveUiFontCustomPath}
           onBrowseUiFontFile={props.onBrowseUiFontFile}
+          onCodeFontSelectionChange={props.onCodeFontSelectionChange}
+          onSaveCodeFontCustomPath={props.onSaveCodeFontCustomPath}
+          onBrowseCodeFontFile={props.onBrowseCodeFontFile}
           chatBgColor={props.chatBgColor}
           onChatBgColorChange={props.onChatBgColorChange}
           userMsgColor={props.userMsgColor}

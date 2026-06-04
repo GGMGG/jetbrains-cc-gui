@@ -173,16 +173,28 @@
         "level6": "Muito Grande (140%)"
       },
       "editorFont": {
-        "label": "Fonte",
-        "hint": "Aqui você altera a fonte da interface do plugin; o tamanho e o espaçamento entre linhas continuam seguindo o editor.",
-        "followOption": "Seguir editor ({{font}})",
-        "customOption": "Arquivo de fonte personalizado",
-        "customPathLabel": "Caminho do arquivo de fonte",
-        "customPathPlaceholder": "Escolha ou digite o caminho de um arquivo .ttf / .otf",
+        "label": "Fonte da UI",
+        "hint": "Aqui você altera a fonte da interface do plugin; o código pode usar uma fonte separada.",
+        "followOption": "Seguir a fonte UI do IDEA ({{font}})",
+        "customOption": "Arquivo de fonte da UI personalizado",
+        "customPathLabel": "Caminho do arquivo de fonte da UI",
+        "customPathPlaceholder": "Escolha ou digite o caminho de um arquivo .ttf / .otf para a fonte da UI",
         "browse": "Procurar",
-        "warningUnavailable": "A fonte está indisponível, usando a fonte do editor",
+        "warningUnavailable": "A fonte da UI está indisponível, usando a fonte da UI do IDEA",
+        "statusFollowEditor": "Usando atualmente a fonte da UI do IDEA: {{font}}",
+        "statusCustom": "Usando atualmente a fonte da UI personalizada: {{font}}"
+      },
+      "codeFont": {
+        "label": "Fonte de código",
+        "hint": "O código Markdown e os blocos de comando usam esta fonte.",
+        "followOption": "Seguir a fonte do editor ({{font}})",
+        "customOption": "Arquivo de fonte de código personalizado",
+        "customPathLabel": "Caminho do arquivo de fonte de código",
+        "customPathPlaceholder": "Escolha ou digite o caminho de um arquivo .ttf / .otf para a fonte de código",
+        "browse": "Procurar",
+        "warningUnavailable": "A fonte de código está indisponível, usando a fonte do editor",
         "statusFollowEditor": "Usando atualmente a fonte do editor: {{font}}",
-        "statusCustom": "Usando atualmente a fonte personalizada: {{font}}"
+        "statusCustom": "Usando atualmente a fonte de código personalizada: {{font}}"
       },
       "streaming": {
         "label": "Streaming",

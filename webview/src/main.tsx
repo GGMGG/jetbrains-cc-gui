@@ -15,7 +15,7 @@ import { applyLinkifyCapabilitiesPayload } from './utils/linkifyCapabilities';
 import { installRuntimeProviderDispatchers } from './utils/runtimeProviderCapabilities';
 import { sendBridgeEvent } from './utils/bridge';
 import { debugLog } from './utils/debug';
-import type { UiFontConfig } from './types/uiFontConfig';
+import type { UiFontConfig, CodeFontConfig } from './types/uiFontConfig';
 
 // Silence noisy console output in production (including third-party libs).
 // console.error is preserved so ErrorBoundary and unhandled exceptions still
@@ -256,14 +256,19 @@ let latestEditorFontConfig: {
 } | null = null;
 
 let latestUiFontConfig: UiFontConfig | null = null;
+let latestCodeFontConfig: CodeFontConfig | null = null;
 
-const UI_FONT_STYLE_ELEMENT_ID = 'cc-gui-font-face-style';
+const UI_FONT_STYLE_ELEMENT_ID = 'cc-gui-ui-font-face-style';
+const CODE_FONT_STYLE_ELEMENT_ID = 'cc-gui-code-font-face-style';
 
 function escapeCssFontName(name: string): string {
   return name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-function buildFontFamilyValue(config: { fontFamily: string; fallbackFonts?: string[] }) {
+function buildFontFamilyValue(
+  config: { fontFamily: string; fallbackFonts?: string[] },
+  options: { appendMonospaceFallback?: boolean } = { appendMonospaceFallback: true },
+) {
   const fontParts: string[] = [`'${escapeCssFontName(config.fontFamily)}'`];
 
   if (config.fallbackFonts && config.fallbackFonts.length > 0) {
@@ -272,11 +277,14 @@ function buildFontFamilyValue(config: { fontFamily: string; fallbackFonts?: stri
     }
   }
 
-  fontParts.push("'Consolas'", 'monospace');
+  if (options.appendMonospaceFallback !== false) {
+    fontParts.push("'Consolas'", 'monospace');
+  }
   return fontParts.join(', ');
 }
 
-let currentFontBlobUrl: string | null = null;
+let currentUiFontBlobUrl: string | null = null;
+let currentCodeFontBlobUrl: string | null = null;
 
 function escapeCssUrl(url: string): string {
   return url.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n|\r/g, '');
@@ -302,9 +310,9 @@ function setUiFontFaceStyle(config: UiFontConfig) {
   }
 
   // Revoke previous blob URL to free memory
-  if (currentFontBlobUrl) {
-    URL.revokeObjectURL(currentFontBlobUrl);
-    currentFontBlobUrl = null;
+  if (currentUiFontBlobUrl) {
+    URL.revokeObjectURL(currentUiFontBlobUrl);
+    currentUiFontBlobUrl = null;
   }
 
   if (!config.fontUrl && (!config.fontBase64 || !config.fontFormat)) {
@@ -316,36 +324,65 @@ function setUiFontFaceStyle(config: UiFontConfig) {
   let fontSourceUrl = config.fontUrl;
   if (!fontSourceUrl && config.fontBase64) {
     fontSourceUrl = createFontBlobUrl(config.fontBase64, fontFormat);
-    currentFontBlobUrl = fontSourceUrl;
+    currentUiFontBlobUrl = fontSourceUrl;
   }
 
-  const familyName = escapeCssFontName('CC GUI Custom');
+  const familyName = escapeCssFontName(config.fontFamily);
   styleElement.textContent =
     `@font-face { font-family: '${familyName}'; font-style: normal; font-weight: 100 900;` +
     ` font-display: swap; src: url("${escapeCssUrl(fontSourceUrl || '')}") format('${fontFormat}'); }`;
 }
 
-function syncEffectiveUiFontFamily() {
-  const root = document.documentElement;
-  const shouldFollowEditor =
-    !latestUiFontConfig || latestUiFontConfig.effectiveMode === 'followEditor';
+function setCodeFontFaceStyle(config: CodeFontConfig) {
+  let styleElement = document.getElementById(CODE_FONT_STYLE_ELEMENT_ID) as HTMLStyleElement | null;
+  if (!styleElement) {
+    styleElement = document.createElement('style');
+    styleElement.id = CODE_FONT_STYLE_ELEMENT_ID;
+    document.head.appendChild(styleElement);
+  }
 
-  const sourceConfig = shouldFollowEditor
-    ? latestEditorFontConfig || latestUiFontConfig
-    : latestUiFontConfig;
+  if (currentCodeFontBlobUrl) {
+    URL.revokeObjectURL(currentCodeFontBlobUrl);
+    currentCodeFontBlobUrl = null;
+  }
 
-  if (!sourceConfig) {
+  if (!config.fontUrl && (!config.fontBase64 || !config.fontFormat)) {
+    styleElement.textContent = '';
     return;
   }
 
-  const fontFamilyValue = buildFontFamilyValue({
-    fontFamily: sourceConfig.fontFamily,
-    fallbackFonts: sourceConfig.fallbackFonts ?? latestEditorFontConfig?.fallbackFonts,
-  });
+  const fontFormat = config.fontFormat || 'truetype';
+  let fontSourceUrl = config.fontUrl;
+  if (!fontSourceUrl && config.fontBase64) {
+    fontSourceUrl = createFontBlobUrl(config.fontBase64, fontFormat);
+    currentCodeFontBlobUrl = fontSourceUrl;
+  }
 
-  root.style.setProperty('--cc-gui-ui-font-family', fontFamilyValue);
-  // Keep legacy variable in sync so existing components continue to pick up the effective UI font.
-  root.style.setProperty('--idea-editor-font-family', fontFamilyValue);
+  const familyName = escapeCssFontName(config.fontFamily);
+  styleElement.textContent =
+    `@font-face { font-family: '${familyName}'; font-style: normal; font-weight: 100 900;` +
+    ` font-display: swap; src: url("${escapeCssUrl(fontSourceUrl || '')}") format('${fontFormat}'); }`;
+}
+
+function syncFontFamilies() {
+  const root = document.documentElement;
+  if (latestUiFontConfig) {
+    root.style.setProperty('--cc-gui-ui-font-family', buildFontFamilyValue({
+      fontFamily: latestUiFontConfig.fontFamily,
+      fallbackFonts: latestUiFontConfig.fallbackFonts,
+    }, { appendMonospaceFallback: false }));
+  }
+
+  const codeSourceConfig = latestCodeFontConfig || latestEditorFontConfig;
+  if (codeSourceConfig) {
+    const codeFontFamilyValue = buildFontFamilyValue({
+      fontFamily: codeSourceConfig.fontFamily,
+      fallbackFonts: codeSourceConfig.fallbackFonts ?? latestEditorFontConfig?.fallbackFonts,
+    });
+    root.style.setProperty('--cc-gui-code-font-family', codeFontFamilyValue);
+    // Keep legacy variable in sync so existing components continue to pick up the effective code font.
+    root.style.setProperty('--idea-editor-font-family', codeFontFamilyValue);
+  }
 }
 
 function applyEditorTypographyConfig(config: {
@@ -359,7 +396,7 @@ function applyEditorTypographyConfig(config: {
   root.style.setProperty('--cc-gui-editor-font-family', buildFontFamilyValue(config));
   root.style.setProperty('--idea-editor-font-size', `${config.fontSize}px`);
   root.style.setProperty('--idea-editor-line-spacing', String(config.lineSpacing));
-  syncEffectiveUiFontFamily();
+  syncFontFamilies();
 }
 
 function applyUiFontConfig(config: UiFontConfig | string) {
@@ -368,12 +405,22 @@ function applyUiFontConfig(config: UiFontConfig | string) {
 
   latestUiFontConfig = normalizedConfig;
   setUiFontFaceStyle(normalizedConfig);
-  syncEffectiveUiFontFamily();
+  syncFontFamilies();
+}
+
+function applyCodeFontConfig(config: CodeFontConfig | string) {
+  const normalizedConfig: CodeFontConfig =
+    typeof config === 'string' ? JSON.parse(config) as CodeFontConfig : config;
+
+  latestCodeFontConfig = normalizedConfig;
+  setCodeFontFaceStyle(normalizedConfig);
+  syncFontFamilies();
 }
 
 // Register the applyIdeaFontConfig function
 window.applyIdeaFontConfig = applyEditorTypographyConfig;
 window.applyUiFontConfig = applyUiFontConfig;
+window.applyCodeFontConfig = applyCodeFontConfig;
 
 // Check for pending font config (Java side may execute before JS)
 if (window.__pendingFontConfig) {
@@ -386,6 +433,12 @@ if (window.__pendingUiFontConfig) {
   debugLog('[Main] Found pending UI font config, applying...');
   applyUiFontConfig(window.__pendingUiFontConfig);
   delete window.__pendingUiFontConfig;
+}
+
+if (window.__pendingCodeFontConfig) {
+  debugLog('[Main] Found pending code font config, applying...');
+  applyCodeFontConfig(window.__pendingCodeFontConfig);
+  delete window.__pendingCodeFontConfig;
 }
 
 /**

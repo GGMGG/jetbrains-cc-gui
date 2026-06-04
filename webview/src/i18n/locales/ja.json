@@ -173,16 +173,28 @@
         "level6": "最大 (140%)"
       },
       "editorFont": {
-        "label": "フォント",
-        "hint": "ここではプラグインUIのフォントを変更します。文字サイズと行間は引き続きエディタに従います。",
-        "followOption": "エディタに従う ({{font}})",
-        "customOption": "カスタムフォントファイル",
-        "customPathLabel": "フォントファイルのパス",
-        "customPathPlaceholder": ".ttf / .otf フォントファイルのパスを選択または入力",
+        "label": "UI フォント",
+        "hint": "ここではプラグイン UI のフォントを変更します。コード用のフォントは別に設定できます。",
+        "followOption": "IDEA UI フォントに従う ({{font}})",
+        "customOption": "カスタム UI フォントファイル",
+        "customPathLabel": "UI フォントファイルのパス",
+        "customPathPlaceholder": ".ttf / .otf UI フォントファイルのパスを選択または入力",
         "browse": "参照",
-        "warningUnavailable": "フォントを利用できないため、現在はエディタフォントを使用しています",
+        "warningUnavailable": "UI フォントを利用できないため、現在は IDEA UI フォントを使用しています",
+        "statusFollowEditor": "現在は IDEA UI フォントを使用中: {{font}}",
+        "statusCustom": "現在はカスタム UI フォントを使用中: {{font}}"
+      },
+      "codeFont": {
+        "label": "コードフォント",
+        "hint": "Markdown のコードやコマンドブロックで使用されます。",
+        "followOption": "エディタフォントに従う ({{font}})",
+        "customOption": "カスタムコードフォントファイル",
+        "customPathLabel": "コードフォントファイルのパス",
+        "customPathPlaceholder": ".ttf / .otf コードフォントファイルのパスを選択または入力",
+        "browse": "参照",
+        "warningUnavailable": "コードフォントを利用できないため、現在はエディタフォントを使用しています",
         "statusFollowEditor": "現在はエディタフォントを使用中: {{font}}",
-        "statusCustom": "現在はカスタムフォントを使用中: {{font}}"
+        "statusCustom": "現在はカスタムコードフォントを使用中: {{font}}"
       },
       "streaming": {
         "label": "Streaming",

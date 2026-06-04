@@ -43,6 +43,9 @@ public class SettingsHandler extends BaseMessageHandler {
         "get_ui_font_config",
         "set_ui_font_config",
         "browse_ui_font_file",
+        "get_code_font_config",
+        "set_code_font_config",
+        "browse_code_font_file",
         "get_streaming_enabled",
         "set_streaming_enabled",
         "get_codex_sandbox_mode",
@@ -163,6 +166,15 @@ public class SettingsHandler extends BaseMessageHandler {
                 return true;
             case "browse_ui_font_file":
                 projectConfigHandler.handleBrowseUiFontFile();
+                return true;
+            case "get_code_font_config":
+                projectConfigHandler.handleGetCodeFontConfig();
+                return true;
+            case "set_code_font_config":
+                projectConfigHandler.handleSetCodeFontConfig(content);
+                return true;
+            case "browse_code_font_file":
+                projectConfigHandler.handleBrowseCodeFontFile();
                 return true;
             case "get_streaming_enabled":
                 projectConfigHandler.handleGetStreamingEnabled();

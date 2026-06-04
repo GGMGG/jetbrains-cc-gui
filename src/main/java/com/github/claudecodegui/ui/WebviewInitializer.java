@@ -289,6 +289,19 @@ public class WebviewInitializer {
                     cefBrowser.executeJavaScript(uiFontConfigInjection, cefBrowser.getURL(), 0);
                     LOG.info("[UiFontSync] UI font config injected into frontend");
 
+                    // Pass effective code font configuration to the frontend
+                    String codeFontConfig = FontConfigService.getResolvedCodeFontConfigJson(host.getHandlerContext().getSettingsService());
+                    LOG.info("[CodeFontSync] Retrieved code font config");
+                    String escapedCodeFontConfig = JsUtils.escapeJs(codeFontConfig);
+                    String codeFontConfigInjection = String.format(
+                        "(function(){ var c = JSON.parse('%s'); " +
+                        "if (window.applyCodeFontConfig) { window.applyCodeFontConfig(c); } " +
+                        "else { window.__pendingCodeFontConfig = c; } })()",
+                        escapedCodeFontConfig
+                    );
+                    cefBrowser.executeJavaScript(codeFontConfigInjection, cefBrowser.getURL(), 0);
+                    LOG.info("[CodeFontSync] Code font config injected into frontend");
+
                     // Pass IDEA language configuration to the frontend
                     String languageConfig = LanguageConfigService.getLanguageConfigJson(host.getHandlerContext().getSettingsService());
                     LOG.info("[LanguageSync] Retrieved language config: " + languageConfig);

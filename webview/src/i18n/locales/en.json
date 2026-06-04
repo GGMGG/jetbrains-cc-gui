@@ -177,16 +177,28 @@
         "level6": "Largest (140%)"
       },
       "editorFont": {
-        "label": "Font",
-        "hint": "Font family changes apply immediately here. Font size and line spacing still follow the editor.",
-        "followOption": "Follow editor ({{font}})",
-        "customOption": "Custom font file",
-        "customPathLabel": "Font file path",
-        "customPathPlaceholder": "Choose or enter a .ttf / .otf font file path",
+        "label": "UI Font",
+        "hint": "This controls the plugin UI font only. Code can use a separate code font.",
+        "followOption": "Follow IDEA UI font ({{font}})",
+        "customOption": "Custom UI font file",
+        "customPathLabel": "UI font file path",
+        "customPathPlaceholder": "Choose or enter a .ttf / .otf UI font file path",
         "browse": "Browse",
-        "warningUnavailable": "Font unavailable, currently using editor font",
+        "warningUnavailable": "UI font unavailable, currently using IDEA UI font",
+        "statusFollowEditor": "Currently following IDEA UI font: {{font}}",
+        "statusCustom": "Currently using custom UI font: {{font}}"
+      },
+      "codeFont": {
+        "label": "Code Font",
+        "hint": "Markdown code and command blocks use this font.",
+        "followOption": "Follow editor font ({{font}})",
+        "customOption": "Custom code font file",
+        "customPathLabel": "Code font file path",
+        "customPathPlaceholder": "Choose or enter a .ttf / .otf code font file path",
+        "browse": "Browse",
+        "warningUnavailable": "Code font unavailable, currently using editor font",
         "statusFollowEditor": "Currently following editor font: {{font}}",
-        "statusCustom": "Currently using custom font: {{font}}"
+        "statusCustom": "Currently using custom code font: {{font}}"
       },
       "streaming": {
         "label": "Streaming",
