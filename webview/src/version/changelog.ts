@@ -13,6 +13,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.4.5',
+    date: '2026-06-04',
+    content: {
+      en: `✨ Features
+- Add a separate **Code Font** setting (Settings → Basic → Appearance), independent from the global UI font: UI text follows the IDEA UI font while Markdown code and Run command (Bash) command + output text use the code font. Both default to following the IDE and each accepts a custom \`.ttf\` / \`.otf\` file (closes #1240)
+- ⚠️ Behavior change: the default **UI font source changed from the IDEA editor font to the IDEA UI font**. After upgrading, regular chat text may switch from your monospaced editor font to your IDE's UI (usually sans-serif) font; code and command areas use the dedicated code font. Override either under Settings → Basic → Appearance`,
+      zh: `✨ 新功能
+- 设置 → 基础 → 外观新增独立的「代码字体」配置，与全局 UI 字体分离：普通界面文本跟随 IDEA UI 字体，Markdown 代码与 Run command（Bash）的命令、输出文本使用代码字体。两者默认均跟随 IDE，且各自支持自定义 \`.ttf\` / \`.otf\` 字体文件（关闭 #1240）
+- ⚠️ 行为变更：插件默认 **UI 字体来源由 IDEA 编辑器字体改为 IDEA UI 字体**。升级后普通聊天文本可能由等宽编辑器字体改为 IDE 的 UI 字体（通常无衬线），代码与命令区域则使用专门的代码字体。可在设置 → 基础 → 外观中自行覆盖`,
+    },
+  },
+  {
     version: '0.4.4',
     date: '2026-05-29',
     content: {

@@ -267,7 +267,9 @@ function escapeCssFontName(name: string): string {
 
 function buildFontFamilyValue(
   config: { fontFamily: string; fallbackFonts?: string[] },
-  options: { appendMonospaceFallback?: boolean } = { appendMonospaceFallback: true },
+  options: { appendMonospaceFallback?: boolean; appendSansSerifFallback?: boolean } = {
+    appendMonospaceFallback: true,
+  },
 ) {
   const fontParts: string[] = [`'${escapeCssFontName(config.fontFamily)}'`];
 
@@ -277,7 +279,11 @@ function buildFontFamilyValue(
     }
   }
 
-  if (options.appendMonospaceFallback !== false) {
+  if (options.appendSansSerifFallback) {
+    // UI fonts fall back to a sans-serif stack so a failed custom-font load lands on a
+    // sensible UI font instead of the browser default serif.
+    fontParts.push("'Inter'", 'system-ui', 'sans-serif');
+  } else if (options.appendMonospaceFallback !== false) {
     fontParts.push("'Consolas'", 'monospace');
   }
   return fontParts.join(', ');
@@ -370,7 +376,7 @@ function syncFontFamilies() {
     root.style.setProperty('--cc-gui-ui-font-family', buildFontFamilyValue({
       fontFamily: latestUiFontConfig.fontFamily,
       fallbackFonts: latestUiFontConfig.fallbackFonts,
-    }, { appendMonospaceFallback: false }));
+    }, { appendMonospaceFallback: false, appendSansSerifFallback: true }));
   }
 
   const codeSourceConfig = latestCodeFontConfig || latestEditorFontConfig;

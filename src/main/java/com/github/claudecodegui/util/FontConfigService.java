@@ -95,10 +95,11 @@ public class FontConfigService {
         JsonObject config = new JsonObject();
 
         try {
+            // Read the UI font statically (no Swing component construction) so this stays
+            // safe to call off the EDT. UIManager.getFont returning null is virtually
+            // impossible in a running IDE; the ternaries below fall back to a sane default
+            // if it ever does.
             java.awt.Font uiFont = UIManager.getFont("Label.font");
-            if (uiFont == null) {
-                uiFont = new javax.swing.JLabel().getFont();
-            }
 
             String fontName = uiFont != null ? uiFont.getFamily() : "Dialog";
             int fontSize = uiFont != null ? uiFont.getSize() : 13;
@@ -345,6 +346,9 @@ public class FontConfigService {
             String customFamily,
             String unavailableSourceLabel
     ) {
+        // Defensive only: both callers (resolveUiFontConfig / resolveCodeFontConfig) always pass a
+        // non-null source, so this editor-font fallback is never hit in practice. It is kept as a
+        // last-resort default rather than the UI source to avoid an NPE if a future caller passes null.
         JsonObject normalizedSourceConfig = sourceFontConfig != null ? sourceFontConfig.deepCopy() : getEditorFontConfig();
         JsonObject normalizedPersistedConfig = normalizePersistedFontConfig(persistedConfig);
 

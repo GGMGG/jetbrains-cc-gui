@@ -1,3 +1,19 @@
+##### **2026年6月4日（v0.4.5）**
+
+English:
+
+✨ Features
+- Add a separate **Code Font** setting (Settings → Basic → Appearance), independent from the global UI font. Regular UI text follows the IDEA UI font, while Markdown inline code / code blocks and Run command (Bash) command + output text use the code font. Both default to following the IDE (UI font ← IDEA UI font, code font ← IDEA editor font), and each accepts a custom `.ttf` / `.otf` file. Localized across 10 languages (closes #1240)
+- ⚠️ Behavior change: the plugin's default **UI font source changed from the IDEA editor font to the IDEA UI font** (the system Label font). After upgrading, regular chat text that previously followed your monospaced editor font will follow your IDE's UI (usually sans-serif) font instead; code and command areas now use the dedicated code font. Override either under Settings → Basic → Appearance if you preferred the old look
+
+中文：
+
+✨ 新功能
+- 设置 → 基础 → 外观新增独立的「代码字体」配置，与全局 UI 字体分离。普通界面文本跟随 IDEA UI 字体，Markdown 行内代码 / 代码块以及 Run command（Bash）的命令与输出文本使用代码字体。两者默认均跟随 IDE（UI 字体 ← IDEA UI 字体，代码字体 ← IDEA 编辑器字体），且各自支持自定义 `.ttf` / `.otf` 字体文件。覆盖 10 种语言（关闭 #1240）
+- ⚠️ 行为变更：插件默认 **UI 字体来源由 IDEA 编辑器字体改为 IDEA UI 字体**（即系统 Label 字体）。升级后，原本跟随等宽编辑器字体的普通聊天文本会改为跟随 IDE 的 UI 字体（通常是无衬线），代码与命令区域则改用专门的代码字体。如偏好旧观感，可在设置 → 基础 → 外观中自行覆盖
+
+---
+
 ##### **2026年5月29日（v0.4.4）**
 
 English:

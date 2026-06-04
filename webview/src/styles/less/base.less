@@ -74,7 +74,11 @@ html {
     background: transparent !important;
 }
 
-/* 全局字体覆盖 - 让整个插件都使用当前生效的 UI 字体 */
+/* 全局字体覆盖 - 让整个插件都使用当前生效的 UI 字体。
+ * 注意：该通配选择器会直接命中每一个元素，从而截断 font-family 的继承链——
+ * 任何“父容器设字体、子元素靠继承”的写法都会失效（子元素会拿到这里的 UI 字体）。
+ * 因此代码/等宽区域必须把 font-family 直接声明在承载文本的元素自身上
+ * （参考 .bash-command-block / .bash-output-text），不能依赖从父容器继承。 */
 * {
     font-family: var(--cc-gui-ui-font-family, 'Inter', system-ui, sans-serif);
 }

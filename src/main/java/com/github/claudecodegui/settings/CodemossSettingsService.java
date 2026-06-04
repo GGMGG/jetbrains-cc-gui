@@ -39,13 +39,12 @@ public class CodemossSettingsService {
     private static final String CODEX_SANDBOX_MODE_DANGER_FULL_ACCESS = "danger-full-access";
     private static final String UI_FONT_CONFIG_KEY = "uiFont";
     private static final String CODE_FONT_CONFIG_KEY = "codeFont";
+    // Shared by both UI font and code font: the persisted JSON keys ("mode" /
+    // "customFontPath") and the set of valid modes are identical for the two font kinds,
+    // so they reuse these UI_FONT_*-named constants. They are NOT UI-only despite the name.
     private static final String UI_FONT_MODE_KEY = "mode";
     private static final String UI_FONT_CUSTOM_PATH_KEY = "customFontPath";
     private static final Set<String> VALID_UI_FONT_MODES = Set.of(
-            FontConfigService.UI_FONT_MODE_FOLLOW_EDITOR,
-            FontConfigService.UI_FONT_MODE_CUSTOM_FILE
-    );
-    private static final Set<String> VALID_CODE_FONT_MODES = Set.of(
             FontConfigService.UI_FONT_MODE_FOLLOW_EDITOR,
             FontConfigService.UI_FONT_MODE_CUSTOM_FILE
     );
@@ -647,7 +646,8 @@ public class CodemossSettingsService {
     }
 
     private JsonObject createCodeFontConfig(String mode, String customFontPath) {
-        String normalizedMode = VALID_CODE_FONT_MODES.contains(mode)
+        // UI font and code font share the same valid-mode set (see VALID_UI_FONT_MODES).
+        String normalizedMode = VALID_UI_FONT_MODES.contains(mode)
                 ? mode
                 : FontConfigService.UI_FONT_MODE_FOLLOW_EDITOR;
         JsonObject codeFont = new JsonObject();

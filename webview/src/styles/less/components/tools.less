@@ -173,6 +173,11 @@
     white-space: inherit;
     word-break: inherit;
     overflow-wrap: inherit;
+    /* Declare the code font directly on this leaf text node. The global
+       `* { font-family }` in base.less directly matches this <span> and would
+       otherwise win over the code font merely inherited from .bash-output-block
+       (a directly-matched rule always beats an inherited value). */
+    font-family: var(--cc-gui-code-font-family, var(--idea-editor-font-family, 'JetBrains Mono', 'Consolas', monospace));
 }
 
 .bash-output-block.normal {
