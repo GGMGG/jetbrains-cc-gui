@@ -395,7 +395,7 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
         // completed tool calls are not lost when the rAF is cancelled below.
         for (let i = 0; i < parsed.length; i++) {
           const msg = parsed[i];
-          if (msg?.type === 'user' && typeof msg.content === 'string' && msg.content === '[tool_result]') {
+          if (msg?.type === 'user' && typeof msg.content === 'string' && msg.content.trim() === '[tool_result]') {
             const raw = msg.raw as Record<string, unknown> | undefined;
             if (raw != null && typeof raw === 'object') {
               pendingToolResultMsgs.push({ content: '[tool_result]', raw });
@@ -575,6 +575,13 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
           );
           if (hasNewToolResult) {
             newMessages.push({ ...trMsg, type: 'user' as const, timestamp: new Date().toISOString() });
+            // Register the freshly-pushed ids so a duplicate tool_result carrying the same
+            // tool_use_id later in this snapshot isn't appended a second time.
+            for (const block of content) {
+              if (block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+                existingToolResultIds.add(block.tool_use_id);
+              }
+            }
           }
         }
       }
