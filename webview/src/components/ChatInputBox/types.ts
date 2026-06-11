@@ -314,16 +314,6 @@ export function normalizeClaudeModelId(modelId: string | undefined | null): stri
  */
 export const CLAUDE_MODELS: ModelInfo[] = [
   {
-    id: 'claude-sonnet-4-6',
-    label: 'Sonnet 4.6',
-    description: 'Sonnet 4.6 · Use the default model',
-  },
-  {
-    id: 'claude-fable-5',
-    label: 'Fable 5',
-    description: 'Fable 5 · Most powerful · Mythos-class',
-  },
-  {
     id: 'claude-opus-4-8',
     label: 'Opus 4.8',
     description: 'Opus 4.8 · Latest and most capable',
@@ -332,6 +322,16 @@ export const CLAUDE_MODELS: ModelInfo[] = [
     id: 'claude-opus-4-7',
     label: 'Opus 4.7',
     description: 'Opus 4.7 · Previous flagship model',
+  },
+  {
+    id: 'claude-fable-5',
+    label: 'Fable 5',
+    description: 'Fable 5 · Most powerful · Mythos-class',
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    label: 'Sonnet 4.6',
+    description: 'Sonnet 4.6 · Use the default model',
   },
   {
     id: 'claude-haiku-4-5',
