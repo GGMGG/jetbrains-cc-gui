@@ -9,6 +9,7 @@ import type { McpServer, McpPreset } from '../../types/mcp';
 import { sendToJava } from '../../utils/bridge';
 import { McpServerDialog } from './McpServerDialog';
 import { McpPresetDialog } from './McpPresetDialog';
+import { McpMarketplaceDialog } from './McpMarketplaceDialog';
 import { McpHelpDialog } from './McpHelpDialog';
 import { McpConfirmDialog } from './McpConfirmDialog';
 import { McpLogDialog } from './McpLogDialog';
@@ -51,6 +52,7 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
   // Dialog state
   const [showServerDialog, setShowServerDialog] = useState(false);
   const [showPresetDialog, setShowPresetDialog] = useState(false);
+  const [showMarketplaceDialog, setShowMarketplaceDialog] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [showLogDialog, setShowLogDialog] = useState(false);
@@ -215,8 +217,8 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
   // Add server from marketplace
   const handleAddFromMarket = useCallback(() => {
     setShowDropdown(false);
-    addToast(t('mcp.marketComingSoon'), 'info');
-  }, [t, addToast]);
+    setShowMarketplaceDialog(true);
+  }, []);
 
   // Save server
   const handleSaveServer = useCallback((server: McpServer) => {
@@ -438,6 +440,15 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
         <McpPresetDialog
           onClose={() => setShowPresetDialog(false)}
           onSelect={handleSelectPreset}
+        />
+      )}
+
+      {showMarketplaceDialog && (
+        <McpMarketplaceDialog
+          currentProvider={currentProvider}
+          existingIds={servers.map(s => s.id)}
+          onClose={() => setShowMarketplaceDialog(false)}
+          onSelect={handleSaveServer}
         />
       )}
 

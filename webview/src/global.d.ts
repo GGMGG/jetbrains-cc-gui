@@ -200,6 +200,16 @@ interface Window {
   onFileListResult?: (json: string) => void;
 
   /**
+   * Update MCP marketplace sources.
+   */
+  updateMcpMarketplaceSources?: (json: string) => void;
+
+  /**
+   * Update MCP marketplace entries.
+   */
+  updateMcpMarketplaceEntries?: (json: string) => void;
+
+  /**
    * Update MCP servers list
    */
   updateMcpServers?: (json: string) => void;
