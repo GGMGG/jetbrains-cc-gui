@@ -1160,6 +1160,19 @@
     "manualConfig": "Manual config",
     "addFromMarket": "Add from MCP market",
     "marketComingSoon": "MCP market feature not yet implemented, coming soon",
+    "import": {
+      "menuLabel": "Import from GitHub Copilot",
+      "title": "Import from GitHub Copilot",
+      "description": "Paste a GitHub Copilot MCP configuration (root key \"servers\") to import its servers.",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "Preview",
+      "previewTitle": "Servers to import",
+      "empty": "Paste a configuration and click Preview.",
+      "footerHint": "Review the servers and any renames before importing.",
+      "renamedFrom": "renamed from {{id}}",
+      "renameSummary": "{{count}} renamed due to name conflicts",
+      "confirm": "Import {{count}} servers"
+    },
     "market": {
       "title": "MCP Marketplace",
       "subtitle": "Browse registry sources and add installable MCP servers.",

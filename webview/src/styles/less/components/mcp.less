@@ -2515,3 +2515,173 @@
         flex: 1;
     }
 }
+
+/* MCP Import (GitHub Copilot config) */
+.mcp-import-dialog {
+    width: min(720px, 92vw);
+    height: min(680px, 88vh);
+}
+
+.mcp-import-dialog .dialog-header h3 {
+    margin: 0;
+}
+
+.mcp-import-subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 400;
+}
+
+.mcp-import-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    gap: 10px;
+}
+
+.mcp-import-textarea {
+    width: 100%;
+    min-height: 160px;
+    resize: vertical;
+    padding: 10px;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    outline: none;
+}
+
+.mcp-import-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.mcp-import-rename-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.mcp-import-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-warning);
+    border-radius: 6px;
+    color: var(--color-warning);
+    background: var(--bg-secondary);
+    font-size: 12px;
+}
+
+.mcp-import-preview {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.mcp-import-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.mcp-import-preview-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 2px 4px;
+}
+
+.mcp-import-item {
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--bg-primary);
+}
+
+.mcp-import-item-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: var(--accent-primary);
+    color: var(--text-white);
+    font-weight: 600;
+}
+
+.mcp-import-item-info {
+    min-width: 0;
+    flex: 1;
+}
+
+.mcp-import-item-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.mcp-import-item-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.mcp-import-type-badge,
+.mcp-import-renamed {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 10px;
+    line-height: 1.3;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+}
+
+.mcp-import-renamed {
+    color: var(--color-warning);
+    border-color: var(--color-warning);
+}
+
+.mcp-import-item-id {
+    margin-top: 4px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.mcp-import-item-cmd {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.mcp-import-footer {
+    align-items: center;
+}

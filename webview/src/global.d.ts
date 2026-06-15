@@ -210,6 +210,11 @@ interface Window {
   updateMcpMarketplaceEntries?: (json: string) => void;
 
   /**
+   * Preview of MCP servers parsed from an external (e.g. GitHub Copilot) configuration.
+   */
+  updateCopilotImportPreview?: (json: string) => void;
+
+  /**
    * Update MCP servers list
    */
   updateMcpServers?: (json: string) => void;

@@ -968,6 +968,19 @@
     "manualConfig": "Configuración manual",
     "addFromMarket": "Añadir desde el mercado MCP",
     "marketComingSoon": "La función de mercado MCP aún no está implementada, próximamente",
+    "import": {
+      "menuLabel": "Importar desde GitHub Copilot",
+      "title": "Importar desde GitHub Copilot",
+      "description": "Pega una configuración MCP de GitHub Copilot (clave raíz «servers») para importar sus servidores.",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "Previsualizar",
+      "previewTitle": "Servidores a importar",
+      "empty": "Pega una configuración y haz clic en Previsualizar.",
+      "footerHint": "Revisa los servidores y los cambios de nombre antes de importar.",
+      "renamedFrom": "renombrado desde {{id}}",
+      "renameSummary": "{{count}} renombrados por conflictos de nombre",
+      "confirm": "Importar {{count}} servidores"
+    },
     "market": {
       "title": "Mercado MCP",
       "subtitle": "Explora fuentes de registro y añade servidores MCP instalables.",

@@ -995,6 +995,19 @@
     "manualConfig": "Ручная настройка",
     "addFromMarket": "Добавить из маркета MCP",
     "marketComingSoon": "Функция маркета MCP ещё не реализована, скоро будет",
+    "import": {
+      "menuLabel": "Импорт из GitHub Copilot",
+      "title": "Импорт из GitHub Copilot",
+      "description": "Вставьте конфигурацию MCP из GitHub Copilot (корневой ключ «servers»), чтобы импортировать её серверы.",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "Предпросмотр",
+      "previewTitle": "Серверы для импорта",
+      "empty": "Вставьте конфигурацию и нажмите «Предпросмотр».",
+      "footerHint": "Перед импортом проверьте серверы и переименования.",
+      "renamedFrom": "переименован из {{id}}",
+      "renameSummary": "{{count}} переименовано из-за конфликтов имён",
+      "confirm": "Импортировать {{count}} серверов"
+    },
     "market": {
       "title": "Маркетплейс MCP",
       "subtitle": "Просматривайте источники реестра и добавляйте устанавливаемые серверы MCP.",

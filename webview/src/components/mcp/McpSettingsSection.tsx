@@ -10,6 +10,7 @@ import { sendToJava } from '../../utils/bridge';
 import { McpServerDialog } from './McpServerDialog';
 import { McpPresetDialog } from './McpPresetDialog';
 import { McpMarketplaceDialog } from './McpMarketplaceDialog';
+import { McpImportDialog } from './McpImportDialog';
 import { McpHelpDialog } from './McpHelpDialog';
 import { McpConfirmDialog } from './McpConfirmDialog';
 import { McpLogDialog } from './McpLogDialog';
@@ -53,6 +54,7 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
   const [showServerDialog, setShowServerDialog] = useState(false);
   const [showPresetDialog, setShowPresetDialog] = useState(false);
   const [showMarketplaceDialog, setShowMarketplaceDialog] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [showLogDialog, setShowLogDialog] = useState(false);
@@ -220,6 +222,23 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
     setShowMarketplaceDialog(true);
   }, []);
 
+  // Import servers from a GitHub Copilot configuration
+  const handleImportFromCopilot = useCallback(() => {
+    setShowDropdown(false);
+    setShowImportDialog(true);
+  }, []);
+
+  // Persist imported servers via the same save path as handleSaveServer
+  const handleImportServers = useCallback((importedServers: McpServer[]) => {
+    importedServers.forEach((server) => {
+      sendToJava(`add_${messagePrefix}mcp_server`, server);
+    });
+    addToast(`${t('mcp.added')} ${importedServers.length}`, 'success');
+    setTimeout(() => {
+      loadServers();
+    }, 100);
+  }, [messagePrefix, addToast, t, loadServers]);
+
   // Save server
   const handleSaveServer = useCallback((server: McpServer) => {
     if (editingServer) {
@@ -367,6 +386,10 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
                   <span className="codicon codicon-extensions"></span>
                   {t('mcp.addFromMarket')}
                 </div>
+                <div className="dropdown-item" onClick={handleImportFromCopilot}>
+                  <span className="codicon codicon-github"></span>
+                  {t('mcp.import.menuLabel')}
+                </div>
               </div>
             )}
           </div>
@@ -449,6 +472,15 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
           existingIds={servers.map(s => s.id)}
           onClose={() => setShowMarketplaceDialog(false)}
           onSelect={handleSaveServer}
+        />
+      )}
+
+      {showImportDialog && (
+        <McpImportDialog
+          currentProvider={currentProvider}
+          existingIds={servers.map(s => s.id)}
+          onClose={() => setShowImportDialog(false)}
+          onImport={handleImportServers}
         />
       )}
 

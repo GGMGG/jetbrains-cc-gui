@@ -973,6 +973,19 @@
     "manualConfig": "手動配置",
     "addFromMarket": "從 MCP市場 新增",
     "marketComingSoon": "MCP 市場功能暫未實現，敬請期待",
+    "import": {
+      "menuLabel": "從 GitHub Copilot 匯入",
+      "title": "從 GitHub Copilot 匯入",
+      "description": "貼上 GitHub Copilot 的 MCP 設定（根鍵「servers」）以匯入其伺服器。",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "預覽",
+      "previewTitle": "待匯入的伺服器",
+      "empty": "貼上設定並點選預覽。",
+      "footerHint": "匯入前請檢查伺服器與重新命名情況。",
+      "renamedFrom": "從 {{id}} 重新命名",
+      "renameSummary": "因名稱衝突重新命名了 {{count}} 個",
+      "confirm": "匯入 {{count}} 個伺服器"
+    },
     "market": {
       "title": "MCP 市集",
       "subtitle": "瀏覽登錄來源並新增可安裝的 MCP 伺服器。",

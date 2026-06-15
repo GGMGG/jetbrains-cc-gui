@@ -1165,6 +1165,19 @@
     "manualConfig": "手动配置",
     "addFromMarket": "从 MCP市场 添加",
     "marketComingSoon": "MCP 市场功能暂未实现，敬请期待",
+    "import": {
+      "menuLabel": "从 GitHub Copilot 导入",
+      "title": "从 GitHub Copilot 导入",
+      "description": "粘贴 GitHub Copilot 的 MCP 配置（根键 “servers”）以导入其服务器。",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "预览",
+      "previewTitle": "待导入的服务器",
+      "empty": "粘贴配置并点击预览。",
+      "footerHint": "导入前请检查服务器和重命名情况。",
+      "renamedFrom": "从 {{id}} 重命名",
+      "renameSummary": "因名称冲突重命名了 {{count}} 个",
+      "confirm": "导入 {{count}} 个服务器"
+    },
     "market": {
       "title": "MCP 市场",
       "subtitle": "浏览注册表来源并添加可安装的 MCP 服务器。",

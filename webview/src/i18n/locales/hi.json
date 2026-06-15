@@ -968,6 +968,19 @@
     "manualConfig": "मैनुअल कॉन्फ़िगरेशन",
     "addFromMarket": "MCP बाजार से जोड़ें",
     "marketComingSoon": "MCP बाजार सुविधा अभी तक लागू नहीं, जल्द आ रही है",
+    "import": {
+      "menuLabel": "GitHub Copilot से आयात करें",
+      "title": "GitHub Copilot से आयात करें",
+      "description": "इसके सर्वर आयात करने के लिए GitHub Copilot MCP कॉन्फ़िगरेशन (रूट कुंजी \"servers\") पेस्ट करें।",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "पूर्वावलोकन",
+      "previewTitle": "आयात किए जाने वाले सर्वर",
+      "empty": "कॉन्फ़िगरेशन पेस्ट करें और पूर्वावलोकन पर क्लिक करें।",
+      "footerHint": "आयात करने से पहले सर्वर और नाम परिवर्तनों की समीक्षा करें।",
+      "renamedFrom": "{{id}} से नाम बदला गया",
+      "renameSummary": "नाम विरोध के कारण {{count}} का नाम बदला गया",
+      "confirm": "{{count}} सर्वर आयात करें"
+    },
     "market": {
       "title": "MCP मार्केटप्लेस",
       "subtitle": "रजिस्ट्री स्रोत ब्राउज़ करें और इंस्टॉल करने योग्य MCP सर्वर जोड़ें।",

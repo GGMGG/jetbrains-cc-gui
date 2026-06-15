@@ -973,6 +973,19 @@
     "manualConfig": "手動設定",
     "addFromMarket": "MCPマーケットから追加",
     "marketComingSoon": "MCPマーケット機能はまだ実装されていません。近日公開予定",
+    "import": {
+      "menuLabel": "GitHub Copilot からインポート",
+      "title": "GitHub Copilot からインポート",
+      "description": "GitHub Copilot の MCP 設定（ルートキー「servers」）を貼り付けてサーバーをインポートします。",
+      "placeholder": "{\n  \"servers\": {\n    \"my-server\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"my-mcp-server\"]\n    }\n  }\n}",
+      "previewButton": "プレビュー",
+      "previewTitle": "インポートするサーバー",
+      "empty": "設定を貼り付けて「プレビュー」をクリックしてください。",
+      "footerHint": "インポートする前にサーバーと名前の変更を確認してください。",
+      "renamedFrom": "{{id}} から名前変更",
+      "renameSummary": "名前の競合により {{count}} 件をリネーム",
+      "confirm": "{{count}} 個のサーバーをインポート"
+    },
     "market": {
       "title": "MCP マーケットプレイス",
       "subtitle": "レジストリソースを参照して、インストール可能な MCP サーバーを追加します。",
