@@ -14,13 +14,39 @@ import { parseSequence } from '../parseSequence';
 import { getStreamEndHandlingMode } from '../messageSync';
 
 /**
+ * Pour every tool_use_id carried by tool_result blocks inside one message's raw
+ * into the supplied accumulator.
+ *
+ * Writing into a caller-provided Set (instead of returning a fresh one) lets
+ * {@link collectUnresolvedToolUseIds} fold every message into a single pass
+ * without per-message intermediate allocations. A no-op when the message has
+ * no usable raw or no tool_result blocks.
+ */
+const harvestToolResultIdsInto = (
+  message: ClaudeMessage | undefined,
+  target: Set<string>,
+): void => {
+  if (!message?.raw) return;
+  const rawObj = typeof message.raw === 'string' ? JSON.parse(message.raw) : message.raw;
+  const content = rawObj?.content ?? rawObj?.message?.content;
+  if (!Array.isArray(content)) return;
+  for (const block of content as Array<{ type?: string; tool_use_id?: string }>) {
+    if (block?.type === 'tool_result' && block.tool_use_id) {
+      target.add(block.tool_use_id);
+    }
+  }
+};
+
+/**
  * Scans assistant messages containing tool_use blocks and returns IDs that have
  * no matching tool_result anywhere in the conversation.
  *
  * scope: 'lastTurn'  — only inspect the most recent assistant tool_use group and
- *                       its immediate user follow-up (default; used by
- *                       onPermissionDenied + onStreamEnd, where only the active
- *                       turn can have stragglers).
+ *                       every consecutive user message trailing it (default;
+ *                       used by onPermissionDenied + onStreamEnd, where only the
+ *                       active turn can have stragglers). The trailing sweep
+ *                       stops at the first non-user message so results from a
+ *                       later turn never leak into this turn's resolution set.
  * scope: 'all'       — collect every tool_use ID across the whole message list
  *                       and check against every tool_result block anywhere.
  *                       Required by historyLoadComplete because a replayed
@@ -42,15 +68,7 @@ export function collectUnresolvedToolUseIds(
       // Pass 1: gather every tool_result id present anywhere in the conversation.
       const resolvedIds = new Set<string>();
       for (const msg of messages) {
-        if (!msg.raw) continue;
-        const rawObj = typeof msg.raw === 'string' ? JSON.parse(msg.raw) : msg.raw;
-        const content = rawObj?.content ?? rawObj?.message?.content;
-        if (!Array.isArray(content)) continue;
-        for (const block of content as Array<{ type?: string; tool_use_id?: string }>) {
-          if (block?.type === 'tool_result' && block.tool_use_id) {
-            resolvedIds.add(block.tool_use_id);
-          }
-        }
+        harvestToolResultIdsInto(msg, resolvedIds);
       }
       // Pass 2: flag every assistant tool_use without a matching result.
       for (const msg of messages) {
@@ -83,19 +101,19 @@ export function collectUnresolvedToolUseIds(
       ) as Array<{ type: string; id: string; name?: string }>;
       if (toolUses.length === 0) continue;
 
-      const nextMsg = messages[i + 1];
+      // Collect tool_result ids from EVERY user message trailing this assistant,
+      // not just messages[i + 1]. The backend (ClaudeMessageHandler.handleToolResult)
+      // emits one user message per tool_result, so N parallel tool_use fan out into
+      // N consecutive user messages. Stopping at the first result message would
+      // strand the remaining tool_use ids and mark them as interrupted (red badge)
+      // even though their results are present further down the list. The sweep
+      // halts at the first non-user message (e.g. the next assistant) so results
+      // belonging to a later turn never leak into this turn's resolution set.
       const existingResultIds = new Set<string>();
-      if (nextMsg?.type === 'user' && nextMsg.raw) {
-        const nextRaw =
-          typeof nextMsg.raw === 'string' ? JSON.parse(nextMsg.raw) : nextMsg.raw;
-        const nextContent = nextRaw.content || nextRaw.message?.content;
-        if (Array.isArray(nextContent)) {
-          nextContent.forEach((block: { type?: string; tool_use_id?: string }) => {
-            if (block.type === 'tool_result' && block.tool_use_id) {
-              existingResultIds.add(block.tool_use_id);
-            }
-          });
-        }
+      for (let j = i + 1; j < messages.length; j++) {
+        const follower = messages[j];
+        if (follower?.type !== 'user') break;
+        harvestToolResultIdsInto(follower, existingResultIds);
       }
 
       for (const tu of toolUses) {

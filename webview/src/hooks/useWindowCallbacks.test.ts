@@ -964,6 +964,41 @@ describe('useWindowCallbacks integration', () => {
       expect(window.__deniedToolIds?.has('tool-x')).toBe(false);
     });
 
+    it('REGRESSION: parallel tool_use with SEPARATE tool_result user messages are not falsely denied', () => {
+      // Backend (ClaudeMessageHandler.handleToolResult) creates ONE user message
+      // per tool_result — so 3 parallel tool_use produce 3 consecutive user
+      // messages, each carrying a single tool_result. collectUnresolvedToolUseIds
+      // 'lastTurn' only inspects messages[i+1]; if it does not look beyond the
+      // first result message it will falsely flag tool-2 / tool-3 as interrupted.
+      const assistant: ClaudeMessage = {
+        type: 'assistant',
+        content: 'running parallel batch',
+        raw: {
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'bash', input: { command: 'echo a' } },
+            { type: 'tool_use', id: 'tool-2', name: 'bash', input: { command: 'echo b' } },
+            { type: 'tool_use', id: 'tool-3', name: 'bash', input: { command: 'echo c' } },
+          ],
+        } as never,
+        timestamp: new Date().toISOString(),
+      };
+      const resultFor = (id: string): ClaudeMessage => ({
+        type: 'user',
+        content: '',
+        raw: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } as never,
+        timestamp: new Date().toISOString(),
+      });
+      const { opts } = createOptsWithMessages([assistant, resultFor('tool-1'), resultFor('tool-2'), resultFor('tool-3')]);
+      renderHook(() => useWindowCallbacks(opts));
+
+      act(() => { window.onStreamStart!(); });
+      act(() => { window.onStreamEnd!('5'); });
+
+      expect(window.__deniedToolIds?.has('tool-1')).toBe(false);
+      expect(window.__deniedToolIds?.has('tool-2')).toBe(false);
+      expect(window.__deniedToolIds?.has('tool-3')).toBe(false);
+    });
+
     it('historyLoadComplete scans ALL turns and marks orphan tool_use as denied', () => {
       // Simulates loading a Codex history with two aborted batches across
       // separate turns. The "lastTurn" heuristic used by onStreamEnd would
