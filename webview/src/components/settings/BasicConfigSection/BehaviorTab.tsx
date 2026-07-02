@@ -398,16 +398,16 @@ const BehaviorTab = ({
         </div>
         <label className={styles.toggleWrapper}>
           <input
-              type="checkbox"
-              className={styles.toggleInput}
-              checked={askUserQuestionNotificationEnabled}
-              onChange={(e) => onAskUserQuestionNotificationEnabledChange(e.target.checked)}
+            type="checkbox"
+            className={styles.toggleInput}
+            checked={askUserQuestionNotificationEnabled}
+            onChange={(e) => onAskUserQuestionNotificationEnabledChange(e.target.checked)}
           />
           <span className={styles.toggleSlider} />
           <span className={styles.toggleLabel}>
             {askUserQuestionNotificationEnabled
-                ? t('settings.basic.askUserQuestionNotification.enabled')
-                : t('settings.basic.askUserQuestionNotification.disabled')}
+              ? t('settings.basic.askUserQuestionNotification.enabled')
+              : t('settings.basic.askUserQuestionNotification.disabled')}
           </span>
         </label>
         <small className={styles.formHint}>
