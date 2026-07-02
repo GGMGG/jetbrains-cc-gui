@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -1860,5 +1861,113 @@ public class CodemossSettingsService {
 
     public void saveCodexProviderOrder(List<String> orderedIds) throws IOException {
         codexProviderManager.saveProviderOrder(orderedIds);
+    }
+
+    // ==================== User Model Pricing Management ====================
+
+    /**
+     * Read user-configured model pricing for a provider family.
+     *
+     * <p>Stored under the {@code customModelPricing.{provider}} node in config.json.
+     * Entries can come from plugin-level custom models or pricing-only Claude mapped models.
+     *
+     * @param provider {@code "claude"} or {@code "codex"}
+     * @return map of model ID → pricing; empty map if none configured
+     */
+    public Map<String, ModelPricing> getCustomModelPricing(String provider) throws IOException {
+        JsonObject config = readConfig();
+        if (!config.has("customModelPricing") || !config.get("customModelPricing").isJsonObject()) {
+            return Map.of();
+        }
+        JsonObject root = config.getAsJsonObject("customModelPricing");
+        if (!root.has(provider) || !root.get(provider).isJsonObject()) {
+            return Map.of();
+        }
+
+        JsonObject providerNode = root.getAsJsonObject(provider);
+        Map<String, ModelPricing> result = new HashMap<>();
+        for (String modelId : providerNode.keySet()) {
+            if (!providerNode.get(modelId).isJsonObject()) {
+                continue;
+            }
+            JsonObject pricingNode = providerNode.getAsJsonObject(modelId);
+            result.put(modelId, parseModelPricing(pricingNode));
+        }
+        return result;
+    }
+
+    /**
+     * Persist user-configured model pricing for a provider family, replacing the whole map.
+     *
+     * @param provider {@code "claude"} or {@code "codex"}
+     * @param pricing  map of model ID → pricing; empty or null clears the provider entry
+     */
+    public void setCustomModelPricing(String provider, Map<String, ModelPricing> pricing) throws IOException {
+        JsonObject config = readConfig();
+
+        JsonObject root;
+        if (config.has("customModelPricing") && config.get("customModelPricing").isJsonObject()) {
+            root = config.getAsJsonObject("customModelPricing");
+        } else {
+            root = new JsonObject();
+            config.add("customModelPricing", root);
+        }
+
+        if (pricing == null || pricing.isEmpty()) {
+            root.remove(provider);
+        } else {
+            JsonObject providerNode = new JsonObject();
+            for (Map.Entry<String, ModelPricing> entry : pricing.entrySet()) {
+                providerNode.add(entry.getKey(), serializeModelPricing(entry.getValue()));
+            }
+            root.add(provider, providerNode);
+        }
+
+        writeConfig(config);
+        LOG.info("[CodemossSettings] Set user model pricing for " + provider
+                + ": " + (pricing == null ? 0 : pricing.size()) + " models");
+    }
+
+    private ModelPricing parseModelPricing(JsonObject node) {
+        return new ModelPricing(
+                readNullableDouble(node, "inputCostPer1M"),
+                readNullableDouble(node, "outputCostPer1M"),
+                readNullableDouble(node, "cacheWriteCostPer1M"),
+                readNullableDouble(node, "cacheReadCostPer1M")
+        );
+    }
+
+    private JsonObject serializeModelPricing(ModelPricing pricing) {
+        JsonObject node = new JsonObject();
+        if (isValidPrice(pricing.inputCostPer1M())) {
+            node.addProperty("inputCostPer1M", pricing.inputCostPer1M());
+        }
+        if (isValidPrice(pricing.outputCostPer1M())) {
+            node.addProperty("outputCostPer1M", pricing.outputCostPer1M());
+        }
+        if (isValidPrice(pricing.cacheWriteCostPer1M())) {
+            node.addProperty("cacheWriteCostPer1M", pricing.cacheWriteCostPer1M());
+        }
+        if (isValidPrice(pricing.cacheReadCostPer1M())) {
+            node.addProperty("cacheReadCostPer1M", pricing.cacheReadCostPer1M());
+        }
+        return node;
+    }
+
+    private Double readNullableDouble(JsonObject node, String key) {
+        if (node == null || !node.has(key) || node.get(key).isJsonNull()) {
+            return null;
+        }
+        try {
+            double value = node.get(key).getAsDouble();
+            return isValidPrice(value) ? value : null;
+        } catch (Exception e) {
+            LOG.warn("[CodemossSettings] Failed to parse pricing field " + key + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean isValidPrice(Double value) {
+        return value != null && Double.isFinite(value) && value >= 0;
     }
 }

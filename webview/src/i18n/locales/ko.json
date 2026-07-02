@@ -313,7 +313,26 @@
       "title": "사용자 지정 모델",
       "description": "여기에 추가된 사용자 지정 모델은 모든 제공자에 표시되며, 모델 선택기 상단에 나타납니다",
       "dialogTitle": "사용자 지정 모델 관리",
-      "manage": "모델 관리"
+      "manage": "모델 관리",
+      "pricing": {
+        "title": "가격(USD/100만 토큰)",
+        "hint": "선택 사항입니다. 비워 두면 해당 토큰 유형의 기본 요금을 사용합니다.",
+        "inputLabel": "입력",
+        "outputLabel": "출력",
+        "cacheWriteLabel": "캐시 쓰기",
+        "cacheReadLabel": "캐시 읽기",
+        "inputShort": "입력",
+        "outputShort": "출력",
+        "cacheWriteShort": "캐시 쓰기",
+        "cacheReadShort": "캐시 읽기",
+        "invalidValue": "가격은 0 이상의 숫자여야 합니다",
+        "defaultPricing": "Using default pricing"
+      },
+      "configuredSectionTitle": "Configured Claude models",
+      "configuredSectionDesc": "Models from the active Claude provider/settings.json are already in the selector. Only pricing can be changed here.",
+      "configuredEditHint": "This model is managed by the active Claude provider/settings.json. Only pricing can be changed here.",
+      "customSectionTitle": "Custom models",
+      "editPricing": "Edit pricing"
     },
     "dependencies": "SDK 의존성",
     "dependenciesDesc": "AI SDK 의존성 설치 및 업데이트 관리",

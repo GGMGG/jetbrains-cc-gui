@@ -291,7 +291,26 @@
       "title": "कस्टम मॉडल",
       "description": "यहाँ जोड़े गए कस्टम मॉडल सभी प्रदाताओं के अंतर्गत दिखाई देंगे, मॉडल चयन सूची में सबसे ऊपर प्रदर्शित होंगे",
       "dialogTitle": "कस्टम मॉडल प्रबंधन",
-      "manage": "मॉडल प्रबंधन"
+      "manage": "मॉडल प्रबंधन",
+      "pricing": {
+        "title": "मूल्य (USD प्रति 1M tokens)",
+        "hint": "वैकल्पिक। उस token प्रकार के लिए डिफ़ॉल्ट दर उपयोग करने हेतु फ़ील्ड खाली छोड़ें।",
+        "inputLabel": "इनपुट",
+        "outputLabel": "आउटपुट",
+        "cacheWriteLabel": "कैश लेखन",
+        "cacheReadLabel": "कैश पठन",
+        "inputShort": "इनपुट",
+        "outputShort": "आउटपुट",
+        "cacheWriteShort": "कैश लेखन",
+        "cacheReadShort": "कैश पठन",
+        "invalidValue": "मूल्य एक गैर-ऋणात्मक संख्या होना चाहिए",
+        "defaultPricing": "Using default pricing"
+      },
+      "configuredSectionTitle": "Configured Claude models",
+      "configuredSectionDesc": "Models from the active Claude provider/settings.json are already in the selector. Only pricing can be changed here.",
+      "configuredEditHint": "This model is managed by the active Claude provider/settings.json. Only pricing can be changed here.",
+      "customSectionTitle": "Custom models",
+      "editPricing": "Edit pricing"
     },
     "dependencies": "SDK निर्भरताएं",
     "dependenciesDesc": "AI SDK निर्भरताओं की इंस्टॉलेशन और अपडेट प्रबंधित करें",

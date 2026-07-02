@@ -291,7 +291,26 @@
       "title": "Пользовательские модели",
       "description": "Добавленные здесь пользовательские модели будут видны у всех провайдеров и отображаться в начале списка выбора моделей",
       "dialogTitle": "Управление пользовательскими моделями",
-      "manage": "Управление моделями"
+      "manage": "Управление моделями",
+      "pricing": {
+        "title": "Стоимость (USD за 1M токенов)",
+        "hint": "Необязательно. Оставьте поле пустым, чтобы использовать ставку по умолчанию для этого типа токенов.",
+        "inputLabel": "Ввод",
+        "outputLabel": "Вывод",
+        "cacheWriteLabel": "Запись кэша",
+        "cacheReadLabel": "Чтение кэша",
+        "inputShort": "Ввод",
+        "outputShort": "Вывод",
+        "cacheWriteShort": "Запись кэша",
+        "cacheReadShort": "Чтение кэша",
+        "invalidValue": "Стоимость должна быть неотрицательным числом",
+        "defaultPricing": "Using default pricing"
+      },
+      "configuredSectionTitle": "Configured Claude models",
+      "configuredSectionDesc": "Models from the active Claude provider/settings.json are already in the selector. Only pricing can be changed here.",
+      "configuredEditHint": "This model is managed by the active Claude provider/settings.json. Only pricing can be changed here.",
+      "customSectionTitle": "Custom models",
+      "editPricing": "Edit pricing"
     },
     "dependencies": "Зависимости SDK",
     "dependenciesDesc": "Управление установкой и обновлением зависимостей AI SDK",

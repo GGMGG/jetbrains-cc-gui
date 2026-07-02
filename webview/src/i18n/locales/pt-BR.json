@@ -340,7 +340,26 @@
       "title": "Modelos Personalizados",
       "description": "Modelos personalizados adicionados aqui serão visíveis em todos os provedores, exibidos no topo do seletor de modelos",
       "dialogTitle": "Gerenciar Modelos Personalizados",
-      "manage": "Gerenciar Modelos"
+      "manage": "Gerenciar Modelos",
+      "pricing": {
+        "title": "Preço (USD por 1M tokens)",
+        "hint": "Opcional. Deixe um campo vazio para usar a tarifa padrão desse tipo de token.",
+        "inputLabel": "Entrada",
+        "outputLabel": "Saída",
+        "cacheWriteLabel": "Gravação de cache",
+        "cacheReadLabel": "Leitura de cache",
+        "inputShort": "Entrada",
+        "outputShort": "Saída",
+        "cacheWriteShort": "Gravação de cache",
+        "cacheReadShort": "Leitura de cache",
+        "invalidValue": "O preço deve ser um número não negativo",
+        "defaultPricing": "Using default pricing"
+      },
+      "configuredSectionTitle": "Configured Claude models",
+      "configuredSectionDesc": "Models from the active Claude provider/settings.json are already in the selector. Only pricing can be changed here.",
+      "configuredEditHint": "This model is managed by the active Claude provider/settings.json. Only pricing can be changed here.",
+      "customSectionTitle": "Custom models",
+      "editPricing": "Edit pricing"
     },
     "dependencies": "Dependências do SDK",
     "dependenciesDesc": "Gerenciar instalações e atualizações de dependências de SDK de IA",

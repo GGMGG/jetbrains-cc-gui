@@ -1,5 +1,6 @@
 package com.github.claudecodegui.provider.codex;
 
+import com.github.claudecodegui.provider.CustomPricingProvider;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
@@ -279,7 +280,31 @@ class CodexUsageAggregator {
     }
 
     private Pricing resolvePricing(String model) {
+        // User-configured pricing takes precedence over the hardcoded table. It is used for
+        // plugin-level custom models and for pricing-only Claude mapped model entries. Cache
+        // is mtime-invalidated automatically.
+        Pricing customPricing = resolveCustomPricing(model);
+        if (customPricing != null) {
+            return customPricing;
+        }
         return MODEL_PRICING.getOrDefault(normalizeModel(model), DEFAULT_PRICING);
+    }
+
+    /**
+     * Build a {@link Pricing} from user-configured pricing, or {@code null} if the
+     * model has no configured pricing. Missing fields fall back to the {@link #DEFAULT_PRICING}
+     * corresponding dimension so users can specify only the rates they know.
+     */
+    private static Pricing resolveCustomPricing(String model) {
+        if (model == null || model.isBlank()) {
+            return null;
+        }
+        return CustomPricingProvider.getInstance().getPricing("codex", model)
+                .map(p -> new Pricing(
+                        p.inputCostPer1M() != null ? p.inputCostPer1M() : DEFAULT_PRICING.inputCostPer1M(),
+                        p.outputCostPer1M() != null ? p.outputCostPer1M() : DEFAULT_PRICING.outputCostPer1M(),
+                        p.cacheReadCostPer1M() != null ? p.cacheReadCostPer1M() : DEFAULT_PRICING.cacheReadCostPer1M()))
+                .orElse(null);
     }
 
     private String normalizeModel(String model) {

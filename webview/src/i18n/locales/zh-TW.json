@@ -291,7 +291,26 @@
       "title": "自訂模型",
       "description": "在此新增的自訂模型將在所有供應商下可見，顯示在模型選擇清單的最前面",
       "dialogTitle": "管理自訂模型",
-      "manage": "管理模型"
+      "manage": "管理模型",
+      "pricing": {
+        "title": "價格（美元/百萬 tokens）",
+        "hint": "選填。留空某項會使用該 token 類型的預設費率。",
+        "inputLabel": "輸入",
+        "outputLabel": "輸出",
+        "cacheWriteLabel": "快取寫入",
+        "cacheReadLabel": "快取讀取",
+        "inputShort": "輸入",
+        "outputShort": "輸出",
+        "cacheWriteShort": "快取寫入",
+        "cacheReadShort": "快取讀取",
+        "invalidValue": "價格必須是非負數字",
+        "defaultPricing": "使用預設價格"
+      },
+      "configuredSectionTitle": "已設定的 Claude 模型",
+      "configuredSectionDesc": "這些模型來自目前 Claude 供應商或 settings.json，已經會顯示在模型選擇器中。這裡只能修改價格。",
+      "configuredEditHint": "此模型由目前 Claude 供應商或 settings.json 管理，只能在這裡修改價格。",
+      "customSectionTitle": "自訂模型",
+      "editPricing": "編輯價格"
     },
     "dependencies": "SDK 依賴",
     "dependenciesDesc": "管理 AI SDK 依賴套件的安裝和更新",
