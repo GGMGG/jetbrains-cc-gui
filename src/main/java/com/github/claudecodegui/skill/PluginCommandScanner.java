@@ -1,5 +1,6 @@
 package com.github.claudecodegui.skill;
 
+import com.github.claudecodegui.bridge.NodeDetector;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -297,6 +298,13 @@ final class PluginCommandScanner {
         String installPath = installPathElement.getAsString();
         if (installPath == null || installPath.trim().isEmpty()) {
             return null;
+        }
+
+        if (NodeDetector.isWslPath(installPath)) {
+            String unc = NodeDetector.convertWslPathToWindowsUnc(installPath);
+            if (unc != null && !unc.isEmpty()) {
+                installPath = unc;
+            }
         }
 
         String version = versionObj.has("version") && versionObj.get("version").isJsonPrimitive()

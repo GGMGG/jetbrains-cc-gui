@@ -174,7 +174,9 @@ final class SlashCommandPathPolicy {
             return !realSubPath.equals(realPluginDir);
         } catch (IOException e) {
             LOG.debug("Cannot resolve real path for plugin path safety check: " + subPath);
-            return false;
+            Path normSub = subPath.toAbsolutePath().normalize();
+            Path normPluginDir = pluginDir.toAbsolutePath().normalize();
+            return normSub.startsWith(normPluginDir) && !normSub.equals(normPluginDir);
         }
     }
 

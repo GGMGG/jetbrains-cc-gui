@@ -229,7 +229,7 @@ public final class WslPathUtil {
         if (isWslPath(nodePath)) {
             String wslHomeUnc = resolveWslHomeUncPath();
             if (wslHomeUnc != null && !wslHomeUnc.isEmpty()) {
-                return wslHomeUnc.replace('\\', '/');
+                return wslHomeUnc;
             }
         }
         return PlatformUtils.getHomeDirectory();
