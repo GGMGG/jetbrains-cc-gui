@@ -96,7 +96,17 @@ export function buildRuntimeSignature(options, systemPromptAppend, streamingEnab
     // the window in at spawn from its environment, and setModel() cannot change
     // it afterwards (see shouldRecreateRuntimeForModel) — so toggling [1m] must
     // change the signature and rebuild the runtime instead of reusing it.
-    contextWindow1M: (modelId || '').includes('[1m]')
+    contextWindow1M: (modelId || '').includes('[1m]'),
+    // bypassPermissions (Auto mode) requires allowDangerouslySkipPermissions,
+    // which the SDK passes as a process-launch argv flag — it is frozen at spawn
+    // and setPermissionMode() (a runtime control request) cannot add it to a
+    // live subprocess. So a runtime spawned in another mode keeps prompting via
+    // canUseTool even after switching to Auto. Put the bypass state in the
+    // signature so entering/leaving Auto rebuilds the runtime with the correct
+    // launch flag. The other modes (default/plan/acceptEdits) need no launch
+    // flag and keep applying live via setPermissionMode, so they intentionally
+    // do NOT change the signature.
+    bypassPermissions: options.permissionMode === 'bypassPermissions'
   };
   return JSON.stringify(material);
 }

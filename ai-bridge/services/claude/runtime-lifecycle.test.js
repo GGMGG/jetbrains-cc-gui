@@ -572,4 +572,37 @@ test('acquireRuntime rebuilds the runtime when the [1m] context toggle changes',
   }
 });
 
+// ============================================================================
+// buildRuntimeSignature — bypassPermissions (Auto mode) rebuild
+// ============================================================================
+
+test('buildRuntimeSignature differs when entering/leaving bypassPermissions (Auto)', () => {
+  const base = { cwd: '/w', model: 'sonnet' };
+  const sigDefault = buildRuntimeSignature({ ...base, permissionMode: 'default' }, '', true, 'ep');
+  const sigAuto = buildRuntimeSignature({ ...base, permissionMode: 'bypassPermissions' }, '', true, 'ep');
+
+  // Entering Auto must change the signature so acquireRuntime rebuilds the
+  // runtime with allowDangerouslySkipPermissions at spawn.
+  assert.notEqual(sigDefault, sigAuto);
+  assert.match(sigDefault, /"bypassPermissions":false/);
+  assert.match(sigAuto, /"bypassPermissions":true/);
+});
+
+test('buildRuntimeSignature is stable across non-bypass mode changes (default/plan/acceptEdits apply live)', () => {
+  const base = { cwd: '/w', model: 'sonnet' };
+  const sigDefault = buildRuntimeSignature({ ...base, permissionMode: 'default' }, '', true, 'ep');
+  const sigPlan = buildRuntimeSignature({ ...base, permissionMode: 'plan' }, '', true, 'ep');
+  const sigAccept = buildRuntimeSignature({ ...base, permissionMode: 'acceptEdits' }, '', true, 'ep');
+
+  // These modes need no launch flag and are applied live via setPermissionMode,
+  // so they must NOT force a runtime rebuild.
+  assert.equal(sigDefault, sigPlan);
+  assert.equal(sigDefault, sigAccept);
+});
+
+test('buildRuntimeSignature treats a missing permissionMode as non-bypass', () => {
+  const sig = buildRuntimeSignature({ cwd: '/w', model: 'sonnet' }, '', true, 'ep');
+  assert.match(sig, /"bypassPermissions":false/);
+});
+
 console.log('\n✅ All TurnSink tests defined. Run with: node runtime-lifecycle.test.js');
