@@ -96,6 +96,7 @@
     "totalDuration": "This reply took",
     "tokenUsage": "{{input}} in / {{output}} out",
     "tokenUsageDetail": "Turn total — input {{input}} · cache write {{cacheWrite}} · cache read {{cacheRead}} · output {{output}}",
+    "cacheHitsWithRatio": " (cache hit {{tokens}}, {{ratio}})",
     "search": {
       "ariaLabel": "Search in conversation",
       "placeholder": "Search in conversation…",
@@ -265,6 +266,12 @@
         "enabled": "Enabled",
         "disabled": "Disabled",
         "hint": "When enabled, shows a system notification when Claude asks you a question, so you won't miss it. When disabled, no notification appears."
+      },
+      "detailedOutput": {
+        "label": "Detailed Output Information",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "hint": "When enabled, message footers show estimated turn cost when available and include cache hits inside the input token summary. Token usage remains visible either way."
       },
       "sendShortcut": {
         "label": "Send Shortcut",

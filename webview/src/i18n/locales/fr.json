@@ -96,6 +96,7 @@
     "totalDuration": "Cette réponse a pris",
     "tokenUsage": "{{input}} entrée / {{output}} sortie",
     "tokenUsageDetail": "Total du tour — entrée {{input}} · écriture cache {{cacheWrite}} · lecture cache {{cacheRead}} · sortie {{output}}",
+    "cacheHitsWithRatio": " ({{tokens}} cache atteint, {{ratio}})",
     "search": {
       "ariaLabel": "Rechercher dans la conversation",
       "placeholder": "Rechercher dans la conversation…",
@@ -249,6 +250,12 @@
         "enabled": "Activé",
         "disabled": "Désactivé",
         "hint": "Lorsque activé, affiche une notification système lorsque Claude vous pose une question, pour ne pas la manquer. Lorsque désactivé, aucune notification apparaît."
+      },
+      "detailedOutput": {
+        "label": "Informations de sortie détaillées",
+        "enabled": "Activé",
+        "disabled": "Désactivé",
+        "hint": "Lorsque cette option est activée, le pied des messages affiche le coût estimé du tour quand il est disponible et inclut les accès au cache dans le résumé des tokens d’entrée. La consommation de tokens reste toujours visible."
       },
       "sendShortcut": {
         "label": "Raccourci d'envoi",

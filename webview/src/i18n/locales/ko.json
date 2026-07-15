@@ -96,6 +96,7 @@
     "totalDuration": "이번 응답 소요 시간",
     "tokenUsage": "입력 {{input}} / 출력 {{output}}",
     "tokenUsageDetail": "턴 합계 — 입력 {{input}} · 캐시 쓰기 {{cacheWrite}} · 캐시 읽기 {{cacheRead}} · 출력 {{output}}",
+    "cacheHitsWithRatio": " (캐시 히트 {{tokens}}, {{ratio}})",
     "search": {
       "ariaLabel": "대화에서 검색",
       "placeholder": "대화에서 검색...",
@@ -249,6 +250,12 @@
         "enabled": "활성화",
         "disabled": "비활성화",
         "hint": "활성화하면 Claude가 질문할 때 시스템 알림을 표시하여 놓치지 않도록 합니다. 비활성화하면 알림이 표시되지 않습니다."
+      },
+      "detailedOutput": {
+        "label": "자세한 출력 정보",
+        "enabled": "켜짐",
+        "disabled": "꺼짐",
+        "hint": "켜면 사용 가능한 경우 메시지 하단에 이번 턴의 예상 비용을 표시하고 입력 Token 요약 안에 캐시 히트를 함께 표시합니다. Token 사용량은 항상 표시됩니다."
       },
       "sendShortcut": {
         "label": "전송 단축키",

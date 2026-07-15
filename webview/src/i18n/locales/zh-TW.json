@@ -96,6 +96,7 @@
     "totalDuration": "本次耗時",
     "tokenUsage": "輸入 {{input}} / 輸出 {{output}}",
     "tokenUsageDetail": "本輪合計 — 輸入 {{input}} · 快取寫入 {{cacheWrite}} · 快取讀取 {{cacheRead}} · 輸出 {{output}}",
+    "cacheHitsWithRatio": "（快取命中 {{tokens}}，{{ratio}}）",
     "search": {
       "ariaLabel": "在對話中搜尋",
       "placeholder": "在對話中搜尋...",
@@ -249,6 +250,12 @@
         "enabled": "已開啟",
         "disabled": "已關閉",
         "hint": "開啟後，當 Claude 向你提問時顯示系統通知提醒，避免錯過。關閉後不顯示通知。"
+      },
+      "detailedOutput": {
+        "label": "詳細輸出資訊",
+        "enabled": "已開啟",
+        "disabled": "已關閉",
+        "hint": "開啟後，訊息底部會在可用時顯示本輪預估費用，並在輸入 Token 中標明快取命中。Token 消耗資訊始終保持顯示。"
       },
       "sendShortcut": {
         "label": "發送快捷鍵",

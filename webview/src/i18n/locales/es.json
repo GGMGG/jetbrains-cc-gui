@@ -96,6 +96,7 @@
     "totalDuration": "Esta respuesta tardó",
     "tokenUsage": "{{input}} entrada / {{output}} salida",
     "tokenUsageDetail": "Total del turno — entrada {{input}} · escritura caché {{cacheWrite}} · lectura caché {{cacheRead}} · salida {{output}}",
+    "cacheHitsWithRatio": " ({{tokens}} aciertos de caché, {{ratio}})",
     "search": {
       "ariaLabel": "Buscar en la conversación",
       "placeholder": "Buscar en la conversación…",
@@ -249,6 +250,12 @@
         "enabled": "Activado",
         "disabled": "Desactivado",
         "hint": "Cuando está activado, muestra una notificación del sistema cuando Claude te hace una pregunta, para que no la pierdas. Cuando está desactivado, no aparece ninguna notificación."
+      },
+      "detailedOutput": {
+        "label": "Información de salida detallada",
+        "enabled": "Activado",
+        "disabled": "Desactivado",
+        "hint": "Cuando está activada, el pie de cada mensaje muestra el coste estimado del turno cuando esté disponible e incluye los aciertos de caché dentro del resumen de tokens de entrada. El uso de tokens siempre permanece visible."
       },
       "sendShortcut": {
         "label": "Atajo de envío",
