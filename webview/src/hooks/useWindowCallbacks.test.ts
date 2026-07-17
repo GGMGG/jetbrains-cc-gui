@@ -105,6 +105,8 @@ describe('useWindowCallbacks integration', () => {
   beforeEach(() => {
     window.__sessionTransitioning = false;
     window.__sessionTransitionToken = null;
+    window.__minAcceptedUpdateSequence = 0;
+    window.__messageBaseIndex = 0;
     window.__pendingSessionTransitionToast = undefined;
     window.__deniedToolIds = new Set();
     window.sendToJava = vi.fn();
@@ -404,6 +406,88 @@ describe('useWindowCallbacks integration', () => {
       'large history message',
       'large history answer',
     ]);
+  });
+
+  it('patches only the transported tail when the full prefix is present', () => {
+    const initial = Array.from({ length: 400 }, (_, index): ClaudeMessage => ({
+      type: index % 2 === 0 ? 'user' : 'assistant',
+      content: `old-${index}`,
+    }));
+    const { opts, buffer } = createOptsWithMessages(initial);
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'user', content: 'new-398' },
+      { type: 'assistant', content: 'new-399' },
+    ]), 398, 7));
+
+    expect(buffer.current).toHaveLength(400);
+    expect(buffer.current[397]?.content).toBe('old-397');
+    expect(buffer.current[398]?.content).toBe('new-398');
+    expect(buffer.current[399]?.content).toBe('new-399');
+    expect(window.__messageBaseIndex).toBe(0);
+    expect(window.__minAcceptedUpdateSequence).toBe(7);
+  });
+
+  it('keeps a recreated tail window aligned across growth and compaction', () => {
+    const { opts, buffer } = createOptsWithMessages([]);
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'user', content: 'message-220' },
+      { type: 'assistant', content: 'message-221' },
+    ]), 220, 7));
+    expect(buffer.current.map((message) => message.content)).toEqual(['message-220', 'message-221']);
+    expect(window.__messageBaseIndex).toBe(220);
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'user', content: 'message-221' },
+      { type: 'assistant', content: 'message-222' },
+    ]), 221, 8));
+    expect(buffer.current.map((message) => message.content)).toEqual(['message-221', 'message-222']);
+    expect(window.__messageBaseIndex).toBe(221);
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'user', content: 'compacted-170' },
+      { type: 'assistant', content: 'compacted-171' },
+    ]), 170, 9));
+    expect(buffer.current.map((message) => message.content)).toEqual(['compacted-170', 'compacted-171']);
+    expect(window.__messageBaseIndex).toBe(170);
+  });
+
+  it('ignores stale or invalid long-conversation tail updates', () => {
+    const { opts, buffer } = createOptsWithMessages([
+      { type: 'user', content: 'current' },
+      { type: 'assistant', content: 'answer' },
+    ]);
+    window.__minAcceptedUpdateSequence = 8;
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'assistant', content: 'stale' },
+    ]), 1, 7));
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'assistant', content: 'invalid-base' },
+    ]), '1oops', 9));
+
+    expect(buffer.current.map((message) => message.content)).toEqual(['current', 'answer']);
+    expect(window.__minAcceptedUpdateSequence).toBe(8);
+  });
+
+  it('resets the tail base when a full snapshot arrives', () => {
+    const { opts, buffer } = createOptsWithMessages([]);
+    renderHook(() => useWindowCallbacks(opts));
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'assistant', content: 'tail-only' },
+    ]), 220, 7));
+
+    act(() => window.updateMessages!(JSON.stringify([
+      { type: 'user', content: 'full-user' },
+      { type: 'assistant', content: 'full-answer' },
+    ]), 8));
+
+    expect(buffer.current.map((message) => message.content)).toEqual(['full-user', 'full-answer']);
+    expect(window.__messageBaseIndex).toBe(0);
   });
 
   it('patchMessageUuid updates the latest unresolved user message using raw text fallback', () => {

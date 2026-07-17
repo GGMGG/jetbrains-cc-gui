@@ -21,6 +21,12 @@ interface Window {
    * Update messages from backend
    */
   updateMessages?: (json: string, sequence?: string | number) => void;
+  /** Replace a long conversation's tail without resending its unchanged prefix. */
+  updateMessageTail?: (
+    json: string,
+    baseIndex: string | number,
+    sequence?: string | number,
+  ) => void;
 
   /**
    * Patch a single message UUID without re-sending the full message list.
@@ -818,6 +824,8 @@ interface Window {
   __pendingUpdateJson?: string | null;
   __pendingUpdateSequence?: number | null;
   __minAcceptedUpdateSequence?: number;
+  /** Backend index represented by messages[0]; zero means the full prefix is present. */
+  __messageBaseIndex?: number;
   /** Cancel pending rAF-deferred updateMessages (set by messageCallbacks, called by onStreamEnd). */
   __cancelPendingUpdateMessages?: () => void;
 
