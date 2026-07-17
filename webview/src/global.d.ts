@@ -83,6 +83,14 @@ interface Window {
    * Add single history message (used for Codex session loading)
    */
   addHistoryMessage?: (message: any) => void;
+  /** Append one history batch without replacing batches already received. */
+  appendHistoryMessages?: (json: string) => void;
+  /** Reassemble an oversized history batch from bounded bridge chunks. */
+  appendHistoryMessageChunk?: (
+    chunk: string,
+    transferId: string,
+    isFinal: string | boolean,
+  ) => void;
 
   /**
    * History load complete callback - invoked when history messages finish loading.
