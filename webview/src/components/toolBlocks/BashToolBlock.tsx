@@ -19,6 +19,7 @@ interface BashToolBlockProps {
 const BashToolBlock = ({ input, result, toolId }: BashToolBlockProps) => {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const isDenied = useIsToolDenied(toolId);
 
   if (!input) {
     return null;
@@ -26,8 +27,7 @@ const BashToolBlock = ({ input, result, toolId }: BashToolBlockProps) => {
 
   const command = typeof input.command === 'string' ? input.command : '';
   const description = typeof input.description === 'string' ? input.description : '';
-
-  const isDenied = useIsToolDenied(toolId);
+  if (!command.trim() && !description.trim()) return null;
 
   // Determine tool call status based on result
   // If denied, treat as completed (show error state)
