@@ -33,6 +33,7 @@ import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.ui.content.Content;
 import com.intellij.ui.content.ContentManager;
 import com.intellij.ui.jcef.JBCefBrowser;
+import org.cef.browser.CefBrowser;
 
 import javax.swing.*;
 import java.awt.*;
@@ -337,6 +338,84 @@ public class ClaudeChatWindow {
 
     public JPanel getContent() {
         return mainPanel;
+    }
+
+    /**
+     * Restore the native JCEF surface after this content tab becomes active again.
+     * Reloading is intentionally avoided so the tab keeps its in-memory React state.
+     */
+    public void onTabActivated() {
+        Runnable repaint = () -> {
+            if (disposed || !isSelectedContent()) {
+                return;
+            }
+            webviewWatchdog.resetTimestamps();
+
+            JBCefBrowser currentBrowser = browser;
+            if (currentBrowser != null) {
+                try {
+                    refreshActivatedWebview(
+                            mainPanel,
+                            currentBrowser.getComponent(),
+                            currentBrowser.getCefBrowser(),
+                            currentBrowser.isOffScreenRendering(),
+                            () -> callJavaScript("window.onTabActivated")
+                    );
+                } catch (Exception | LinkageError e) {
+                    LOG.warn("Failed to refresh activated JCEF tab: " + e.getMessage(), e);
+                }
+            }
+        };
+
+        // selectionChanged runs before ContentManager fully remaps the heavyweight
+        // JCEF child. Waiting one EDT turn is essential for empty tabs because they
+        // have no later DOM update that would incidentally repaint the native surface.
+        ApplicationManager.getApplication().invokeLater(repaint);
+    }
+
+    private boolean isSelectedContent() {
+        Content content = parentContent;
+        ContentManager contentManager = content == null ? null : content.getManager();
+        return contentManager != null && contentManager.getSelectedContent() == content;
+    }
+
+    static void refreshActivatedWebview(
+            JPanel mainPanel,
+            JComponent browserComponent,
+            CefBrowser cefBrowser,
+            boolean offScreenRendering,
+            Runnable frontendRepaint
+    ) {
+        mainPanel.revalidate();
+        mainPanel.repaint();
+        browserComponent.revalidate();
+        browserComponent.repaint();
+
+        try {
+            if (offScreenRendering) {
+                int width = browserComponent.getWidth();
+                int height = browserComponent.getHeight();
+                if (width > 0 && height > 0) {
+                    cefBrowser.wasResized(width, height);
+                }
+            } else {
+                Component nativeComponent = cefBrowser.getUIComponent();
+                if (nativeComponent != null) {
+                    nativeComponent.setVisible(false);
+                    nativeComponent.invalidate();
+                    nativeComponent.setVisible(true);
+                    Container parent = nativeComponent.getParent();
+                    if (parent != null) {
+                        parent.validate();
+                        parent.repaint();
+                    }
+                    nativeComponent.repaint();
+                }
+            }
+            cefBrowser.notifyScreenInfoChanged();
+        } finally {
+            frontendRepaint.run();
+        }
     }
 
     public ClaudeSDKBridge getClaudeSDKBridge() {

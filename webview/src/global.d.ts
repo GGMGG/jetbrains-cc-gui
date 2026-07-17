@@ -7,6 +7,9 @@ interface Window {
    */
   sendToJava?: (message: string) => void;
 
+  /** Re-rasterize the JCEF surface after its IntelliJ content tab is activated. */
+  onTabActivated?: () => void;
+
   /**
    * Get clipboard file path from Java
    */
