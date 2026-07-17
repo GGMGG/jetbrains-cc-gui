@@ -13,6 +13,7 @@ import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.SessionCallbackAdapter;
 import com.github.claudecodegui.session.SessionLifecycleManager;
+import com.github.claudecodegui.session.SessionState;
 import com.github.claudecodegui.session.StreamMessageCoalescer;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.settings.TabStateService;
@@ -373,6 +374,31 @@ public class ClaudeChatWindow {
 
     public ClaudeSession getSession() {
         return session;
+    }
+
+    /**
+     * Copies provider-specific preferences into a newly-created tab without
+     * carrying over the source tab's conversation or runtime channel.
+     */
+    public void inheritSessionPreferencesFrom(ClaudeChatWindow sourceWindow) {
+        if (sourceWindow == null || sourceWindow.session == null || session == null) {
+            return;
+        }
+
+        ClaudeSession sourceSession = sourceWindow.session;
+        copySessionPreferences(sourceSession.getState(), session.getState());
+        if (handlerContext != null) {
+            handlerContext.setCurrentProvider(sourceSession.getProvider());
+            handlerContext.setCurrentModel(sourceSession.getModel());
+        }
+        persistTabSessionState();
+    }
+
+    static void copySessionPreferences(SessionState source, SessionState target) {
+        target.setProvider(source.getProvider());
+        target.setModel(source.getModel());
+        target.setPermissionMode(source.getPermissionMode());
+        target.setReasoningEffort(source.getReasoningEffort());
     }
 
     public SessionLifecycleManager getSessionLifecycleManager() {
