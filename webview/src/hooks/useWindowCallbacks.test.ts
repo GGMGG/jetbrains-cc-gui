@@ -370,6 +370,42 @@ describe('useWindowCallbacks integration', () => {
     expect(opts.setMessages).toHaveBeenCalled();
   });
 
+  it('appends history batches while keeping the transition barrier active', () => {
+    const { opts, buffer } = createOptsWithMessages([]);
+    renderHook(() => useWindowCallbacks(opts));
+    window.__sessionTransitioning = true;
+
+    act(() => window.appendHistoryMessages!(JSON.stringify([
+      { type: 'user', content: 'first' },
+      { type: 'assistant', content: 'answer' },
+    ])));
+    act(() => window.appendHistoryMessages!(JSON.stringify([
+      { type: 'user', content: 'second' },
+    ])));
+
+    expect(buffer.current.map((message) => message.content)).toEqual(['first', 'answer', 'second']);
+    expect(window.__sessionTransitioning).toBe(true);
+  });
+
+  it('reassembles an oversized history batch from bounded bridge chunks', () => {
+    const { opts, buffer } = createOptsWithMessages([]);
+    renderHook(() => useWindowCallbacks(opts));
+    const payload = JSON.stringify([
+      { type: 'user', content: 'large history message' },
+      { type: 'assistant', content: 'large history answer' },
+    ]);
+    const midpoint = Math.floor(payload.length / 2);
+
+    act(() => window.appendHistoryMessageChunk!(payload.slice(0, midpoint), 'transfer-1', false));
+    expect(buffer.current).toEqual([]);
+
+    act(() => window.appendHistoryMessageChunk!(payload.slice(midpoint), 'transfer-1', 'true'));
+    expect(buffer.current.map((message) => message.content)).toEqual([
+      'large history message',
+      'large history answer',
+    ]);
+  });
+
   it('patchMessageUuid updates the latest unresolved user message using raw text fallback', () => {
     const opts = createOptions({
       extractRawBlocks: (raw) => {

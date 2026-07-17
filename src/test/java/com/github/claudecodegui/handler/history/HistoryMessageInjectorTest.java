@@ -56,6 +56,36 @@ public class HistoryMessageInjectorTest {
     }
 
     @Test
+    public void handleLoadSessionCompletesHistoryLoadWhenProjectPathMissing() {
+        RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(createContext(null));
+        boolean[] callbackInvoked = {false};
+
+        injector.handleLoadSession(
+                "{\"sessionId\":\"hist-codex\",\"provider\":\"codex\"}",
+                "claude",
+                (sessionId, projectPath, provider) -> callbackInvoked[0] = true
+        );
+
+        assertNull(injector.loadedCodexSessionId);
+        assertFalse(callbackInvoked[0]);
+        assertEquals(1, injector.historyLoadCompleteCount);
+    }
+
+    @Test
+    public void handleLoadSessionCompletesHistoryLoadWhenClaudeCallbackMissing() {
+        RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(createContext("D:/project/demo"));
+
+        injector.handleLoadSession(
+                "{\"sessionId\":\"hist-claude\",\"provider\":\"claude\"}",
+                "codex",
+                null
+        );
+
+        assertNull(injector.loadedCodexSessionId);
+        assertEquals(1, injector.historyLoadCompleteCount);
+    }
+
+    @Test
     public void convertCodexMessagesDeduplicatesDualRecordedUserMessage() {
         JsonArray messages = new JsonArray();
         messages.add(responseItemUserMessage("2026-04-30T09:40:26.701Z", "hello"));
@@ -191,6 +221,119 @@ public class HistoryMessageInjectorTest {
         assertEquals("只保留用户输入", contentBlocks.get(0).getAsJsonObject().get("text").getAsString());
     }
 
+    @Test
+    public void retainsThirtyCompleteUserTurnsWithAssistantAndToolMessages() {
+        List<JsonObject> messages = new java.util.ArrayList<>();
+        for (int i = 0; i < 35; i++) {
+            messages.add(frontendMessage("user", "user-" + i, "text"));
+            messages.add(frontendMessage("assistant", "assistant-" + i, "text"));
+            messages.add(frontendMessage("assistant", "tool-" + i, "tool_use"));
+            messages.add(frontendMessage("user", "[tool_result]", "tool_result"));
+        }
+
+        List<JsonObject> result = HistoryMessageInjector.retainRecentUserTurns(messages, 30);
+
+        assertEquals(120, result.size());
+        assertEquals("user-5", result.get(0).get("content").getAsString());
+        assertEquals("[tool_result]", result.get(result.size() - 1).get("content").getAsString());
+    }
+
+    @Test
+    public void toolResultsDoNotCountAsUserTurns() {
+        List<JsonObject> messages = new java.util.ArrayList<>();
+        messages.add(frontendMessage("user", "old-user", "text"));
+        for (int i = 0; i < 40; i++) {
+            messages.add(frontendMessage("user", "[tool_result]", "tool_result"));
+        }
+        for (int i = 0; i < 30; i++) {
+            messages.add(frontendMessage("user", "recent-user-" + i, "text"));
+            messages.add(frontendMessage("assistant", "reply-" + i, "text"));
+        }
+
+        List<JsonObject> result = HistoryMessageInjector.retainRecentUserTurns(messages, 30);
+
+        assertEquals(60, result.size());
+        assertEquals("recent-user-0", result.get(0).get("content").getAsString());
+        assertEquals("reply-29", result.get(result.size() - 1).get("content").getAsString());
+    }
+
+    @Test
+    public void partitionsHistoryByMessageCountAndTargetPayloadSize() {
+        List<JsonObject> messages = new java.util.ArrayList<>();
+        for (int i = 0; i < 120; i++) {
+            messages.add(frontendMessage(
+                    i % 2 == 0 ? "user" : "assistant",
+                    "message-" + i + "-" + "x".repeat(4000),
+                    "text"));
+        }
+
+        List<List<JsonObject>> batches = HistoryMessageInjector.partitionHistoryMessages(messages);
+
+        assertTrue(batches.size() > 2);
+        assertEquals(120, batches.stream().mapToInt(List::size).sum());
+        for (List<JsonObject> batch : batches) {
+            assertTrue(batch.size() <= HistoryMessageInjector.HISTORY_BATCH_MESSAGE_LIMIT);
+            assertTrue(com.github.claudecodegui.util.JsUtils.escapeJs(
+                    new com.google.gson.Gson().toJson(batch)).length()
+                    <= HistoryMessageInjector.HISTORY_BATCH_TARGET_CHAR_LIMIT);
+        }
+    }
+
+    @Test
+    public void oversizedSingleMessageIsNotDroppedByPartitioning() {
+        JsonObject oversized = frontendMessage(
+                "user",
+                "x".repeat(HistoryMessageInjector.HISTORY_BATCH_TARGET_CHAR_LIMIT + 1),
+                "text");
+
+        List<List<JsonObject>> batches = HistoryMessageInjector.partitionHistoryMessages(List.of(oversized));
+
+        assertEquals(1, batches.size());
+        assertEquals(1, batches.get(0).size());
+        assertEquals(oversized, batches.get(0).get(0));
+
+        String payload = new com.google.gson.Gson().toJson(batches.get(0));
+        List<String> chunks = HistoryMessageInjector.splitHistoryPayload(payload);
+        assertTrue(chunks.size() > 1);
+        assertEquals(payload, String.join("", chunks));
+        for (String chunk : chunks) {
+            assertTrue(com.github.claudecodegui.util.JsUtils.escapeJs(chunk).length()
+                    <= HistoryMessageInjector.HISTORY_BATCH_TARGET_CHAR_LIMIT);
+        }
+    }
+
+    @Test
+    public void payloadChunksPreserveUnicodeAndStayWithinEscapedLimit() {
+        String payload = ("\u2028😃</script>'\"\\").repeat(20_000);
+
+        List<String> chunks = HistoryMessageInjector.splitHistoryPayload(payload);
+
+        assertTrue(chunks.size() > 1);
+        assertEquals(payload, String.join("", chunks));
+        for (String chunk : chunks) {
+            assertTrue(com.github.claudecodegui.util.JsUtils.escapeJs(chunk).length()
+                    <= HistoryMessageInjector.HISTORY_BATCH_TARGET_CHAR_LIMIT);
+            if (!chunk.isEmpty()) {
+                assertFalse(Character.isHighSurrogate(chunk.charAt(chunk.length() - 1)));
+                assertFalse(Character.isLowSurrogate(chunk.charAt(0)));
+            }
+        }
+    }
+
+    private static JsonObject frontendMessage(String type, String content, String blockType) {
+        JsonObject message = new JsonObject();
+        message.addProperty("type", type);
+        message.addProperty("content", content);
+        JsonObject raw = new JsonObject();
+        JsonArray blocks = new JsonArray();
+        JsonObject block = new JsonObject();
+        block.addProperty("type", blockType);
+        blocks.add(block);
+        raw.add("content", blocks);
+        message.add("raw", raw);
+        return message;
+    }
+
     private static JsonObject responseItemUserMessage(String timestamp, String text) {
         return responseItemMessage(timestamp, "user", "input_text", text);
     }
@@ -282,6 +425,7 @@ public class HistoryMessageInjectorTest {
 
     private static final class RecordingHistoryMessageInjector extends HistoryMessageInjector {
         private String loadedCodexSessionId;
+        private int historyLoadCompleteCount;
 
         private RecordingHistoryMessageInjector(HandlerContext context) {
             super(context);
@@ -290,6 +434,11 @@ public class HistoryMessageInjectorTest {
         @Override
         void loadCodexSession(String sessionId) {
             this.loadedCodexSessionId = sessionId;
+        }
+
+        @Override
+        void notifyHistoryLoadComplete() {
+            historyLoadCompleteCount++;
         }
     }
 }
