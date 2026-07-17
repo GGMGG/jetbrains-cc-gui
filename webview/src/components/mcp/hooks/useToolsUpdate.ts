@@ -90,8 +90,8 @@ export function useToolsUpdate({
         }));
 
         onLog(
-          `工具列表加载完成: 0 个工具`,
-          'success',
+          `工具列表为空，服务器已连接但没有可用工具`,
+          'warning',
           undefined,
           serverName || serverId
         );

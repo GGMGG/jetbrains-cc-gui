@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import type { Dispatch, SetStateAction } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CacheKeys, ServerToolsState } from '../types';
@@ -54,5 +54,35 @@ describe('useToolsUpdate provider callback isolation', () => {
     firstHook.unmount();
 
     expect(window.updateMcpServerTools).toBe(replacement);
+  });
+});
+
+describe('useToolsUpdate empty tool result', () => {
+  it('logs a connected server with no tools as a warning', () => {
+    const setServerTools = vi.fn() as unknown as Dispatch<SetStateAction<ServerToolsState>>;
+    const onLog = vi.fn();
+    const hook = renderHook(() => useToolsUpdate({
+      isCodexMode: false,
+      cacheKeys,
+      setServerTools,
+      onLog,
+    }));
+
+    act(() => {
+      window.updateMcpServerTools?.(JSON.stringify({
+        serverId: 'empty-server',
+        serverName: 'Empty server',
+        tools: [],
+        error: null,
+      }));
+    });
+
+    expect(onLog).toHaveBeenCalledWith(
+      expect.any(String),
+      'warning',
+      undefined,
+      'Empty server',
+    );
+    hook.unmount();
   });
 });
