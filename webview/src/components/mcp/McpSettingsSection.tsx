@@ -147,6 +147,7 @@ export function McpSettingsSection({ currentProvider = 'claude' }: McpSettingsSe
 
   // Use tools list update hook
   useToolsUpdate({
+    isCodexMode,
     cacheKeys,
     setServerTools,
     onLog: addLog,
