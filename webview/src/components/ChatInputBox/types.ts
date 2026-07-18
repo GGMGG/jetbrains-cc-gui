@@ -375,6 +375,11 @@ export const CODEX_MODELS: ModelInfo[] = [
     description: 'Smaller frontier agentic coding model.',
   },
   {
+    id: 'gpt-5.2',
+    label: 'GPT-5.2',
+    description: 'Optimized for professional work and long-running agents.',
+  },
+  {
     id: 'gpt-5.3-codex-spark',
     label: 'GPT-5.3-Codex-Spark',
     description: 'Ultra-fast coding model.',

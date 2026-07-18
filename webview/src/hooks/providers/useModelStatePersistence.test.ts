@@ -95,4 +95,17 @@ describe('useModelStatePersistence — boot sync does not clobber the persisted 
     expect(bridgeEventsFor('set_provider')).toHaveLength(1);
     expect(bridgeEventsFor('set_mode')).toHaveLength(0);
   });
+
+  it('restores the Codex ultra reasoning effort from localStorage', () => {
+    localStorage.setItem('model-selection-state', JSON.stringify({
+      provider: 'codex',
+      codexModel: 'gpt-5.6-sol',
+      reasoningEffort: 'ultra',
+    }));
+
+    const options = makeOptions({ currentProvider: 'codex' });
+    renderHook(() => useModelStatePersistence(options));
+
+    expect(options.setReasoningEffort).toHaveBeenCalledWith('ultra');
+  });
 });
