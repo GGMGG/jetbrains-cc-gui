@@ -1667,6 +1667,18 @@
       }
     },
     "codex": {
+      "gpt56sol": {
+        "label": "GPT-5.6 Sol",
+        "description": "Highest-capability GPT-5.6 variant for demanding agentic work."
+      },
+      "gpt56terra": {
+        "label": "GPT-5.6 Terra",
+        "description": "Balanced GPT-5.6 variant for general coding and agentic tasks."
+      },
+      "gpt56luna": {
+        "label": "GPT-5.6 Luna",
+        "description": "Cost-efficient GPT-5.6 variant for lighter agentic tasks."
+      },
       "gpt53codex": {
         "label": "GPT-5.3-Codex",
         "description": "Latest frontier agentic coding model with enhanced capabilities."
@@ -1860,6 +1872,10 @@
     "max": {
       "label": "Max",
       "description": "Maximum reasoning depth"
+    },
+    "ultra": {
+      "label": "Ultra",
+      "description": "Ultra-high reasoning for the hardest tasks"
     }
   },
   "errorBoundary": {

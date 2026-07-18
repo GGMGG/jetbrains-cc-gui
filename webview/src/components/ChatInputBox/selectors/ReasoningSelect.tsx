@@ -33,7 +33,7 @@ interface ReasoningSelectProps {
  * ReasoningSelect - Reasoning Effort Selector
  * Controls the depth of reasoning for AI models.
  * Visibility and available levels depend on the selected model:
- * - Codex: low/medium/high/xhigh
+ * - Codex: low/medium/high/xhigh/max/ultra
  * - Claude Opus 4.8: low/medium/high/xhigh/max
  * - Claude Sonnet 5, Opus 4.6, and Sonnet 4.6: low/medium/high/max
  * - Claude Haiku 4.5 and legacy models: hidden (no adaptive thinking support)
@@ -55,16 +55,19 @@ export const ReasoningSelect = ({ value, onChange, disabled, selectedModel, curr
   // Build the list of available levels for the current model
   const availableLevels = REASONING_LEVELS.filter(level => {
     if (currentProvider !== 'claude') {
-      return level.id !== 'max';
+      return true;
     }
     if (!selectedModel) {
-      return true;
+      return level.id !== 'ultra';
     }
     if (level.id === 'xhigh') {
       return XHIGH_EFFORT_CLAUDE_MODELS.has(selectedModel);
     }
     if (level.id === 'max') {
       return MAX_EFFORT_CLAUDE_MODELS.has(selectedModel);
+    }
+    if (level.id === 'ultra') {
+      return false;
     }
     return true;
   });
