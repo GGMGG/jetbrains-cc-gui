@@ -38,6 +38,7 @@ public class WebviewWatchdogTest {
         assertTrue(WebviewWatchdog.shouldMonitor(true, true, true, true));
         assertFalse(WebviewWatchdog.shouldMonitor(true, false, true, true));
         assertFalse(WebviewWatchdog.shouldMonitor(true, true, false, true));
-        assertFalse(WebviewWatchdog.shouldMonitor(true, true, true, false));
+        // Editor focus is independent from Webview render health.
+        assertTrue(WebviewWatchdog.shouldMonitor(true, true, true, false));
     }
 }
