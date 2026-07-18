@@ -86,6 +86,8 @@ public class ChatWindowDelegate {
         String getOriginalTabName();
         void setOriginalTabName(String name);
         String getSessionId();
+        boolean isActiveContent();
+        void activateContent();
         HandlerContext getHandlerContext();
         void setHandlerContext(HandlerContext ctx);
         void setMessageDispatcher(MessageDispatcher d);
@@ -243,7 +245,22 @@ public class ChatWindowDelegate {
             }
         };
 
-        HandlerContext handlerContext = new HandlerContext(project, claudeSDKBridge, codexSDKBridge, settingsService, jsCallback);
+        HandlerContext handlerContext = new HandlerContext(
+                project,
+                claudeSDKBridge,
+                codexSDKBridge,
+                settingsService,
+                jsCallback,
+                host::isActiveContent,
+                () -> {
+                    String originalTabName = host.getOriginalTabName();
+                    if (originalTabName != null && !originalTabName.isBlank()) {
+                        return originalTabName;
+                    }
+                    Content content = host.getParentContent();
+                    return content == null ? null : content.getDisplayName();
+                });
+        handlerContext.setContentActivator(host::activateContent);
         handlerContext.setSession(host.getSession());
         host.setHandlerContext(handlerContext);
 
