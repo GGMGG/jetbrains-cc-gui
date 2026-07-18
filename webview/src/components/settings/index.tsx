@@ -637,6 +637,7 @@ const SettingsView = ({
           {/* Prompts */}
           <div style={currentTab === 'prompts' ? BLOCK_STYLE : NONE_STYLE}>
             <PromptSection
+              currentProvider={currentProvider}
               onSuccess={(msg) => addToast(msg, 'success')}
             />
           </div>
