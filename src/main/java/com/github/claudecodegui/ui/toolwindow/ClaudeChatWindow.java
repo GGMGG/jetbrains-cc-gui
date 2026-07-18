@@ -451,7 +451,7 @@ public class ClaudeChatWindow {
     }
 
     public void loadRestoredHistoryIfNeeded() {
-        if (session == null) {
+        if (session == null || !frontendReady) {
             return;
         }
 
@@ -461,7 +461,7 @@ public class ClaudeChatWindow {
     }
 
     private void loadRestoredHistoryIfNeeded(TabStateService.TabSessionState savedState) {
-        if (!TabSessionRestorePolicy.shouldLoadHistory(savedState) || session == null) {
+        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady) || session == null) {
             return;
         }
         if (!restoredHistoryLoadStarted.compareAndSet(false, true)) {
@@ -502,6 +502,19 @@ public class ClaudeChatWindow {
         if (snippet != null) {
             addCodeSnippet(snippet);
         }
+    }
+
+    private void updateFrontendReadyState(boolean ready) {
+        frontendReady = ready;
+        if (!ready) {
+            return;
+        }
+        flushPendingCodeSnippet();
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (!disposed) {
+                loadRestoredHistoryIfNeeded();
+            }
+        });
     }
 
     public void updateTabStatus(ChatWindowDelegate.TabAnswerStatus status) {
@@ -1167,10 +1180,7 @@ public class ClaudeChatWindow {
 
             @Override
             public void setFrontendReady(boolean ready) {
-                frontendReady = ready;
-                if (ready) {
-                    flushPendingCodeSnippet();
-                }
+                updateFrontendReadyState(ready);
             }
         };
     }
@@ -1299,10 +1309,7 @@ public class ClaudeChatWindow {
 
             @Override
             public void setFrontendReady(boolean ready) {
-                frontendReady = ready;
-                if (ready) {
-                    flushPendingCodeSnippet();
-                }
+                updateFrontendReadyState(ready);
             }
 
             @Override
