@@ -7,6 +7,7 @@ import com.github.claudecodegui.handler.AgentHandler;
 import com.github.claudecodegui.handler.ClipboardHandler;
 import com.github.claudecodegui.handler.ContextHandler;
 import com.github.claudecodegui.handler.CodexMcpServerHandler;
+import com.github.claudecodegui.handler.CodexPetHandler;
 import com.github.claudecodegui.handler.DependencyHandler;
 import com.github.claudecodegui.handler.DiffHandler;
 import com.github.claudecodegui.handler.core.HandlerContext;
@@ -255,6 +256,7 @@ public class ChatWindowDelegate {
         messageDispatcher.registerHandler(new McpMarketplaceHandler(handlerContext));
         messageDispatcher.registerHandler(new McpServerImportHandler(handlerContext));
         messageDispatcher.registerHandler(new CodexMcpServerHandler(handlerContext, settingsService.getCodexMcpServerManager()));
+        messageDispatcher.registerHandler(new CodexPetHandler(handlerContext));
         messageDispatcher.registerHandler(new SkillHandler(handlerContext));
         messageDispatcher.registerHandler(new FileHandler(handlerContext));
         messageDispatcher.registerHandler(new SettingsHandler(handlerContext));
