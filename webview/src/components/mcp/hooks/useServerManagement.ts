@@ -114,6 +114,14 @@ export function useServerManagement({
 
     sendToJava(`toggle_${messagePrefix}mcp_server`, updatedServer);
 
+    // A toggle invalidates the previous tool result. This forces a fresh
+    // tools/list request after the server becomes connected again.
+    setServerTools(prev => {
+      const next = { ...prev };
+      delete next[server.id];
+      return next;
+    });
+
     // Show toast notification
     onToast(
       enabled

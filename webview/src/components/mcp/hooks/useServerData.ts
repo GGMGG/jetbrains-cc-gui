@@ -236,6 +236,29 @@ export function useServerData({
           statusMap.set(status.name, status);
         });
         setServerStatus(statusMap);
+        const terminalDisconnectStatuses = new Set<McpServerStatusInfo['status']>([
+          'failed',
+          'needs-auth',
+          'disabled',
+        ]);
+        const disconnectedNames = new Set(
+          statusList
+            .filter((status) => terminalDisconnectStatuses.has(status.status))
+            .map((status) => status.name.toLowerCase()),
+        );
+        if (disconnectedNames.size > 0) {
+          setServerTools((previous) => {
+            const next = { ...previous };
+            servers.forEach((server) => {
+              const serverId = server.id.toLowerCase();
+              const serverName = (server.name || '').toLowerCase();
+              if (disconnectedNames.has(serverId) || (serverName && disconnectedNames.has(serverName))) {
+                delete next[server.id];
+              }
+            });
+            return next;
+          });
+        }
         setStatusLoading(false);
         // Persist status to cache
         writeCache(cacheKeys.STATUS, statusList);
@@ -282,7 +305,7 @@ export function useServerData({
         window.updateMcpServerStatus = undefined;
       }
     };
-  }, [isCodexMode, t, onLog]);
+  }, [isCodexMode, servers, t, onLog]);
 
   return {
     // State
