@@ -130,6 +130,7 @@ export function registerMessageCallbacks(
   let pendingUpdateJson: string | null = null;
   let pendingUpdateRaf: number | null = null;
   let pendingUpdateSequence: number | null = null;
+  const pendingHistoryChunks = new Map<string, string[]>();
 
   // Expose a cancellation function so onStreamEnd can cancel stale rAF-deferred
   // updateMessages calls, preventing them from overwriting the final state after
@@ -599,6 +600,7 @@ export function registerMessageCallbacks(
       window.__pendingUpdateSequence = null;
     }
     window.__deniedToolIds?.clear();
+    pendingHistoryChunks.clear();
     resetTransientUiState();
     closeContextUsageDialog();
     setMessages([]);
@@ -636,6 +638,32 @@ export function registerMessageCallbacks(
   window.addHistoryMessage = (message: ClaudeMessage) => {
     if (window.__sessionTransitioning) return;
     setMessages((prev) => [...prev, message]);
+  };
+
+  const appendHistoryMessages = (json: string) => {
+    try {
+      const batch = JSON.parse(json) as ClaudeMessage[];
+      if (!Array.isArray(batch) || batch.length === 0) return;
+      // History replay is the one trusted producer allowed through the session
+      // transition barrier. The barrier remains active until historyLoadComplete
+      // so stale updateMessages callbacks cannot interleave with these batches.
+      setMessages((prev) => [...prev, ...batch]);
+    } catch (error) {
+      console.error('[Frontend] Failed to parse history batch:', error);
+    }
+  };
+  window.appendHistoryMessages = appendHistoryMessages;
+
+  window.appendHistoryMessageChunk = (chunk, transferId, isFinal) => {
+    if (!transferId) return;
+    const chunks = pendingHistoryChunks.get(transferId) ?? [];
+    chunks.push(chunk);
+    if (!isTruthy(isFinal)) {
+      pendingHistoryChunks.set(transferId, chunks);
+      return;
+    }
+    pendingHistoryChunks.delete(transferId);
+    appendHistoryMessages(chunks.join(''));
   };
 
   // History load complete callback — triggers Markdown re-rendering

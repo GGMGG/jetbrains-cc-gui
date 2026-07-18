@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -29,6 +30,9 @@ import java.util.concurrent.CompletableFuture;
 public class HistoryMessageInjector {
 
     private static final Logger LOG = Logger.getInstance(HistoryMessageInjector.class);
+    static final int HISTORY_USER_TURN_LIMIT = 30;
+    static final int HISTORY_BATCH_MESSAGE_LIMIT = 50;
+    static final int HISTORY_BATCH_TARGET_CHAR_LIMIT = 180_000;
 
     private final HandlerContext context;
 
@@ -62,6 +66,7 @@ public class HistoryMessageInjector {
         String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
         if (projectPath == null) {
             LOG.warn("[HistoryHandler] Project base path is null");
+            notifyHistoryLoadComplete();
             return;
         }
         LOG.info("[HistoryHandler] Loading history session: " + resolvedSessionId
@@ -76,6 +81,7 @@ public class HistoryMessageInjector {
                 sessionLoadCallback.onLoadSession(resolvedSessionId, projectPath, provider);
             } else {
                 LOG.warn("[HistoryHandler] WARNING: No session load callback set");
+                notifyHistoryLoadComplete();
             }
         }
     }
@@ -102,23 +108,14 @@ public class HistoryMessageInjector {
                 String cwd = sessionMeta[1];
 
                 context.getSession().setSessionInfo(threadIdToUse, cwd);
-                restoreCodexMessagesToSessionState(context.getSession().getState(), messages);
+                List<JsonObject> frontendMessages = retainRecentUserTurns(
+                        convertCodexMessagesToFrontendBatch(messages), HISTORY_USER_TURN_LIMIT);
+                restoreCodexFrontendMessagesToSessionState(context.getSession().getState(), frontendMessages);
                 LOG.info("[HistoryHandler] 恢复 Codex 会话状态: threadId=" + threadIdToUse + " (from sessionId=" + sessionId + "), cwd=" + cwd);
 
-                List<JsonObject> frontendMessages = convertCodexMessagesToFrontendBatch(messages);
                 injectBatchToFrontend(frontendMessages);
 
-                // Notify frontend that history messages have finished loading, trigger Markdown re-rendering
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    String jsCode = "if (window.historyLoadComplete) { " +
-                                            "  try { " +
-                                            "    window.historyLoadComplete(); " +
-                                            "  } catch(e) { " +
-                                            "    console.error('[HistoryHandler] historyLoadComplete callback failed:', e); " +
-                                            "  } " +
-                                            "}";
-                    context.executeJavaScriptOnEDT(jsCode);
-                });
+                notifyHistoryLoadComplete();
 
                 LOG.info("[HistoryHandler] ========== Codex 会话加载完成 ==========");
 
@@ -132,7 +129,21 @@ public class HistoryMessageInjector {
                                             "}";
                     context.executeJavaScriptOnEDT(jsCode);
                 });
+                notifyHistoryLoadComplete();
             }
+        });
+    }
+
+    void notifyHistoryLoadComplete() {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String jsCode = "if (window.historyLoadComplete) { " +
+                                    "  try { " +
+                                    "    window.historyLoadComplete(); " +
+                                    "  } catch(e) { " +
+                                    "    console.error('[HistoryHandler] historyLoadComplete callback failed:', e); " +
+                                    "  } " +
+                                    "}";
+            context.executeJavaScriptOnEDT(jsCode);
         });
     }
 
@@ -261,14 +272,63 @@ public class HistoryMessageInjector {
      * 后端内存态与前端显示态使用同一份消息基线。
      */
     static void restoreCodexMessagesToSessionState(SessionState state, JsonArray messages) {
+        restoreCodexFrontendMessagesToSessionState(
+                state, convertCodexMessagesToFrontendBatch(messages));
+    }
+
+    private static void restoreCodexFrontendMessagesToSessionState(SessionState state,
+                                                                    List<JsonObject> frontendMessages) {
         state.clearMessages();
-        List<JsonObject> frontendMessages = convertCodexMessagesToFrontendBatch(messages);
         for (JsonObject frontendMsg : frontendMessages) {
             ClaudeSession.Message restoredMessage = toSessionMessage(frontendMsg);
             if (restoredMessage != null) {
                 state.addMessage(restoredMessage);
             }
         }
+    }
+
+    static List<JsonObject> retainRecentUserTurns(List<JsonObject> messages, int maxUserTurns) {
+        if (messages == null || messages.isEmpty() || maxUserTurns <= 0) {
+            return new ArrayList<>();
+        }
+
+        int userTurns = 0;
+        int startIndex = 0;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (!isHumanUserMessage(messages.get(i))) {
+                continue;
+            }
+            userTurns++;
+            if (userTurns == maxUserTurns) {
+                startIndex = i;
+                break;
+            }
+        }
+        return new ArrayList<>(messages.subList(startIndex, messages.size()));
+    }
+
+    private static boolean isHumanUserMessage(JsonObject message) {
+        if (!isUserMessage(message)) {
+            return false;
+        }
+        if (!message.has("raw") || !message.get("raw").isJsonObject()) {
+            return !"[tool_result]".equals(getStringProperty(message, "content"));
+        }
+
+        JsonObject raw = message.getAsJsonObject("raw");
+        if (!raw.has("content") || !raw.get("content").isJsonArray()) {
+            return !"[tool_result]".equals(getStringProperty(message, "content"));
+        }
+        for (JsonElement blockElement : raw.getAsJsonArray("content")) {
+            if (!blockElement.isJsonObject()) {
+                continue;
+            }
+            String blockType = getStringProperty(blockElement.getAsJsonObject(), "type");
+            if ("text".equals(blockType) || "image".equals(blockType)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -491,18 +551,124 @@ public class HistoryMessageInjector {
     }
 
     /**
-     * 批量注入前端消息，复用 updateMessages 链路，避免长历史逐条追加导致最新消息显示滞后。
+     * 分批注入前端消息，避免长历史单次传输阻塞 WebView。
      */
     private void injectBatchToFrontend(List<JsonObject> frontendMessages) {
-        String messagesJson = new Gson().toJson(frontendMessages);
-        String escapedMessagesJson = JsUtils.escapeJs(messagesJson);
+        // Keep the session-transition barrier active until historyLoadComplete.
+        // Otherwise stale callbacks from the previous session can be inserted
+        // between these asynchronous bridge batches.
+        context.executeJavaScriptOnEDT("if (window.clearMessages) { window.clearMessages(); }");
 
-        ApplicationManager.getApplication().invokeLater(() -> {
-            String jsCode = "if (window.clearMessages) { window.clearMessages(); } " +
-                                    "window.__sessionTransitioning = false; " +
-                                    "window.__sessionTransitionToken = null; " +
-                                    "if (window.updateMessages) { window.updateMessages('" + escapedMessagesJson + "'); }";
-            context.executeJavaScriptOnEDT(jsCode);
-        });
+        Gson gson = new Gson();
+        int batchCount = 0;
+        int largestBatchChars = 0;
+        for (List<JsonObject> batch : partitionHistoryMessages(frontendMessages)) {
+            largestBatchChars = Math.max(largestBatchChars, sendHistoryBatch(gson, batch));
+            batchCount++;
+        }
+        LOG.info("[HistoryHandler] Injected Codex history in " + batchCount
+                + " batches, messages=" + frontendMessages.size()
+                + ", largestBatchChars=" + largestBatchChars);
+    }
+
+    static List<List<JsonObject>> partitionHistoryMessages(List<JsonObject> frontendMessages) {
+        List<List<JsonObject>> batches = new ArrayList<>();
+        if (frontendMessages == null || frontendMessages.isEmpty()) {
+            return batches;
+        }
+
+        Gson gson = new Gson();
+        List<JsonObject> batch = new ArrayList<>(HISTORY_BATCH_MESSAGE_LIMIT);
+        int estimatedChars = 2;
+        for (JsonObject message : frontendMessages) {
+            int messageChars = JsUtils.escapeJs(gson.toJson(message)).length() + 1;
+            if (!batch.isEmpty() && (batch.size() >= HISTORY_BATCH_MESSAGE_LIMIT
+                    || estimatedChars + messageChars > HISTORY_BATCH_TARGET_CHAR_LIMIT)) {
+                batches.add(List.copyOf(batch));
+                batch = new ArrayList<>(HISTORY_BATCH_MESSAGE_LIMIT);
+                estimatedChars = 2;
+            }
+            batch.add(message);
+            estimatedChars += messageChars;
+        }
+        if (!batch.isEmpty()) {
+            batches.add(List.copyOf(batch));
+        }
+        return batches;
+    }
+
+    private int sendHistoryBatch(Gson gson, List<JsonObject> batch) {
+        String batchJson = gson.toJson(batch);
+        String escapedBatch = JsUtils.escapeJs(batchJson);
+        if (escapedBatch.length() <= HISTORY_BATCH_TARGET_CHAR_LIMIT) {
+            context.callJavaScript("appendHistoryMessages", escapedBatch);
+            return escapedBatch.length();
+        }
+
+        String transferId = UUID.randomUUID().toString();
+        int largestChunkChars = 0;
+        List<String> chunks = splitHistoryPayload(batchJson);
+        for (int i = 0; i < chunks.size(); i++) {
+            String escapedChunk = JsUtils.escapeJs(chunks.get(i));
+            context.callJavaScript(
+                    "appendHistoryMessageChunk",
+                    escapedChunk,
+                    transferId,
+                    String.valueOf(i == chunks.size() - 1));
+            largestChunkChars = Math.max(largestChunkChars, escapedChunk.length());
+        }
+        return largestChunkChars;
+    }
+
+    static List<String> splitHistoryPayload(String payload) {
+        List<String> chunks = new ArrayList<>();
+        if (payload == null || payload.isEmpty()) {
+            return chunks;
+        }
+
+        StringBuilder current = new StringBuilder(HISTORY_BATCH_TARGET_CHAR_LIMIT);
+        int escapedChars = 0;
+        for (int i = 0; i < payload.length(); i++) {
+            char value = payload.charAt(i);
+            int charCount = escapedCharCount(current, value);
+            boolean surrogatePair = Character.isHighSurrogate(value)
+                    && i + 1 < payload.length()
+                    && Character.isLowSurrogate(payload.charAt(i + 1));
+            if (surrogatePair) {
+                charCount += 1;
+            }
+
+            if (escapedChars + charCount > HISTORY_BATCH_TARGET_CHAR_LIMIT && current.length() > 0) {
+                chunks.add(current.toString());
+                current.setLength(0);
+                escapedChars = 0;
+                charCount = escapedCharCount(current, value) + (surrogatePair ? 1 : 0);
+            }
+
+            current.append(value);
+            if (surrogatePair) {
+                current.append(payload.charAt(++i));
+            }
+            escapedChars += charCount;
+        }
+        if (current.length() > 0) {
+            chunks.add(current.toString());
+        }
+        return chunks;
+    }
+
+    private static int escapedCharCount(StringBuilder current, char value) {
+        if (value == '\u0085' || value == '\u2028' || value == '\u2029') {
+            return 6;
+        }
+        if (value == '\\' || value == '\'' || value == '"' || value == '`'
+                || value == '\n' || value == '\r' || value == '\t'
+                || value == '\b' || value == '\f' || value == '\0') {
+            return 2;
+        }
+        if (value == '/' && current.length() > 0 && current.charAt(current.length() - 1) == '<') {
+            return 2;
+        }
+        return 1;
     }
 }
