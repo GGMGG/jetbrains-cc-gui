@@ -29,6 +29,7 @@ import java.util.regex.Pattern;
 public class CodexSettingsManager {
     private static final Logger LOG = Logger.getInstance(CodexSettingsManager.class);
     private static final String MCP_SERVERS_KEY = "mcp_servers";
+    private static final String MODEL_ALIASES_KEY = "model_aliases";
 
     // Pattern to validate TOML bare keys (letters, digits, hyphens, underscores)
     private static final Pattern TOML_KEY_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]+$");
@@ -403,6 +404,34 @@ public class CodexSettingsManager {
         }
 
         return result;
+    }
+
+    /** Resolve a UI model id using the optional [model_aliases] table. */
+    public String resolveModelAlias(String selectedModel) {
+        if (selectedModel == null || selectedModel.trim().isEmpty()) {
+            return selectedModel;
+        }
+        try {
+            return resolveModelAlias(selectedModel, readConfigToml());
+        } catch (IOException e) {
+            LOG.warn("[CodexSettingsManager] Failed to read model aliases: " + e.getMessage());
+            return selectedModel;
+        }
+    }
+
+    static String resolveModelAlias(String selectedModel, Map<String, Object> configToml) {
+        if (selectedModel == null || selectedModel.trim().isEmpty() || configToml == null) {
+            return selectedModel;
+        }
+        Object aliasesObject = configToml.get(MODEL_ALIASES_KEY);
+        if (!(aliasesObject instanceof Map)) {
+            return selectedModel;
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> aliases = (Map<String, Object>) aliasesObject;
+        Object alias = aliases.get(selectedModel.trim());
+        return alias instanceof String && !((String) alias).trim().isEmpty()
+                ? ((String) alias).trim() : selectedModel;
     }
 
     // ==================== TOML Parsing Utilities ====================
