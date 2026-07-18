@@ -1035,12 +1035,12 @@ public final class CodexPetFloatingService
 
     private static Map<String, List<String>> defaultBubbleTemplates() {
         Map<String, List<String>> result = new LinkedHashMap<>();
-        result.put("task_started", List.of("???? {tabTitle}"));
-        result.put("thinking", List.of("???...", "????"));
-        result.put("running", List.of("????...", "?????"));
-        result.put("task_success", List.of("????", "{tabTitle} ???"));
-        result.put("task_error", List.of("?????", "{tabTitle} ???"));
-        result.put("idle", List.of("??"));
+        result.put("task_started", List.of("Task started: {tabTitle}"));
+        result.put("thinking", List.of("Thinking...", "Working through it"));
+        result.put("running", List.of("Running...", "Making progress"));
+        result.put("task_success", List.of("Task complete", "{tabTitle} is done"));
+        result.put("task_error", List.of("Task failed", "{tabTitle} needs attention"));
+        result.put("idle", List.of("Ready"));
         return result;
     }
 
