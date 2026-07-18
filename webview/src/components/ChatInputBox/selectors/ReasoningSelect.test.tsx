@@ -23,6 +23,7 @@ describe('ReasoningSelect', () => {
 
     expect(screen.getByText('XHigh')).toBeTruthy();
     expect(screen.getByText('Max')).toBeTruthy();
+    expect(screen.queryByText('Ultra')).toBeNull();
   });
 
   it('shows max but not xhigh for Claude Sonnet 4.6', () => {
@@ -39,6 +40,7 @@ describe('ReasoningSelect', () => {
 
     expect(screen.queryByText('XHigh')).toBeNull();
     expect(screen.getByText('Max')).toBeTruthy();
+    expect(screen.queryByText('Ultra')).toBeNull();
   });
 
   it('shows max but not xhigh for Claude Sonnet 5', () => {
@@ -55,6 +57,24 @@ describe('ReasoningSelect', () => {
 
     expect(screen.queryByText('XHigh')).toBeNull();
     expect(screen.getByText('Max')).toBeTruthy();
+    expect(screen.queryByText('Ultra')).toBeNull();
+  });
+
+  it('shows max and ultra for Codex models', () => {
+    render(
+      <ReasoningSelect
+        value="high"
+        onChange={vi.fn()}
+        currentProvider="codex"
+        selectedModel="gpt-5.6-sol"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(screen.getByText('XHigh')).toBeTruthy();
+    expect(screen.getByText('Max')).toBeTruthy();
+    expect(screen.getByText('Ultra')).toBeTruthy();
   });
 
   it('resets unavailable effort when selected Claude model changes', () => {

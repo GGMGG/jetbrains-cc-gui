@@ -66,6 +66,9 @@ public class ModelProviderHandlerTest {
 
     @Test
     public void shouldKeepExpectedContextLimitsForVisibleCodexModels() {
+        assertEquals(372_000, ModelProviderHandler.getModelContextLimit("gpt-5.6-sol"));
+        assertEquals(372_000, ModelProviderHandler.getModelContextLimit("gpt-5.6-terra"));
+        assertEquals(372_000, ModelProviderHandler.getModelContextLimit("gpt-5.6-luna"));
         assertEquals(258_000, ModelProviderHandler.getModelContextLimit("gpt-5.3-codex"));
         assertEquals(1_000_000, ModelProviderHandler.getModelContextLimit("gpt-5.4"));
         assertEquals(258_000, ModelProviderHandler.getModelContextLimit("gpt-5.2-codex"));

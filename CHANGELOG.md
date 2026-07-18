@@ -3,6 +3,7 @@
 English:
 
 ✨ Features
+- Add Codex model selector support for the routable GPT-5.6 lineup (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) with `max` / `ultra` reasoning efforts.
 - Add an **MCP Marketplace**: a new "Add from MCP market" entry in the MCP add menu, with switchable sources (built-in presets, the official MCP Registry, the GitHub MCP Registry, the official GitHub org). The selected source is persisted and restored on reopen, responses are disk-cached with stale fallback, and registry entries now render their real package / runtime arguments, environment variables and transport type instead of a bare `uvx <package>` — previously every registry entry mapped to a null name and was silently dropped (by @Miguel0888)
 - Add **Import from GitHub Copilot** for MCP servers: paste a Copilot MCP config, preview it, and save through the same path as a manual add — `requestInit.headers` merged with `headers`, transport type inferred (command → stdio, `/sse` URL → sse, else http), conflicting ids renamed instead of overwritten (by @Miguel0888)
 - Add **custom pricing for custom models**: configure input / output / cache rates for Claude and Codex custom models, persisted to the plugin config and used by usage aggregation. Routed Claude model ids such as `ppio/pa/gpt-5.5` now match history usage recorded under the routed id (`pa/gpt-5.5`), preserving exact-match precedence rather than guessing between candidates (by @EzioX1459)

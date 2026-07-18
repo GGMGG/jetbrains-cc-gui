@@ -345,6 +345,21 @@ export const CLAUDE_MODELS: ModelInfo[] = [
  */
 export const CODEX_MODELS: ModelInfo[] = [
   {
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
+    description: 'Highest-capability GPT-5.6 variant for demanding agentic work.',
+  },
+  {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    description: 'Balanced GPT-5.6 variant for general coding and agentic tasks.',
+  },
+  {
+    id: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
+    description: 'Cost-efficient GPT-5.6 variant for lighter agentic tasks.',
+  },
+  {
     id: 'gpt-5.5',
     label: 'GPT-5.5',
     description: 'Latest frontier model with stronger capabilities.',
@@ -355,29 +370,9 @@ export const CODEX_MODELS: ModelInfo[] = [
     description: 'Latest frontier model with enhanced capabilities.',
   },
   {
-    id: 'gpt-5.2-codex',
-    label: 'GPT-5.2-Codex',
-    description: 'Frontier agentic coding model.',
-  },
-  {
-    id: 'gpt-5.1-codex-max',
-    label: 'GPT-5.1-Codex-Max',
-    description: 'Codex-optimized flagship for deep and fast reasoning.',
-  },
-  {
     id: 'gpt-5.4-mini',
     label: 'GPT-5.4-Mini',
     description: 'Smaller frontier agentic coding model.',
-  },
-  {
-    id: 'gpt-5.3-codex',
-    label: 'GPT-5.3-Codex',
-    description: 'Latest frontier agentic coding model with enhanced capabilities.',
-  },
-  {
-    id: 'gpt-5.3-codex-spark',
-    label: 'GPT-5.3-Codex-Spark',
-    description: 'Ultra-fast coding model.',
   },
   {
     id: 'gpt-5.2',
@@ -385,9 +380,9 @@ export const CODEX_MODELS: ModelInfo[] = [
     description: 'Optimized for professional work and long-running agents.',
   },
   {
-    id: 'gpt-5.1-codex-mini',
-    label: 'GPT-5.1-Codex-Mini',
-    description: 'Optimized for Codex. Cheaper, faster, but less capable.',
+    id: 'gpt-5.3-codex-spark',
+    label: 'GPT-5.3-Codex-Spark',
+    description: 'Ultra-fast coding model.',
   },
 ];
 
@@ -453,9 +448,9 @@ export const MAX_EFFORT_CLAUDE_MODELS = new Set([
  * Reasoning Effort (thinking depth)
  * Controls the depth of reasoning for AI models
  * Claude API values: low, medium, high, xhigh, max
- * Codex API values: low, medium, high, xhigh
+ * Codex API values: low, medium, high, xhigh, max, ultra
  */
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 /**
  * Codex execution speed mode.
@@ -506,6 +501,12 @@ export const REASONING_LEVELS: ReasoningInfo[] = [
     label: 'Max',
     icon: 'codicon-rocket',
     description: 'Maximum reasoning depth',
+  },
+  {
+    id: 'ultra',
+    label: 'Ultra',
+    icon: 'codicon-symbol-event',
+    description: 'Ultra-high reasoning for the hardest tasks',
   },
 ];
 
