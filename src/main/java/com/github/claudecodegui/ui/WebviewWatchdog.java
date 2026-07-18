@@ -24,6 +24,8 @@ public class WebviewWatchdog {
     private static final long HEARTBEAT_TIMEOUT_MS = 45_000L;
     private static final long WATCHDOG_INTERVAL_MS = 10_000L;
     private static final long RECOVERY_COOLDOWN_MS = 60_000L;
+    private static final long STARTUP_READY_TIMEOUT_MS = 15_000L;
+    private static final long STARTUP_RECOVERY_COOLDOWN_MS = 15_000L;
 
     private volatile long lastHeartbeatAtMs = System.currentTimeMillis();
     private volatile long lastRafAtMs = System.currentTimeMillis();
@@ -36,6 +38,7 @@ public class WebviewWatchdog {
     private final JPanel mainPanel;
     private final BrowserProvider browserProvider;
     private final HtmlLoader htmlLoader;
+    private final Runnable onReloadWebview;
     private final Runnable onRecreateWebview;
     private final DisposedCheck disposedCheck;
 
@@ -62,27 +65,36 @@ public class WebviewWatchdog {
         boolean isStreamActive();
     }
 
+    public interface ReadyCheck {
+        boolean isFrontendReady();
+    }
+
     // Extended timeout during active streaming — IPC saturation is expected
     // when pushing large message payloads.  Reloading would destroy React state
     // and the backend would continue pushing to a blank page.
     private static final long STREAMING_HEARTBEAT_TIMEOUT_MS = 180_000L; // 3 minutes
 
     private final StreamActiveCheck streamActiveCheck;
+    private final ReadyCheck readyCheck;
 
     public WebviewWatchdog(
             JPanel mainPanel,
             BrowserProvider browserProvider,
             HtmlLoader htmlLoader,
+            Runnable onReloadWebview,
             Runnable onRecreateWebview,
             DisposedCheck disposedCheck,
-            StreamActiveCheck streamActiveCheck
+            StreamActiveCheck streamActiveCheck,
+            ReadyCheck readyCheck
     ) {
         this.mainPanel = mainPanel;
         this.browserProvider = browserProvider;
         this.htmlLoader = htmlLoader;
+        this.onReloadWebview = onReloadWebview;
         this.onRecreateWebview = onRecreateWebview;
         this.disposedCheck = disposedCheck;
         this.streamActiveCheck = streamActiveCheck;
+        this.readyCheck = readyCheck;
     }
 
     /**
@@ -154,11 +166,24 @@ public class WebviewWatchdog {
         long now = System.currentTimeMillis();
         lastHeartbeatAtMs = now;
         lastRafAtMs = now;
+        lastVisibility = null;
+        lastHasFocus = null;
+    }
+
+    public void markFrontendReady() {
+        resetTimestamps();
+        stallCount = 0;
+        lastRecoveryAtMs = 0L;
+    }
+
+    /** Give an activated tab one heartbeat window before evaluating stale metadata. */
+    public void markTabActivated() {
+        resetTimestamps();
     }
 
     private void checkHealth() {
         if (disposedCheck.isDisposed()) { return; }
-        if (!mainPanel.isShowing()) { return; }
+        boolean frontendReady = readyCheck.isFrontendReady();
 
         long now = System.currentTimeMillis();
         long heartbeatAgeMs = now - lastHeartbeatAtMs;
@@ -166,11 +191,12 @@ public class WebviewWatchdog {
 
         boolean visible = lastVisibility == null || "visible".equals(lastVisibility);
         boolean focused = lastHasFocus == null || lastHasFocus;
-        if (!visible || !focused) {
+        if (!shouldMonitor(frontendReady, mainPanel.isShowing(), visible, focused)) {
             return;
         }
 
-        if (now - lastRecoveryAtMs < RECOVERY_COOLDOWN_MS) {
+        long recoveryCooldownMs = recoveryCooldownMs(frontendReady);
+        if (now - lastRecoveryAtMs < recoveryCooldownMs) {
             return;
         }
 
@@ -179,7 +205,7 @@ public class WebviewWatchdog {
         // Reloading during streaming causes "fake death": backend continues working
         // but the webview shows empty content because streaming state is lost.
         boolean streaming = streamActiveCheck.isStreamActive();
-        long effectiveTimeoutMs = streaming ? STREAMING_HEARTBEAT_TIMEOUT_MS : HEARTBEAT_TIMEOUT_MS;
+        long effectiveTimeoutMs = heartbeatTimeoutMs(frontendReady, streaming);
 
         boolean stalled = heartbeatAgeMs > effectiveTimeoutMs || rafAgeMs > effectiveTimeoutMs;
         if (!stalled) {
@@ -190,7 +216,8 @@ public class WebviewWatchdog {
         if (disposedCheck.isDisposed()) { return; }
 
         stallCount += 1;
-        String reason = "heartbeatAgeMs=" + heartbeatAgeMs + ", rafAgeMs=" + rafAgeMs;
+        String reason = "frontendReady=" + frontendReady
+                + ", heartbeatAgeMs=" + heartbeatAgeMs + ", rafAgeMs=" + rafAgeMs;
         LOG.warn("[WebviewWatchdog] Webview appears stalled (" + stallCount + "), attempting recovery. " + reason);
 
         lastRecoveryAtMs = now;
@@ -206,6 +233,28 @@ public class WebviewWatchdog {
         }
     }
 
+    static long heartbeatTimeoutMs(boolean frontendReady, boolean streaming) {
+        if (!frontendReady) {
+            return STARTUP_READY_TIMEOUT_MS;
+        }
+        return streaming ? STREAMING_HEARTBEAT_TIMEOUT_MS : HEARTBEAT_TIMEOUT_MS;
+    }
+
+    static long recoveryCooldownMs(boolean frontendReady) {
+        return frontendReady ? RECOVERY_COOLDOWN_MS : STARTUP_RECOVERY_COOLDOWN_MS;
+    }
+
+    static boolean shouldMonitor(boolean frontendReady,
+                                 boolean panelShowing,
+                                 boolean pageVisible,
+                                 boolean pageFocused) {
+        if (!frontendReady) {
+            return true;
+        }
+        // Editor focus is independent from webview render health.
+        return panelShowing && pageVisible;
+    }
+
     private void reload(String reason) {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (disposedCheck.isDisposed()) { return; }
@@ -214,13 +263,7 @@ public class WebviewWatchdog {
                 onRecreateWebview.run();
                 return;
             }
-            try {
-                browser.loadHTML(htmlLoader.loadChatHtml());
-                mainPanel.revalidate();
-                mainPanel.repaint();
-            } catch (Exception e) {
-                LOG.warn("[WebviewWatchdog] Reload failed: " + e.getMessage(), e);
-            }
+            onReloadWebview.run();
         });
     }
 }
