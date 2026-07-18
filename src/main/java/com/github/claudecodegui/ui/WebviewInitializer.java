@@ -240,7 +240,7 @@ public class WebviewInitializer {
             });
 
             HtmlLoader htmlLoader = host.getHtmlLoader();
-            String htmlContent = htmlLoader.loadChatHtml();
+            String htmlContent = loadChatHtmlWithInitialTabState();
 
             // Per-tab provider/model injection: each tab's WebView reads the
             // same global localStorage snapshot, so without this every tab on
@@ -666,13 +666,25 @@ public class WebviewInitializer {
             }
             host.setFrontendReady(false);
             try {
-                browser.loadHTML(host.getHtmlLoader().loadChatHtml());
+                LOG.info("[WebviewWatchdog] Reloading webview (" + reason + ")");
+                browser.loadHTML(loadChatHtmlWithInitialTabState());
+                host.getWebviewWatchdog().resetTimestamps();
                 host.getMainPanel().revalidate();
                 host.getMainPanel().repaint();
             } catch (Exception e) {
                 LOG.warn("[WebviewWatchdog] Reload failed: " + e.getMessage(), e);
             }
         });
+    }
+
+    private String loadChatHtmlWithInitialTabState() {
+        HtmlLoader htmlLoader = host.getHtmlLoader();
+        String htmlContent = htmlLoader.loadChatHtml();
+        ClaudeSession session = host.getHandlerContext() != null
+                ? host.getHandlerContext().getSession() : null;
+        String tabProvider = session != null ? session.getProvider() : null;
+        String tabModel = session != null ? session.getModel() : null;
+        return htmlLoader.injectInitialTabState(htmlContent, tabProvider, tabModel);
     }
 
     /**

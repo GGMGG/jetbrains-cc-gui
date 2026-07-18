@@ -147,9 +147,11 @@ public class ClaudeChatWindow {
                 mainPanel,
                 () -> browser,
                 htmlLoader,
+                () -> webviewInitializer.reloadWebview("watchdog_reload"),
                 () -> webviewInitializer.recreateWebview("watchdog_recreate"),
                 () -> disposed,
-                () -> streamCoalescer.isStreamActive()
+                () -> streamCoalescer.isStreamActive(),
+                () -> frontendReady
         );
 
         this.session = new ClaudeSession(project, claudeSDKBridge, codexSDKBridge);
