@@ -92,7 +92,15 @@ public class ClaudeChatWindow {
     private final DeferredReload deferredReload = new DeferredReload();
 
     private HandlerContext handlerContext;
-    private MessageDispatcher messageDispatcher;
+    // volatile: assigned once on the EDT during init, then read lock-free from the JCEF UI thread
+    // in handleJavaScriptMessage. The read can no longer piggyback on the host monitor's visibility
+    // now that handleJavaScriptMessage is unsynchronized, so the field carries its own happens-before.
+    private volatile MessageDispatcher messageDispatcher;
+    /**
+     * Serializes webview message dispatch against {@link #dispose()}; see
+     * {@link MessageDispatchGate} for the lifecycle contract.
+     */
+    private final MessageDispatchGate dispatchGate = new MessageDispatchGate();
     private PermissionHandler permissionHandler;
     private HistoryHandler historyHandler;
     private final SessionLifecycleManager sessionLifecycleManager;
@@ -574,10 +582,25 @@ public class ClaudeChatWindow {
         });
     }
 
-    synchronized void handleJavaScriptMessage(String message) {
-        if (this.disposed || message == null) {
+    void handleJavaScriptMessage(String message) {
+        if (message == null) {
             return;
         }
+        // Serialized against dispose() via the dispatch gate. dispose's beginTeardown() waits for
+        // any in-flight dispatch to finish and blocks new ones, so no handler side effect (e.g.
+        // SessionHandler scheduling an async session.send) can start after teardown has begun. The
+        // gate monitor is held only across dispatch - dispose runs its heavy teardown (browser
+        // disposal, process cleanup) outside it, so the JCEF thread never waits on the EDT. That
+        // keeps the old dispatch/dispose lifecycle exclusion without the EDT<->JCEF deadlock.
+        this.dispatchGate.runInDispatch(() -> this.handleJavaScriptMessageLocked(message));
+    }
+
+    /**
+     * Dispatch body, run under the {@link MessageDispatchGate} so it is serialized against
+     * {@code dispose()}. The gate guarantees the window is not disposed for the whole call, so no
+     * per-handler disposed re-check is needed here.
+     */
+    private void handleJavaScriptMessageLocked(String message) {
         if (message.startsWith("{\"type\":\"console.")) {
             try {
                 JsonObject json = new Gson().fromJson(message, JsonObject.class);
@@ -612,7 +635,11 @@ public class ClaudeChatWindow {
         String type = parts[0];
         String content = parts.length > 1 ? parts[1] : "";
 
-        if (messageDispatcher.dispatch(type, content)) {
+        MessageDispatcher dispatcher = this.messageDispatcher;
+        if (dispatcher == null) {
+            return;
+        }
+        if (dispatcher.dispatch(type, content)) {
             return;
         }
 
@@ -1024,8 +1051,15 @@ public class ClaudeChatWindow {
 
     // ==================== Dispose ====================
 
-    public synchronized void dispose() {
-        if (this.disposed) { return; }
+    public void dispose() {
+        // Begin teardown under the dispatch gate: this waits for any in-flight dispatch to finish
+        // (so no handler side effect - e.g. an async session.send - can start after this point) and
+        // blocks new dispatch from entering. The gate monitor is released before the heavy teardown
+        // below, so the JCEF thread never waits on the EDT - that was the original EDT<->JCEF
+        // deadlock. beginTeardown() is idempotent; a repeat dispose returns immediately.
+        if (!this.dispatchGate.beginTeardown()) {
+            return;
+        }
         this.disposed = true;
         JBCefBrowser targetBrowser = this.browser;
         this.browser = null;
