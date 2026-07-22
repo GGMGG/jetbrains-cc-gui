@@ -99,10 +99,23 @@ public class HistoryMessageInjectorTest {
     }
 
     @Test
-    public void convertCodexMessagesKeepsRepeatedUserMessagesWithDifferentTimestamps() {
+    public void convertCodexMessagesDeduplicatesDualRecordedUserMessageWithDifferentTimestamps() {
         JsonArray messages = new JsonArray();
         messages.add(responseItemUserMessage("2026-04-30T09:40:26.701Z", "hello"));
         messages.add(eventUserMessage("2026-04-30T09:40:27.701Z", "hello"));
+
+        List<JsonObject> result = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(messages);
+
+        assertEquals(1, result.size());
+    }
+
+    @Test
+    public void convertCodexMessagesKeepsTwoIdenticalUserTurnsWithoutAssistantBetweenThem() {
+        JsonArray messages = new JsonArray();
+        messages.add(responseItemUserMessage("2026-04-30T09:40:26.701Z", "hello"));
+        messages.add(eventUserMessage("2026-04-30T09:40:27.701Z", "hello"));
+        messages.add(responseItemUserMessage("2026-04-30T09:40:28.701Z", "hello"));
+        messages.add(eventUserMessage("2026-04-30T09:40:29.701Z", "hello"));
 
         List<JsonObject> result = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(messages);
 
@@ -239,6 +252,38 @@ public class HistoryMessageInjectorTest {
     }
 
     @Test
+    public void retainsThirtyActualTurnsWhenCodexRecordsEachUserMessageTwice() {
+        JsonArray history = new JsonArray();
+        for (int i = 0; i < 35; i++) {
+            history.add(responseItemUserMessage("2026-04-30T09:40:" + i + ".001Z", "user-" + i));
+            history.add(eventUserMessage("2026-04-30T09:40:" + i + ".002Z", "user-" + i));
+            history.add(responseItemAssistantMessage("2026-04-30T09:40:" + i + ".003Z", "assistant-" + i));
+        }
+
+        List<JsonObject> converted = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(history);
+        List<JsonObject> result = HistoryMessageInjector.retainRecentUserTurns(converted, 30);
+
+        assertEquals(60, result.size());
+        assertEquals("user-5", result.get(0).get("content").getAsString());
+        assertEquals("assistant-34", result.get(result.size() - 1).get("content").getAsString());
+    }
+
+    @Test
+    public void convertsCustomToolCallOutputToToolResult() {
+        JsonArray history = new JsonArray();
+        history.add(responseItemCustomToolOutput("2026-04-30T09:40:26.701Z", "call-1", "tool output"));
+
+        List<JsonObject> result = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(history);
+
+        assertEquals(1, result.size());
+        JsonObject block = result.get(0).getAsJsonObject("raw")
+                .getAsJsonArray("content").get(0).getAsJsonObject();
+        assertEquals("tool_result", block.get("type").getAsString());
+        assertEquals("call-1", block.get("tool_use_id").getAsString());
+        assertEquals("tool output", block.get("content").getAsString());
+    }
+
+    @Test
     public void toolResultsDoNotCountAsUserTurns() {
         List<JsonObject> messages = new java.util.ArrayList<>();
         messages.add(frontendMessage("user", "old-user", "text"));
@@ -344,6 +389,24 @@ public class HistoryMessageInjectorTest {
 
     private static JsonObject responseItemAssistantMessage(String timestamp, String text) {
         return responseItemMessage(timestamp, "assistant", "output_text", text);
+    }
+
+    private static JsonObject responseItemCustomToolOutput(String timestamp, String callId, String text) {
+        JsonObject line = new JsonObject();
+        line.addProperty("timestamp", timestamp);
+        line.addProperty("type", "response_item");
+
+        JsonObject payload = new JsonObject();
+        payload.addProperty("type", "custom_tool_call_output");
+        payload.addProperty("call_id", callId);
+        JsonArray output = new JsonArray();
+        JsonObject block = new JsonObject();
+        block.addProperty("type", "input_text");
+        block.addProperty("text", text);
+        output.add(block);
+        payload.add("output", output);
+        line.add("payload", payload);
+        return line;
     }
 
     private static JsonObject responseItemMessage(String timestamp, String role, String blockType, String text) {

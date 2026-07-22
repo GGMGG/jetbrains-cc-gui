@@ -13,10 +13,37 @@ import {
   type DetailedOutputEnabledChangedDetail,
 } from '../utils/detailedOutputPreference';
 
-/** Always render at least this many recent messages. Earlier messages are collapsed. */
-const VISIBLE_MESSAGE_WINDOW = 15;
-/** Number of additional earlier messages to reveal per "show earlier" click. */
-const REVEAL_PAGE_SIZE = 30;
+/** Keep pagination aligned to complete user turns so assistant/tool chains are never split. */
+const INITIAL_VISIBLE_TURNS = 5;
+const REVEAL_TURN_PAGE_SIZE = 5;
+
+function isHumanUserMessage(message: ClaudeMessage): boolean {
+  if (message.type !== 'user') return false;
+
+  const raw = typeof message.raw === 'object' && message.raw !== null ? message.raw : null;
+  const nestedMessage = raw?.message;
+  const rawContent = raw?.content ?? (
+    typeof nestedMessage === 'object' && nestedMessage !== null ? nestedMessage.content : undefined
+  );
+
+  if (Array.isArray(rawContent)) {
+    return rawContent.some((block) => block
+      && typeof block === 'object'
+      && (block.type === 'text' || block.type === 'image'));
+  }
+
+  return message.content !== '[tool_result]';
+}
+
+function getFirstMessageBoundaryKey(message: ClaudeMessage | undefined): string | undefined {
+  if (!message) return undefined;
+  if (typeof message.id === 'string') return `id:${message.id}`;
+  if (typeof message.raw === 'object' && message.raw !== null && typeof message.raw.uuid === 'string') {
+    return `uuid:${message.raw.uuid}`;
+  }
+  if (message.timestamp) return `timestamp:${message.type}:${message.timestamp}`;
+  return `content:${message.type}:${message.content ?? ''}`;
+}
 
 function extractToolResultPreview(result: ToolResultBlock | null | undefined): string {
   if (!result) return 'pending';
@@ -90,10 +117,7 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   onNavigateToDependencySettings,
   currentProvider,
 }, ref) {
-  // Number of earlier messages revealed beyond VISIBLE_MESSAGE_WINDOW. Grows in
-  // page-size chunks as the user clicks "show earlier", avoiding a single huge
-  // mount when sessions exceed hundreds of messages.
-  const [revealedCount, setRevealedCount] = useState(0);
+  const [revealedTurnCount, setRevealedTurnCount] = useState(0);
   const [detailedOutputEnabled, setDetailedOutputEnabled] = useState(() =>
     getDetailedOutputEnabled()
   );
@@ -107,24 +131,36 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     }
   }, [ctxMenu.open]);
 
-  // Reset revealed count when a new session starts (first message ID changes)
-  const firstMsgIdRef = useRef(messages[0]?.id);
+  // History messages often have no id, so use stable fallbacks when detecting a session replacement.
+  const firstMessageBoundaryRef = useRef(getFirstMessageBoundaryKey(messages[0]));
   useEffect(() => {
-    const currentFirstId = messages[0]?.id;
-    if (currentFirstId !== firstMsgIdRef.current) {
-      setRevealedCount(0);
+    const currentBoundary = getFirstMessageBoundaryKey(messages[0]);
+    if (currentBoundary !== firstMessageBoundaryRef.current) {
+      setRevealedTurnCount(0);
     }
-    firstMsgIdRef.current = currentFirstId;
+    firstMessageBoundaryRef.current = currentBoundary;
   }, [messages]);
 
-  const totalEarlierMessages = Math.max(0, messages.length - VISIBLE_MESSAGE_WINDOW);
-  const effectiveRevealed = Math.min(revealedCount, totalEarlierMessages);
-  const shouldCollapse = effectiveRevealed < totalEarlierMessages;
-  const collapsedCount = totalEarlierMessages - effectiveRevealed;
-  const nextChunkSize = Math.min(REVEAL_PAGE_SIZE, collapsedCount);
+  const userTurnStartIndexes = useMemo(
+    () => messages.reduce<number[]>((indexes, message, index) => {
+      if (isHumanUserMessage(message)) indexes.push(index);
+      return indexes;
+    }, []),
+    [messages],
+  );
+  const visibleTurnCount = Math.min(
+    userTurnStartIndexes.length,
+    INITIAL_VISIBLE_TURNS + revealedTurnCount,
+  );
+  const hiddenTurnCount = userTurnStartIndexes.length - visibleTurnCount;
+  const collapsedCount = hiddenTurnCount > 0 ? userTurnStartIndexes[hiddenTurnCount] : 0;
+  const shouldCollapse = collapsedCount > 0;
+  const nextHiddenTurnCount = Math.max(0, hiddenTurnCount - REVEAL_TURN_PAGE_SIZE);
+  const nextStartIndex = nextHiddenTurnCount > 0 ? userTurnStartIndexes[nextHiddenTurnCount] : 0;
+  const nextChunkSize = collapsedCount - nextStartIndex;
 
   const handleRevealMore = useCallback(() => {
-    setRevealedCount((prev) => prev + REVEAL_PAGE_SIZE);
+    setRevealedTurnCount((prev) => prev + REVEAL_TURN_PAGE_SIZE);
   }, []);
 
   // Imperative API so the in-page search can expand everything before scanning.
@@ -133,13 +169,12 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   // messages" exactly once per panel-open, per the agreed design.
   useImperativeHandle(ref, (): MessageListRevealHandle => ({
     revealAll: () => {
-      if (totalEarlierMessages === 0) return 0;
       const previouslyHidden = collapsedCount;
       if (previouslyHidden === 0) return 0;
-      setRevealedCount(totalEarlierMessages);
+      setRevealedTurnCount(userTurnStartIndexes.length);
       return previouslyHidden;
     },
-  }), [totalEarlierMessages, collapsedCount]);
+  }), [collapsedCount, userTurnStartIndexes.length]);
 
   // Notify parent of collapsed count changes (for anchor rail sync)
   useEffect(() => {

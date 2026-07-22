@@ -33,6 +33,10 @@ public class HistoryMessageInjector {
     static final int HISTORY_USER_TURN_LIMIT = 30;
     static final int HISTORY_BATCH_MESSAGE_LIMIT = 50;
     static final int HISTORY_BATCH_TARGET_CHAR_LIMIT = 180_000;
+    private static final String CODEX_RECORD_KIND = "_codexRecordKind";
+    private static final String EVENT_USER_RECORD = "event_user";
+    private static final String RESPONSE_USER_RECORD = "response_user";
+    private static final String DUAL_USER_RECORD = "dual_user";
 
     private final HandlerContext context;
 
@@ -185,10 +189,33 @@ public class HistoryMessageInjector {
             JsonObject msg = messages.get(i).getAsJsonObject();
             JsonObject frontendMsg = convertCodexMessageToFrontend(msg);
             if (frontendMsg != null) {
+                String recordKind = getCodexUserRecordKind(msg);
+                if (recordKind != null && isUserMessage(frontendMsg)) {
+                    frontendMsg.addProperty(CODEX_RECORD_KIND, recordKind);
+                }
                 addCodexFrontendMessage(frontendMessages, frontendMsg);
             }
         }
+        frontendMessages.forEach(message -> message.remove(CODEX_RECORD_KIND));
         return frontendMessages;
+    }
+
+    private static String getCodexUserRecordKind(JsonObject message) {
+        String recordType = getStringProperty(message, "type");
+        if (!message.has("payload") || !message.get("payload").isJsonObject()) {
+            return null;
+        }
+        JsonObject payload = message.getAsJsonObject("payload");
+        String payloadType = getStringProperty(payload, "type");
+        if ("event_msg".equals(recordType) && "user_message".equals(payloadType)) {
+            return EVENT_USER_RECORD;
+        }
+        if ("response_item".equals(recordType)
+                && "message".equals(payloadType)
+                && "user".equals(getStringProperty(payload, "role"))) {
+            return RESPONSE_USER_RECORD;
+        }
+        return null;
     }
 
     private static void addCodexFrontendMessage(List<JsonObject> frontendMessages, JsonObject incoming) {
@@ -200,7 +227,9 @@ public class HistoryMessageInjector {
         int lastIndex = frontendMessages.size() - 1;
         JsonObject previous = frontendMessages.get(lastIndex);
         if (isDuplicateAdjacentCodexUserMessage(previous, incoming)) {
-            frontendMessages.set(lastIndex, preferRicherUserMessage(previous, incoming));
+            JsonObject preferred = preferRicherUserMessage(previous, incoming);
+            preferred.addProperty(CODEX_RECORD_KIND, DUAL_USER_RECORD);
+            frontendMessages.set(lastIndex, preferred);
             return;
         }
 
@@ -212,9 +241,13 @@ public class HistoryMessageInjector {
             return false;
         }
 
-        String previousTimestamp = getStringProperty(previous, "timestamp");
-        String incomingTimestamp = getStringProperty(incoming, "timestamp");
-        if (previousTimestamp == null || !previousTimestamp.equals(incomingTimestamp)) {
+        String previousRecordKind = getStringProperty(previous, CODEX_RECORD_KIND);
+        String incomingRecordKind = getStringProperty(incoming, CODEX_RECORD_KIND);
+        boolean dualRecordedPair = (EVENT_USER_RECORD.equals(previousRecordKind)
+                && RESPONSE_USER_RECORD.equals(incomingRecordKind))
+                || (RESPONSE_USER_RECORD.equals(previousRecordKind)
+                && EVENT_USER_RECORD.equals(incomingRecordKind));
+        if (!dualRecordedPair) {
             return false;
         }
 
@@ -408,6 +441,9 @@ public class HistoryMessageInjector {
             }
             if ("custom_tool_call".equals(payloadType)) {
                 return CodexMessageConverter.convertCustomToolCallToToolUse(payload, timestamp);
+            }
+            if ("custom_tool_call_output".equals(payloadType)) {
+                return CodexMessageConverter.convertCustomToolCallOutputToToolResult(payload, timestamp);
             }
         }
 

@@ -50,6 +50,26 @@ function makeMessages(count: number, idPrefix = 'm'): ClaudeMessage[] {
   }) as unknown as ClaudeMessage);
 }
 
+function makeToolDenseTurns(turnCount: number): ClaudeMessage[] {
+  return Array.from({ length: turnCount }, (_, turn) => [
+    { type: 'user', content: `user ${turn}`, id: `user-${turn}` },
+    { type: 'assistant', content: `thinking ${turn}`, id: `thinking-${turn}` },
+    {
+      type: 'assistant',
+      content: `tool ${turn}`,
+      id: `tool-${turn}`,
+      raw: { content: [{ type: 'tool_use', id: `call-${turn}`, name: 'Read', input: {} }] },
+    },
+    {
+      type: 'user',
+      content: '[tool_result]',
+      id: `result-${turn}`,
+      raw: { content: [{ type: 'tool_result', tool_use_id: `call-${turn}`, content: 'ok' }] },
+    },
+    { type: 'assistant', content: `answer ${turn}`, id: `answer-${turn}` },
+  ]).flat() as unknown as ClaudeMessage[];
+}
+
 const noopGetText = (m: ClaudeMessage) => m.content ?? '';
 const noopGetBlocks = (_m: ClaudeMessage): ClaudeContentBlock[] => [];
 const noopFindToolResult = (_id: string | undefined, _i: number): ToolResultBlock | null => null;
@@ -77,48 +97,63 @@ function renderList(messages: ClaudeMessage[]) {
 describe('MessageList paged collapse', () => {
   afterEach(cleanup);
 
-  it('renders all messages when total ≤ visible window (15)', () => {
+  it('renders all messages when there are at most five user turns', () => {
     renderList(makeMessages(10));
     expect(screen.getAllByTestId('message-item')).toHaveLength(10);
     expect(screen.queryByText(/Show.*earlier/)).toBeNull();
   });
 
-  it('collapses earlier messages when total > visible window', () => {
+  it('collapses earlier complete turns when there are more than five user turns', () => {
     const { container } = renderList(makeMessages(50));
-    // Visible: last 15 messages
-    expect(screen.getAllByTestId('message-item')).toHaveLength(15);
-    // Indicator shows next chunk size (30) and remaining total (35) appended
+    expect(screen.getAllByTestId('message-item')).toHaveLength(10);
     const indicator = container.querySelector('.collapsed-messages-indicator');
     expect(indicator).toBeTruthy();
-    expect(indicator?.textContent).toContain('Show 30 earlier');
-    expect(indicator?.textContent).toContain('(35)');
+    expect(indicator?.textContent).toContain('Show 10 earlier');
+    expect(indicator?.textContent).toContain('(40)');
   });
 
-  it('reveals one chunk per click instead of expanding everything', () => {
+  it('reveals five complete turns per click instead of expanding everything', () => {
     const { container } = renderList(makeMessages(100));
-    expect(screen.getAllByTestId('message-item')).toHaveLength(15);
+    expect(screen.getAllByTestId('message-item')).toHaveLength(10);
 
     const indicator = container.querySelector('.collapsed-messages-indicator');
-    expect(indicator?.textContent).toContain('Show 30 earlier');
+    expect(indicator?.textContent).toContain('Show 10 earlier');
     fireEvent.click(indicator!);
-    // 15 + 30 chunk
-    expect(screen.getAllByTestId('message-item')).toHaveLength(45);
+    expect(screen.getAllByTestId('message-item')).toHaveLength(20);
 
     fireEvent.click(container.querySelector('.collapsed-messages-indicator')!);
-    expect(screen.getAllByTestId('message-item')).toHaveLength(75);
+    expect(screen.getAllByTestId('message-item')).toHaveLength(30);
   });
 
   it('removes the indicator once everything is revealed', () => {
-    const { container } = renderList(makeMessages(40));
+    const { container } = renderList(makeMessages(16));
     const indicator = container.querySelector('.collapsed-messages-indicator');
-    // 40 - 15 = 25 collapsed → next click size = min(30, 25) = 25
-    expect(indicator?.textContent).toContain('Show 25 earlier');
-    // Total <= chunk → no extra " (N)" suffix
+    expect(indicator?.textContent).toContain('Show 6 earlier');
     expect(indicator?.textContent).not.toMatch(/\(\d+\)/);
 
     fireEvent.click(indicator!);
-    expect(screen.getAllByTestId('message-item')).toHaveLength(40);
+    expect(screen.getAllByTestId('message-item')).toHaveLength(16);
     expect(container.querySelector('.collapsed-messages-indicator')).toBeNull();
+  });
+
+  it('never starts rendering in the middle of an assistant and tool chain', () => {
+    const { container } = renderList(makeToolDenseTurns(8));
+    const visible = screen.getAllByTestId('message-item');
+
+    expect(visible).toHaveLength(25);
+    expect(visible[0].textContent).toBe('user 3');
+    expect(container.querySelector('.collapsed-messages-indicator')?.textContent).toContain('Show 15 earlier');
+  });
+
+  it('tolerates malformed raw content blocks from history transport', () => {
+    const messages = makeMessages(14);
+    messages[0] = {
+      ...messages[0],
+      raw: { content: [null, 'unexpected'] },
+    } as unknown as ClaudeMessage;
+
+    expect(() => renderList(messages)).not.toThrow();
+    expect(screen.getAllByTestId('message-item')).toHaveLength(10);
   });
 
   it('reports collapsedCount changes to parent for anchor rail sync', () => {
@@ -142,13 +177,12 @@ describe('MessageList paged collapse', () => {
       />
     );
 
-    // Initial: 60 - 15 = 45 collapsed
-    expect(onCollapsedCountChange).toHaveBeenLastCalledWith(45);
+    expect(onCollapsedCountChange).toHaveBeenLastCalledWith(50);
 
     // Reveal one chunk
     const indicator = container.querySelector('.collapsed-messages-indicator');
     fireEvent.click(indicator!);
-    expect(onCollapsedCountChange).toHaveBeenLastCalledWith(15);
+    expect(onCollapsedCountChange).toHaveBeenLastCalledWith(40);
 
     // Trigger a session switch via first-message-id change
     rerender(
@@ -167,8 +201,55 @@ describe('MessageList paged collapse', () => {
         onCollapsedCountChange={onCollapsedCountChange}
       />
     );
-    // Reset → 50 - 15 = 35 collapsed
-    expect(onCollapsedCountChange).toHaveBeenLastCalledWith(35);
+    expect(onCollapsedCountChange).toHaveBeenLastCalledWith(40);
+  });
+
+  it('resets revealed turns when id-less history messages switch sessions', () => {
+    const firstSession = makeMessages(40).map(({ id: _id, ...message }, index) => ({
+      ...message,
+      timestamp: `2026-07-16T10:00:${String(index).padStart(2, '0')}.000Z`,
+    })) as ClaudeMessage[];
+    const secondSession = makeMessages(40).map(({ id: _id, ...message }, index) => ({
+      ...message,
+      timestamp: `2026-07-17T10:00:${String(index).padStart(2, '0')}.000Z`,
+    })) as ClaudeMessage[];
+    const endRef = createRef<HTMLDivElement>();
+    const { container, rerender } = render(
+      <MessageList
+        messages={firstSession}
+        streamingActive={false}
+        isThinking={false}
+        loading={false}
+        loadingStartTime={null}
+        t={t}
+        getMessageText={noopGetText}
+        getContentBlocks={noopGetBlocks}
+        findToolResult={noopFindToolResult}
+        extractMarkdownContent={noopExtractMd}
+        messagesEndRef={endRef}
+      />
+    );
+
+    fireEvent.click(container.querySelector('.collapsed-messages-indicator')!);
+    expect(screen.getAllByTestId('message-item')).toHaveLength(20);
+
+    rerender(
+      <MessageList
+        messages={secondSession}
+        streamingActive={false}
+        isThinking={false}
+        loading={false}
+        loadingStartTime={null}
+        t={t}
+        getMessageText={noopGetText}
+        getContentBlocks={noopGetBlocks}
+        findToolResult={noopFindToolResult}
+        extractMarkdownContent={noopExtractMd}
+        messagesEndRef={endRef}
+      />
+    );
+
+    expect(screen.getAllByTestId('message-item')).toHaveLength(10);
   });
 });
 
