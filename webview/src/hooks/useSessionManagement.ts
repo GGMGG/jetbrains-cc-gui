@@ -17,6 +17,7 @@ interface UseSessionManagementOptions {
   loading: boolean;
   historyData: HistoryData | null;
   currentSessionId: string | null;
+  currentSessionIdRef?: React.MutableRefObject<string | null>;
   setHistoryData: React.Dispatch<React.SetStateAction<HistoryData | null>>;
   setMessages: React.Dispatch<React.SetStateAction<ClaudeMessage[]>>;
   setCurrentView: (view: ViewMode) => void;
@@ -63,6 +64,7 @@ export function useSessionManagement({
   loading,
   historyData,
   currentSessionId,
+  currentSessionIdRef,
   setHistoryData,
   setMessages,
   setCurrentView,
@@ -113,6 +115,9 @@ export function useSessionManagement({
       setStreamingActive(false);
     }
     setMessages([]);
+    if (currentSessionIdRef) {
+      currentSessionIdRef.current = nextSessionId;
+    }
     setCurrentSessionId(nextSessionId);
     setCustomSessionTitle(nextTitle);
     setUsagePercentage(0);
@@ -137,7 +142,7 @@ export function useSessionManagement({
         window.__sessionTransitionToken = null;
       }
     }, 15_000); // 15 seconds — generous enough for slow history loads
-  }, [clearToasts, setStatus, setLoadingState, setIsThinking, setStreamingActive, setMessages, setCurrentSessionId, setCustomSessionTitle, setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens]);
+  }, [clearToasts, currentSessionIdRef, setStatus, setLoadingState, setIsThinking, setStreamingActive, setMessages, setCurrentSessionId, setCustomSessionTitle, setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens]);
 
   // Create new session
   const createNewSession = useCallback(() => {

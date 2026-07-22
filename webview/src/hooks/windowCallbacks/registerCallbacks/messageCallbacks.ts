@@ -8,7 +8,7 @@
  */
 
 import type { UseWindowCallbacksOptions } from '../../useWindowCallbacks';
-import type { ClaudeMessage } from '../../../types';
+import type { ClaudeMessage, CodexHistoryPageInfo } from '../../../types';
 import type { ContextUsageData } from '../../../components/ContextUsageDialog';
 import { sendBridgeEvent } from '../../../utils/bridge';
 import { debugError } from '../../../utils/debug';
@@ -91,6 +91,7 @@ export function registerMessageCallbacks(
     patchAssistantForStreaming,
     updateContextUsageData,
     closeContextUsageDialog,
+    currentSessionIdRef,
   } = options;
 
   const ensureStreamingAssistantPreserved = (prevList: ClaudeMessage[], resultList: ClaudeMessage[]): ClaudeMessage[] => {
@@ -132,6 +133,21 @@ export function registerMessageCallbacks(
   let pendingUpdateRaf: number | null = null;
   let pendingUpdateSequence: number | null = null;
   const pendingHistoryChunks = new Map<string, string[]>();
+  const pendingCodexHistoryPages = new Map<string, {
+    sessionId: string;
+    mode: 'replace' | 'prepend';
+    batches: ClaudeMessage[][];
+    chunks: Map<string, string[]>;
+    timeoutId: ReturnType<typeof setTimeout>;
+  }>();
+  const failCodexHistoryPage = (pageId: string | undefined, message: string) => {
+    const pending = pageId ? pendingCodexHistoryPages.get(pageId) : undefined;
+    if (pending) clearTimeout(pending.timeoutId);
+    if (pageId) pendingCodexHistoryPages.delete(pageId);
+    const detail = { sessionId: pending?.sessionId, message };
+    window.dispatchEvent(new CustomEvent('codex-history-page-error', { detail }));
+    addToast(message, 'error');
+  };
 
   // Expose a cancellation function so onStreamEnd can cancel stale rAF-deferred
   // updateMessages calls, preventing them from overwriting the final state after
@@ -682,7 +698,12 @@ export function registerMessageCallbacks(
       window.__pendingUpdateSequence = null;
     }
     window.__deniedToolIds?.clear();
+    window.__codexHistoryPageInfo = undefined;
     pendingHistoryChunks.clear();
+    for (const pending of pendingCodexHistoryPages.values()) {
+      clearTimeout(pending.timeoutId);
+    }
+    pendingCodexHistoryPages.clear();
     window.__messageBaseIndex = 0;
     resetTransientUiState();
     closeContextUsageDialog();
@@ -749,16 +770,123 @@ export function registerMessageCallbacks(
     appendHistoryMessages(chunks.join(''));
   };
 
+  window.beginCodexHistoryPage = (json: string) => {
+    try {
+      const info = JSON.parse(json) as {
+        pageId?: string;
+        sessionId?: string;
+        mode?: 'replace' | 'prepend';
+      };
+      if (!info.pageId || !info.sessionId || (info.mode !== 'replace' && info.mode !== 'prepend')) {
+        failCodexHistoryPage(info.pageId, 'Invalid Codex history page metadata');
+        return;
+      }
+      pendingCodexHistoryPages.set(info.pageId, {
+        sessionId: info.sessionId,
+        mode: info.mode,
+        batches: [],
+        chunks: new Map(),
+        timeoutId: setTimeout(() => {
+          failCodexHistoryPage(info.pageId, 'Timed out while loading the Codex history page');
+        }, 30_000),
+      });
+    } catch (error) {
+      console.error('[Frontend] Failed to begin Codex history page:', error);
+      failCodexHistoryPage(undefined, 'Failed to initialize the Codex history page');
+    }
+  };
+
+  window.appendCodexHistoryPageBatch = (pageId: string, json: string) => {
+    const pending = pendingCodexHistoryPages.get(pageId);
+    if (!pending) return;
+    try {
+      const batch = JSON.parse(json) as ClaudeMessage[];
+      if (Array.isArray(batch) && batch.length > 0) {
+        pending.batches.push(batch);
+      }
+    } catch (error) {
+      console.error('[Frontend] Failed to parse Codex history page batch:', error);
+      failCodexHistoryPage(pageId, 'Failed to parse the Codex history page');
+    }
+  };
+
+  window.appendCodexHistoryPageChunk = (pageId, chunk, transferId, isFinal) => {
+    const pending = pendingCodexHistoryPages.get(pageId);
+    if (!pending || !transferId) return;
+    const chunks = pending.chunks.get(transferId) ?? [];
+    chunks.push(chunk);
+    if (!isTruthy(isFinal)) {
+      pending.chunks.set(transferId, chunks);
+      return;
+    }
+    pending.chunks.delete(transferId);
+    window.appendCodexHistoryPageBatch?.(pageId, chunks.join(''));
+  };
+
+  window.completeCodexHistoryPage = (json: string) => {
+    try {
+      const info = JSON.parse(json) as CodexHistoryPageInfo;
+      const pending = pendingCodexHistoryPages.get(info.pageId);
+      if (!pending || pending.sessionId !== info.sessionId) return;
+
+      // Ignore a page that arrives after the user selected a different session.
+      if (currentSessionIdRef.current !== info.sessionId) {
+        clearTimeout(pending.timeoutId);
+        pendingCodexHistoryPages.delete(info.pageId);
+        return;
+      }
+      const currentPageInfo = window.__codexHistoryPageInfo;
+      if (pending.mode === 'prepend'
+        && (!currentPageInfo
+          || currentPageInfo.sessionId !== info.sessionId
+          || info.toTurn !== currentPageInfo.fromTurn)) {
+        failCodexHistoryPage(info.pageId, 'Codex history changed while loading; please retry');
+        return;
+      }
+
+      clearTimeout(pending.timeoutId);
+      pendingCodexHistoryPages.delete(info.pageId);
+      const pageMessages = pending.batches.flat();
+      const container = messagesContainerRef.current;
+      const oldScrollHeight = container?.scrollHeight ?? 0;
+      const oldScrollTop = container?.scrollTop ?? 0;
+      setMessages((prev) => pending.mode === 'replace'
+        ? pageMessages
+        : [...pageMessages, ...prev]);
+
+      window.__codexHistoryPageInfo = info;
+      window.dispatchEvent(new CustomEvent<CodexHistoryPageInfo>('codex-history-page-info', {
+        detail: info,
+      }));
+
+      if (pending.mode === 'prepend' && container) {
+        requestAnimationFrame(() => {
+          const currentContainer = messagesContainerRef.current;
+          if (!currentContainer) return;
+          currentContainer.scrollTop = oldScrollTop + currentContainer.scrollHeight - oldScrollHeight;
+        });
+      }
+    } catch (error) {
+      console.error('[Frontend] Failed to complete Codex history page:', error);
+      failCodexHistoryPage(undefined, 'Failed to complete the Codex history page');
+    }
+  };
+
+  window.codexHistoryPageError = (json: string) => {
+    try {
+      const error = JSON.parse(json) as { sessionId?: string; message?: string };
+      if (error.sessionId && currentSessionIdRef.current !== error.sessionId) return;
+      window.dispatchEvent(new CustomEvent('codex-history-page-error', { detail: error }));
+      addToast(error.message || 'Failed to load earlier Codex history', 'error');
+    } catch (parseError) {
+      console.error('[Frontend] Failed to parse Codex history page error:', parseError);
+    }
+  };
+
   // History load complete callback — triggers Markdown re-rendering
   // Use full shallow copy to ensure all messages trigger re-render regardless of batching timing
   // Also clear stream-ended markers since history messages don't have __turnId
-  window.historyLoadComplete = () => {
-    releaseSessionTransition();
-    const pendingToast = window.__pendingSessionTransitionToast;
-    if (pendingToast) {
-      window.__pendingSessionTransitionToast = undefined;
-      addToast(pendingToast.message, pendingToast.type);
-    }
+  const refreshLoadedHistoryMessages = () => {
     window.__lastStreamEndedTurnId = undefined;
     window.__lastStreamEndedAt = undefined;
     // FIX: A replayed session may include aborted turns where some function_call
@@ -784,6 +912,18 @@ export function registerMessageCallbacks(
     for (const id of orphanIds) {
       window.__deniedToolIds.add(id);
     }
+  };
+
+  window.codexHistoryPageRenderComplete = refreshLoadedHistoryMessages;
+
+  window.historyLoadComplete = () => {
+    releaseSessionTransition();
+    const pendingToast = window.__pendingSessionTransitionToast;
+    if (pendingToast) {
+      window.__pendingSessionTransitionToast = undefined;
+      addToast(pendingToast.message, pendingToast.type);
+    }
+    refreshLoadedHistoryMessages();
   };
 
   window.addUserMessage = (content: string) => {

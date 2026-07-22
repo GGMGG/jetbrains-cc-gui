@@ -132,6 +132,7 @@ describe('useWindowCallbacks integration', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    delete window.__codexHistoryPageInfo;
   });
 
   /**
@@ -167,6 +168,20 @@ describe('useWindowCallbacks integration', () => {
 
     expect(window.__sessionTransitioning).toBe(false);
     expect(window.__sessionTransitionToken).toBeNull();
+  });
+
+  it('older Codex page rendering does not release the session transition guard', () => {
+    const opts = createOptions();
+    renderHook(() => useWindowCallbacks(opts));
+    window.__sessionTransitioning = true;
+    window.__sessionTransitionToken = 'newer-transition';
+
+    act(() => {
+      window.codexHistoryPageRenderComplete!();
+    });
+
+    expect(window.__sessionTransitioning).toBe(true);
+    expect(window.__sessionTransitionToken).toBe('newer-transition');
   });
 
   it('historyLoadComplete shows pending session transition toast', () => {
@@ -406,6 +421,82 @@ describe('useWindowCallbacks integration', () => {
       'large history message',
       'large history answer',
     ]);
+  });
+
+  it('buffers a Codex history page and prepends it in one ordered state update', () => {
+    const { opts, buffer } = createOptsWithMessages([{ type: 'user', content: 'newer' }]);
+    opts.currentSessionIdRef.current = 'session-1';
+    renderHook(() => useWindowCallbacks(opts));
+    window.__codexHistoryPageInfo = {
+      pageId: 'page-current', sessionId: 'session-1', mode: 'replace',
+      fromTurn: 40, toTurn: 70, totalTurns: 70, hasMore: true, loadedMessageCount: 1,
+    };
+
+    act(() => {
+      window.beginCodexHistoryPage!(JSON.stringify({
+        pageId: 'page-1', sessionId: 'session-1', mode: 'prepend',
+      }));
+      window.appendCodexHistoryPageBatch!('page-1', JSON.stringify([
+        { type: 'user', content: 'older-1' },
+      ]));
+      window.appendCodexHistoryPageBatch!('page-1', JSON.stringify([
+        { type: 'assistant', content: 'older-2' },
+      ]));
+      window.completeCodexHistoryPage!(JSON.stringify({
+        pageId: 'page-1', sessionId: 'session-1', mode: 'prepend',
+        fromTurn: 10, toTurn: 40, totalTurns: 70, hasMore: true, loadedMessageCount: 2,
+      }));
+    });
+
+    expect(buffer.current.map(message => message.content)).toEqual(['older-1', 'older-2', 'newer']);
+    expect(window.__codexHistoryPageInfo?.fromTurn).toBe(10);
+  });
+
+  it('drops a late Codex history page from a previously selected session', () => {
+    const { opts, buffer } = createOptsWithMessages([{ type: 'user', content: 'current' }]);
+    opts.currentSessionIdRef.current = 'session-current';
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => {
+      window.beginCodexHistoryPage!(JSON.stringify({
+        pageId: 'page-old', sessionId: 'session-old', mode: 'prepend',
+      }));
+      window.appendCodexHistoryPageBatch!('page-old', JSON.stringify([
+        { type: 'user', content: 'stale' },
+      ]));
+      window.completeCodexHistoryPage!(JSON.stringify({
+        pageId: 'page-old', sessionId: 'session-old', mode: 'prepend',
+        fromTurn: 0, toTurn: 30, totalTurns: 60, hasMore: false, loadedMessageCount: 1,
+      }));
+    });
+
+    expect(buffer.current.map(message => message.content)).toEqual(['current']);
+  });
+
+  it('rejects a non-contiguous Codex history page and allows the UI to retry', () => {
+    const { opts, buffer } = createOptsWithMessages([{ type: 'user', content: 'current' }]);
+    opts.currentSessionIdRef.current = 'session-1';
+    renderHook(() => useWindowCallbacks(opts));
+    window.__codexHistoryPageInfo = {
+      pageId: 'page-current', sessionId: 'session-1', mode: 'replace',
+      fromTurn: 40, toTurn: 70, totalTurns: 70, hasMore: true, loadedMessageCount: 1,
+    };
+
+    act(() => {
+      window.beginCodexHistoryPage!(JSON.stringify({
+        pageId: 'page-gap', sessionId: 'session-1', mode: 'prepend',
+      }));
+      window.completeCodexHistoryPage!(JSON.stringify({
+        pageId: 'page-gap', sessionId: 'session-1', mode: 'prepend',
+        fromTurn: 0, toTurn: 30, totalTurns: 70, hasMore: false, loadedMessageCount: 0,
+      }));
+    });
+
+    expect(buffer.current.map(message => message.content)).toEqual(['current']);
+    expect(opts.addToast).toHaveBeenCalledWith(
+      'Codex history changed while loading; please retry',
+      'error',
+    );
   });
 
   it('patches only the transported tail when the full prefix is present', () => {

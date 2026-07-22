@@ -97,6 +97,28 @@ interface Window {
     transferId: string,
     isFinal: string | boolean,
   ) => void;
+  beginCodexHistoryPage?: (json: string) => void;
+  appendCodexHistoryPageBatch?: (pageId: string, json: string) => void;
+  appendCodexHistoryPageChunk?: (
+    pageId: string,
+    chunk: string,
+    transferId: string,
+    isFinal: string | boolean,
+  ) => void;
+  completeCodexHistoryPage?: (json: string) => void;
+  codexHistoryPageError?: (json: string) => void;
+  codexHistoryPageRenderComplete?: () => void;
+  __codexHistoryPageInfo?: {
+    pageId: string;
+    sessionId: string;
+    mode: 'replace' | 'prepend';
+    fromTurn: number;
+    toTurn: number;
+    totalTurns: number;
+    hasMore: boolean;
+    loadedMessageCount: number;
+    cursorReset?: boolean;
+  };
 
   /**
    * History load complete callback - invoked when history messages finish loading.

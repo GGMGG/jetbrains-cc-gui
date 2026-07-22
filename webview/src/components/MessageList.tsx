@@ -1,7 +1,8 @@
 import { memo, useState, useEffect, useRef, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import type { TFunction } from 'i18next';
-import type { ClaudeMessage, ClaudeContentBlock, ToolResultBlock } from '../types';
+import type { ClaudeMessage, ClaudeContentBlock, CodexHistoryPageInfo, ToolResultBlock } from '../types';
 import { getMessageKey } from '../utils/messageUtils';
+import { sendBridgeEvent } from '../utils/bridge';
 import { MessageItem } from './MessageItem';
 import WaitingIndicator from './WaitingIndicator';
 import { ContextMenu } from './ContextMenu';
@@ -16,6 +17,7 @@ import {
 /** Keep pagination aligned to complete user turns so assistant/tool chains are never split. */
 const INITIAL_VISIBLE_TURNS = 5;
 const REVEAL_TURN_PAGE_SIZE = 5;
+const HISTORY_DISK_PAGE_SIZE = 30;
 
 function isHumanUserMessage(message: ClaudeMessage): boolean {
   if (message.type !== 'user') return false;
@@ -97,6 +99,7 @@ interface MessageListProps {
   onNavigateToDependencySettings?: () => void;
   /** Current active provider id; forwarded to MessageItem for streaming-connect label. */
   currentProvider?: string;
+  currentSessionId?: string | null;
 }
 
 export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListProps>(function MessageList({
@@ -116,8 +119,12 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   onNavigateToProviderSettings,
   onNavigateToDependencySettings,
   currentProvider,
+  currentSessionId,
 }, ref) {
   const [revealedTurnCount, setRevealedTurnCount] = useState(0);
+  const [historyPageInfo, setHistoryPageInfo] = useState<CodexHistoryPageInfo | null>(null);
+  const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
+  const loadingEarlierHistoryRef = useRef(false);
   const [detailedOutputEnabled, setDetailedOutputEnabled] = useState(() =>
     getDetailedOutputEnabled()
   );
@@ -131,15 +138,54 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     }
   }, [ctxMenu.open]);
 
-  // History messages often have no id, so use stable fallbacks when detecting a session replacement.
+  // Use explicit session identity in production; keep the message boundary for isolated callers/tests.
+  const previousSessionRef = useRef(currentSessionId);
   const firstMessageBoundaryRef = useRef(getFirstMessageBoundaryKey(messages[0]));
   useEffect(() => {
     const currentBoundary = getFirstMessageBoundaryKey(messages[0]);
-    if (currentBoundary !== firstMessageBoundaryRef.current) {
+    const sessionChanged = currentSessionId != null
+      ? currentSessionId !== previousSessionRef.current
+      : currentBoundary !== firstMessageBoundaryRef.current;
+    if (sessionChanged) {
       setRevealedTurnCount(0);
+      setLoadingEarlierHistory(false);
+      loadingEarlierHistoryRef.current = false;
+      const cached = window.__codexHistoryPageInfo;
+      setHistoryPageInfo(
+        currentProvider === 'codex' && cached?.sessionId === currentSessionId ? cached ?? null : null,
+      );
     }
+    previousSessionRef.current = currentSessionId;
     firstMessageBoundaryRef.current = currentBoundary;
-  }, [messages]);
+  }, [currentProvider, currentSessionId, messages]);
+
+  useEffect(() => {
+    const handlePageInfo = (event: Event) => {
+      const info = (event as CustomEvent<CodexHistoryPageInfo>).detail;
+      if (currentProvider !== 'codex' || !info || info.sessionId !== currentSessionId) return;
+      setHistoryPageInfo(info);
+      setLoadingEarlierHistory(false);
+      loadingEarlierHistoryRef.current = false;
+    };
+    const handlePageError = (event: Event) => {
+      const error = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (!error?.sessionId || error.sessionId === currentSessionId) {
+        setLoadingEarlierHistory(false);
+        loadingEarlierHistoryRef.current = false;
+      }
+    };
+
+    window.addEventListener('codex-history-page-info', handlePageInfo);
+    window.addEventListener('codex-history-page-error', handlePageError);
+    const cached = window.__codexHistoryPageInfo;
+    if (currentProvider === 'codex' && cached?.sessionId === currentSessionId) {
+      setHistoryPageInfo(cached ?? null);
+    }
+    return () => {
+      window.removeEventListener('codex-history-page-info', handlePageInfo);
+      window.removeEventListener('codex-history-page-error', handlePageError);
+    };
+  }, [currentProvider, currentSessionId]);
 
   const userTurnStartIndexes = useMemo(
     () => messages.reduce<number[]>((indexes, message, index) => {
@@ -155,13 +201,31 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   const hiddenTurnCount = userTurnStartIndexes.length - visibleTurnCount;
   const collapsedCount = hiddenTurnCount > 0 ? userTurnStartIndexes[hiddenTurnCount] : 0;
   const shouldCollapse = collapsedCount > 0;
-  const nextHiddenTurnCount = Math.max(0, hiddenTurnCount - REVEAL_TURN_PAGE_SIZE);
-  const nextStartIndex = nextHiddenTurnCount > 0 ? userTurnStartIndexes[nextHiddenTurnCount] : 0;
-  const nextChunkSize = collapsedCount - nextStartIndex;
+  const nextTurnCount = Math.min(REVEAL_TURN_PAGE_SIZE, hiddenTurnCount);
 
+  const canLoadEarlierFromDisk = Boolean(currentProvider === 'codex'
+    && historyPageInfo?.sessionId === currentSessionId
+    && historyPageInfo?.hasMore);
   const handleRevealMore = useCallback(() => {
-    setRevealedTurnCount((prev) => prev + REVEAL_TURN_PAGE_SIZE);
-  }, []);
+    if (hiddenTurnCount > 0) {
+      setRevealedTurnCount((prev) => prev + REVEAL_TURN_PAGE_SIZE);
+      return;
+    }
+    if (!canLoadEarlierFromDisk || loadingEarlierHistoryRef.current || !currentSessionId || !historyPageInfo) {
+      return;
+    }
+
+    loadingEarlierHistoryRef.current = true;
+    setLoadingEarlierHistory(true);
+    const sent = sendBridgeEvent('load_codex_history_page', JSON.stringify({
+      sessionId: currentSessionId,
+      beforeTurn: historyPageInfo.fromTurn,
+    }));
+    if (!sent) {
+      loadingEarlierHistoryRef.current = false;
+      setLoadingEarlierHistory(false);
+    }
+  }, [canLoadEarlierFromDisk, currentSessionId, hiddenTurnCount, historyPageInfo]);
 
   // Imperative API so the in-page search can expand everything before scanning.
   // Returns the number of messages that were just revealed (0 when nothing
@@ -209,13 +273,24 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
           ]}
         />
       )}
-      {shouldCollapse && (
+      {(shouldCollapse || canLoadEarlierFromDisk) && (
         <div
           className="collapsed-messages-indicator"
           onClick={handleRevealMore}
         >
-          {t('chat.showEarlierMessages', { count: nextChunkSize })}
-          {collapsedCount > nextChunkSize ? ` (${collapsedCount})` : ''}
+          {loadingEarlierHistory
+            ? t('chat.loadingEarlierTurns')
+            : shouldCollapse
+              ? t('chat.showEarlierTurns', {
+                count: nextTurnCount,
+                remaining: hiddenTurnCount,
+                total: historyPageInfo?.totalTurns,
+              })
+              : t('chat.loadEarlierTurns', {
+                count: Math.min(HISTORY_DISK_PAGE_SIZE, historyPageInfo?.fromTurn ?? 0),
+                remaining: historyPageInfo?.fromTurn ?? 0,
+                total: historyPageInfo?.totalTurns ?? 0,
+              })}
         </div>
       )}
 

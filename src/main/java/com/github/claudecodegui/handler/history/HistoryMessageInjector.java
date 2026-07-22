@@ -11,17 +11,21 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * Service for loading session messages and injecting them into the frontend.
@@ -39,6 +43,7 @@ public class HistoryMessageInjector {
     private static final String DUAL_USER_RECORD = "dual_user";
 
     private final HandlerContext context;
+    private final AtomicLong sessionLoadGeneration = new AtomicLong();
 
     HistoryMessageInjector(HandlerContext context) {
         this.context = context;
@@ -48,6 +53,8 @@ public class HistoryMessageInjector {
      * Load a history session.
      */
     void handleLoadSession(String sessionId, String currentProvider, HistoryHandler.SessionLoadCallback sessionLoadCallback) {
+        // Every session selection invalidates asynchronous Codex loads from the previous selection.
+        sessionLoadGeneration.incrementAndGet();
         String provider = currentProvider;
         String resolvedSessionId = sessionId;
 
@@ -95,35 +102,37 @@ public class HistoryMessageInjector {
      * Reads session messages directly and injects them into the frontend, while restoring session state.
      */
     void loadCodexSession(String sessionId) {
+        long generation = sessionLoadGeneration.incrementAndGet();
         CompletableFuture.runAsync(() -> {
             LOG.info("[HistoryHandler] ========== 开始加载 Codex 会话 ==========");
             LOG.info("[HistoryHandler] SessionId: " + sessionId);
 
             try {
                 CodexHistoryReader codexReader = new CodexHistoryReader();
-                String messagesJson = codexReader.getSessionMessagesAsJson(sessionId);
-                JsonArray messages = JsonParser.parseString(messagesJson).getAsJsonArray();
-
-                LOG.info("[HistoryHandler] 读取到 " + messages.size() + " 条 Codex 消息");
-
-                // Extract session metadata and restore session state
-                String[] sessionMeta = extractSessionMeta(messages);
-                String threadIdToUse = sessionMeta[0] != null ? sessionMeta[0] : sessionId;
-                String cwd = sessionMeta[1];
+                CodexHistoryPage page = scanCodexHistoryPage(
+                        codexReader, sessionId, null, HISTORY_USER_TURN_LIMIT);
+                if (generation != sessionLoadGeneration.get()) {
+                    LOG.info("[HistoryHandler] Discarding stale Codex session load: " + sessionId);
+                    return;
+                }
+                String threadIdToUse = page.threadId != null ? page.threadId : sessionId;
+                String cwd = page.cwd;
 
                 context.getSession().setSessionInfo(threadIdToUse, cwd);
-                List<JsonObject> frontendMessages = retainRecentUserTurns(
-                        convertCodexMessagesToFrontendBatch(messages), HISTORY_USER_TURN_LIMIT);
-                restoreCodexFrontendMessagesToSessionState(context.getSession().getState(), frontendMessages);
+                restoreCodexFrontendMessagesToSessionState(context.getSession().getState(), page.messages);
                 LOG.info("[HistoryHandler] 恢复 Codex 会话状态: threadId=" + threadIdToUse + " (from sessionId=" + sessionId + "), cwd=" + cwd);
 
-                injectBatchToFrontend(frontendMessages);
+                injectCodexHistoryPage(sessionId, page, true);
 
                 notifyHistoryLoadComplete();
 
                 LOG.info("[HistoryHandler] ========== Codex 会话加载完成 ==========");
 
             } catch (Exception e) {
+                if (generation != sessionLoadGeneration.get()) {
+                    LOG.info("[HistoryHandler] Ignoring stale Codex session load failure: " + sessionId);
+                    return;
+                }
                 LOG.error("[HistoryHandler] 加载 Codex 会话失败: " + e.getMessage(), e);
 
                 ApplicationManager.getApplication().invokeLater(() -> {
@@ -136,6 +145,204 @@ public class HistoryMessageInjector {
                 notifyHistoryLoadComplete();
             }
         });
+    }
+
+    void loadEarlierCodexHistoryPage(String content) {
+        long generation = sessionLoadGeneration.get();
+        CompletableFuture.runAsync(() -> {
+            String sessionId = null;
+            Integer beforeTurn = null;
+            try {
+                JsonObject request = new Gson().fromJson(content, JsonObject.class);
+                if (request == null || !request.has("sessionId") || !request.has("beforeTurn")) {
+                    throw new IllegalArgumentException("Invalid Codex history page request");
+                }
+                sessionId = request.get("sessionId").getAsString();
+                beforeTurn = request.get("beforeTurn").getAsInt();
+                if (sessionId.isBlank() || sessionId.length() > 200 || beforeTurn < 0) {
+                    throw new IllegalArgumentException("Invalid Codex history page cursor");
+                }
+
+                CodexHistoryPage page = scanCodexHistoryPage(
+                        new CodexHistoryReader(), sessionId, beforeTurn, HISTORY_USER_TURN_LIMIT);
+                String activeSessionId = context.getSession() != null
+                        ? context.getSession().getSessionId() : null;
+                boolean activeSessionMatches = sessionId.equals(activeSessionId)
+                        || (page.threadId != null && page.threadId.equals(activeSessionId));
+                if (generation != sessionLoadGeneration.get() || !activeSessionMatches) {
+                    LOG.info("[HistoryHandler] Discarding stale Codex history page: " + sessionId);
+                    return;
+                }
+                boolean replace = page.cursorReset;
+                if (replace) {
+                    restoreCodexFrontendMessagesToSessionState(context.getSession().getState(), page.messages);
+                }
+                injectCodexHistoryPage(sessionId, page, replace);
+                notifyCodexHistoryPageRenderComplete();
+            } catch (Exception e) {
+                LOG.error("[HistoryHandler] 加载更早 Codex 历史失败: " + e.getMessage(), e);
+                notifyCodexHistoryPageError(sessionId, beforeTurn, e.getMessage());
+            }
+        });
+    }
+
+    private void notifyCodexHistoryPageRenderComplete() {
+        context.callJavaScript("codexHistoryPageRenderComplete");
+    }
+
+    static CodexHistoryPage scanCodexHistoryPage(CodexHistoryReader reader,
+                                                  String sessionId,
+                                                  Integer beforeTurn,
+                                                  int pageSize) throws IOException {
+        if (pageSize <= 0) {
+            throw new IllegalArgumentException("Codex history page size must be positive");
+        }
+
+        CodexTurnPageCollector turnCollector = new CodexTurnPageCollector(beforeTurn, pageSize);
+        CodexFrontendMessageAccumulator accumulator = new CodexFrontendMessageAccumulator(turnCollector::accept);
+        CodexHistoryPage page = new CodexHistoryPage();
+        page.rawRecordCount = reader.forEachSessionMessage(sessionId, rawMessage -> {
+            extractSessionMeta(rawMessage, page);
+            accumulator.accept(rawMessage);
+        });
+        accumulator.finish();
+        turnCollector.finish(page);
+
+        LOG.info("[HistoryHandler] Scanned Codex history records=" + page.rawRecordCount
+                + ", totalUserTurns=" + page.totalTurns
+                + ", page=[" + page.fromTurn + ", " + page.toTurn + ")"
+                + ", messages=" + page.messages.size()
+                + ", cursorReset=" + page.cursorReset);
+        return page;
+    }
+
+    static CodexHistoryPage paginateCodexMessages(JsonArray messages,
+                                                   Integer beforeTurn,
+                                                   int pageSize) {
+        CodexTurnPageCollector turnCollector = new CodexTurnPageCollector(beforeTurn, pageSize);
+        CodexFrontendMessageAccumulator accumulator = new CodexFrontendMessageAccumulator(turnCollector::accept);
+        CodexHistoryPage page = new CodexHistoryPage();
+        page.rawRecordCount = messages.size();
+        for (JsonElement element : messages) {
+            JsonObject rawMessage = element.getAsJsonObject();
+            extractSessionMeta(rawMessage, page);
+            accumulator.accept(rawMessage);
+        }
+        accumulator.finish();
+        turnCollector.finish(page);
+        return page;
+    }
+
+    private static void extractSessionMeta(JsonObject rawMessage, CodexHistoryPage page) {
+        if (!"session_meta".equals(getStringProperty(rawMessage, "type"))
+                || !rawMessage.has("payload") || !rawMessage.get("payload").isJsonObject()) {
+            return;
+        }
+        JsonObject payload = rawMessage.getAsJsonObject("payload");
+        if (page.cwd == null) {
+            page.cwd = getStringProperty(payload, "cwd");
+        }
+        if (page.threadId == null) {
+            page.threadId = getStringProperty(payload, "id");
+        }
+    }
+
+    static final class CodexHistoryPage {
+        List<JsonObject> messages = new ArrayList<>();
+        int fromTurn;
+        int toTurn;
+        int totalTurns;
+        int rawRecordCount;
+        boolean cursorReset;
+        String threadId;
+        String cwd;
+    }
+
+    private static final class IndexedTurn {
+        private final int index;
+        private final List<JsonObject> messages;
+
+        private IndexedTurn(int index, List<JsonObject> messages) {
+            this.index = index;
+            this.messages = messages;
+        }
+    }
+
+    private static final class CodexTurnPageCollector {
+        private final Integer requestedBeforeTurn;
+        private final int pageSize;
+        private final int requestedFromTurn;
+        private final Deque<IndexedTurn> recentTurns;
+        private final List<JsonObject> selectedMessages = new ArrayList<>();
+        private List<JsonObject> currentTurn;
+        private int currentTurnIndex = -1;
+        private int totalTurns;
+
+        private CodexTurnPageCollector(Integer requestedBeforeTurn, int pageSize) {
+            this.requestedBeforeTurn = requestedBeforeTurn;
+            this.pageSize = pageSize;
+            this.requestedFromTurn = requestedBeforeTurn == null
+                    ? -1 : Math.max(0, requestedBeforeTurn - pageSize);
+            this.recentTurns = new ArrayDeque<>(pageSize);
+        }
+
+        private void accept(JsonObject message) {
+            if (isHumanUserMessage(message)) {
+                finishCurrentTurn();
+                currentTurnIndex = totalTurns++;
+                currentTurn = new ArrayList<>();
+            }
+            if (currentTurn != null) {
+                currentTurn.add(message);
+            }
+        }
+
+        private void finish(CodexHistoryPage page) {
+            finishCurrentTurn();
+            page.totalTurns = totalTurns;
+
+            if (requestedBeforeTurn == null) {
+                copyRecentTurns(page);
+                return;
+            }
+
+            if (requestedBeforeTurn > totalTurns) {
+                page.cursorReset = true;
+                copyRecentTurns(page);
+                return;
+            }
+
+            page.fromTurn = requestedFromTurn;
+            page.toTurn = requestedBeforeTurn;
+            page.messages = new ArrayList<>(selectedMessages);
+        }
+
+        private void finishCurrentTurn() {
+            if (currentTurn == null) {
+                return;
+            }
+
+            IndexedTurn completed = new IndexedTurn(currentTurnIndex, currentTurn);
+            recentTurns.addLast(completed);
+            if (recentTurns.size() > pageSize) {
+                recentTurns.removeFirst();
+            }
+            if (requestedBeforeTurn != null
+                    && currentTurnIndex >= requestedFromTurn
+                    && currentTurnIndex < requestedBeforeTurn) {
+                selectedMessages.addAll(currentTurn);
+            }
+            currentTurn = null;
+        }
+
+        private void copyRecentTurns(CodexHistoryPage page) {
+            page.messages = new ArrayList<>();
+            for (IndexedTurn turn : recentTurns) {
+                page.messages.addAll(turn.messages);
+            }
+            page.fromTurn = recentTurns.isEmpty() ? 0 : recentTurns.getFirst().index;
+            page.toTurn = totalTurns;
+        }
     }
 
     void notifyHistoryLoadComplete() {
@@ -152,52 +359,59 @@ public class HistoryMessageInjector {
     }
 
     /**
-     * Extract Codex session metadata (threadId and cwd).
-     *
-     * @return String[2]: [0]=actualThreadId, [1]=cwd
-     */
-    private String[] extractSessionMeta(JsonArray messages) {
-        String cwd = null;
-        String actualThreadId = null;
-
-        for (int i = 0; i < messages.size(); i++) {
-            JsonObject msg = messages.get(i).getAsJsonObject();
-            if (msg.has("type") && "session_meta".equals(msg.get("type").getAsString())) {
-                if (msg.has("payload")) {
-                    JsonObject payload = msg.getAsJsonObject("payload");
-                    if (payload.has("cwd")) {
-                        cwd = payload.get("cwd").getAsString();
-                    }
-                    if (payload.has("id")) {
-                        actualThreadId = payload.get("id").getAsString();
-                    }
-                    break;
-                }
-            }
-        }
-
-        return new String[]{actualThreadId, cwd};
-    }
-
-    /**
      * 将 Codex 历史消息批量转换为前端消息列表。
      * 只统一前端注入协议，不改变 Codex 历史文件格式与标题数据来源。
      */
     public static List<JsonObject> convertCodexMessagesToFrontendBatch(JsonArray messages) {
         List<JsonObject> frontendMessages = new ArrayList<>();
+        CodexFrontendMessageAccumulator accumulator = new CodexFrontendMessageAccumulator(frontendMessages::add);
         for (int i = 0; i < messages.size(); i++) {
-            JsonObject msg = messages.get(i).getAsJsonObject();
-            JsonObject frontendMsg = convertCodexMessageToFrontend(msg);
-            if (frontendMsg != null) {
-                String recordKind = getCodexUserRecordKind(msg);
-                if (recordKind != null && isUserMessage(frontendMsg)) {
-                    frontendMsg.addProperty(CODEX_RECORD_KIND, recordKind);
-                }
-                addCodexFrontendMessage(frontendMessages, frontendMsg);
-            }
+            accumulator.accept(messages.get(i).getAsJsonObject());
         }
-        frontendMessages.forEach(message -> message.remove(CODEX_RECORD_KIND));
+        accumulator.finish();
         return frontendMessages;
+    }
+
+    private static final class CodexFrontendMessageAccumulator {
+        private final Consumer<JsonObject> consumer;
+        private JsonObject pending;
+
+        private CodexFrontendMessageAccumulator(Consumer<JsonObject> consumer) {
+            this.consumer = consumer;
+        }
+
+        private void accept(JsonObject rawMessage) {
+            JsonObject incoming = convertCodexMessageToFrontend(rawMessage);
+            if (incoming == null) {
+                return;
+            }
+
+            String recordKind = getCodexUserRecordKind(rawMessage);
+            if (recordKind != null && isUserMessage(incoming)) {
+                incoming.addProperty(CODEX_RECORD_KIND, recordKind);
+            }
+            if (pending != null && isDuplicateAdjacentCodexUserMessage(pending, incoming)) {
+                pending = preferRicherUserMessage(pending, incoming);
+                pending.addProperty(CODEX_RECORD_KIND, DUAL_USER_RECORD);
+                return;
+            }
+
+            emitPending();
+            pending = incoming;
+        }
+
+        private void finish() {
+            emitPending();
+        }
+
+        private void emitPending() {
+            if (pending == null) {
+                return;
+            }
+            pending.remove(CODEX_RECORD_KIND);
+            consumer.accept(pending);
+            pending = null;
+        }
     }
 
     private static String getCodexUserRecordKind(JsonObject message) {
@@ -216,24 +430,6 @@ public class HistoryMessageInjector {
             return RESPONSE_USER_RECORD;
         }
         return null;
-    }
-
-    private static void addCodexFrontendMessage(List<JsonObject> frontendMessages, JsonObject incoming) {
-        if (frontendMessages.isEmpty()) {
-            frontendMessages.add(incoming);
-            return;
-        }
-
-        int lastIndex = frontendMessages.size() - 1;
-        JsonObject previous = frontendMessages.get(lastIndex);
-        if (isDuplicateAdjacentCodexUserMessage(previous, incoming)) {
-            JsonObject preferred = preferRicherUserMessage(previous, incoming);
-            preferred.addProperty(CODEX_RECORD_KIND, DUAL_USER_RECORD);
-            frontendMessages.set(lastIndex, preferred);
-            return;
-        }
-
-        frontendMessages.add(incoming);
     }
 
     private static boolean isDuplicateAdjacentCodexUserMessage(JsonObject previous, JsonObject incoming) {
@@ -589,22 +785,55 @@ public class HistoryMessageInjector {
     /**
      * 分批注入前端消息，避免长历史单次传输阻塞 WebView。
      */
-    private void injectBatchToFrontend(List<JsonObject> frontendMessages) {
-        // Keep the session-transition barrier active until historyLoadComplete.
-        // Otherwise stale callbacks from the previous session can be inserted
-        // between these asynchronous bridge batches.
-        context.executeJavaScriptOnEDT("if (window.clearMessages) { window.clearMessages(); }");
-
+    private void injectCodexHistoryPage(String sessionId, CodexHistoryPage page, boolean replace) {
+        String pageId = UUID.randomUUID().toString();
         Gson gson = new Gson();
+        JsonObject startInfo = new JsonObject();
+        startInfo.addProperty("pageId", pageId);
+        startInfo.addProperty("sessionId", sessionId);
+        startInfo.addProperty("mode", replace ? "replace" : "prepend");
+
+        if (replace) {
+            // Keep the session-transition barrier active until historyLoadComplete.
+            context.executeJavaScriptOnEDT("if (window.clearMessages) { window.clearMessages(); }");
+        }
+        context.callJavaScript("beginCodexHistoryPage", context.escapeJs(gson.toJson(startInfo)));
+
         int batchCount = 0;
         int largestBatchChars = 0;
-        for (List<JsonObject> batch : partitionHistoryMessages(frontendMessages)) {
-            largestBatchChars = Math.max(largestBatchChars, sendHistoryBatch(gson, batch));
+        for (List<JsonObject> batch : partitionHistoryMessages(page.messages)) {
+            largestBatchChars = Math.max(largestBatchChars, sendCodexHistoryPageBatch(gson, pageId, batch));
             batchCount++;
         }
-        LOG.info("[HistoryHandler] Injected Codex history in " + batchCount
-                + " batches, messages=" + frontendMessages.size()
+
+        JsonObject pageInfo = new JsonObject();
+        pageInfo.addProperty("pageId", pageId);
+        pageInfo.addProperty("sessionId", sessionId);
+        pageInfo.addProperty("mode", replace ? "replace" : "prepend");
+        pageInfo.addProperty("fromTurn", page.fromTurn);
+        pageInfo.addProperty("toTurn", page.toTurn);
+        pageInfo.addProperty("totalTurns", page.totalTurns);
+        pageInfo.addProperty("hasMore", page.fromTurn > 0);
+        pageInfo.addProperty("loadedMessageCount", page.messages.size());
+        pageInfo.addProperty("cursorReset", page.cursorReset);
+        context.callJavaScript("completeCodexHistoryPage", context.escapeJs(gson.toJson(pageInfo)));
+
+        LOG.info("[HistoryHandler] Injected Codex history page in " + batchCount
+                + " batches, mode=" + (replace ? "replace" : "prepend")
+                + ", messages=" + page.messages.size()
                 + ", largestBatchChars=" + largestBatchChars);
+    }
+
+    private void notifyCodexHistoryPageError(String sessionId, Integer beforeTurn, String errorMessage) {
+        JsonObject error = new JsonObject();
+        if (sessionId != null) {
+            error.addProperty("sessionId", sessionId);
+        }
+        if (beforeTurn != null) {
+            error.addProperty("beforeTurn", beforeTurn);
+        }
+        error.addProperty("message", errorMessage != null ? errorMessage : "Unknown error");
+        context.callJavaScript("codexHistoryPageError", context.escapeJs(new Gson().toJson(error)));
     }
 
     static List<List<JsonObject>> partitionHistoryMessages(List<JsonObject> frontendMessages) {
@@ -612,7 +841,6 @@ public class HistoryMessageInjector {
         if (frontendMessages == null || frontendMessages.isEmpty()) {
             return batches;
         }
-
         Gson gson = new Gson();
         List<JsonObject> batch = new ArrayList<>(HISTORY_BATCH_MESSAGE_LIMIT);
         int estimatedChars = 2;
@@ -633,11 +861,11 @@ public class HistoryMessageInjector {
         return batches;
     }
 
-    private int sendHistoryBatch(Gson gson, List<JsonObject> batch) {
+    private int sendCodexHistoryPageBatch(Gson gson, String pageId, List<JsonObject> batch) {
         String batchJson = gson.toJson(batch);
         String escapedBatch = JsUtils.escapeJs(batchJson);
         if (escapedBatch.length() <= HISTORY_BATCH_TARGET_CHAR_LIMIT) {
-            context.callJavaScript("appendHistoryMessages", escapedBatch);
+            context.callJavaScript("appendCodexHistoryPageBatch", pageId, escapedBatch);
             return escapedBatch.length();
         }
 
@@ -647,7 +875,8 @@ public class HistoryMessageInjector {
         for (int i = 0; i < chunks.size(); i++) {
             String escapedChunk = JsUtils.escapeJs(chunks.get(i));
             context.callJavaScript(
-                    "appendHistoryMessageChunk",
+                    "appendCodexHistoryPageChunk",
+                    pageId,
                     escapedChunk,
                     transferId,
                     String.valueOf(i == chunks.size() - 1));

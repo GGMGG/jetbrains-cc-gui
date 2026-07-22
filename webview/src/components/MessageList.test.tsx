@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRef } from 'react';
 import type { ClaudeMessage, ClaudeContentBlock, ToolResultBlock } from '../types';
@@ -39,6 +39,13 @@ const t = ((key: string, opts?: Record<string, unknown>) => {
     const count = opts?.count ?? 0;
     return `Show ${count} earlier`;
   }
+  if (key === 'chat.showEarlierTurns') {
+    return `Show ${opts?.count ?? 0} earlier turns (${opts?.remaining ?? 0} remaining)`;
+  }
+  if (key === 'chat.loadEarlierTurns') {
+    return `Load ${opts?.count ?? 0} earlier turns (${opts?.remaining ?? 0} remaining)`;
+  }
+  if (key === 'chat.loadingEarlierTurns') return 'Loading earlier turns...';
   return key;
 }) as never;
 
@@ -95,7 +102,11 @@ function renderList(messages: ClaudeMessage[]) {
 }
 
 describe('MessageList paged collapse', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    delete window.sendToJava;
+    delete window.__codexHistoryPageInfo;
+  });
 
   it('renders all messages when there are at most five user turns', () => {
     renderList(makeMessages(10));
@@ -108,8 +119,7 @@ describe('MessageList paged collapse', () => {
     expect(screen.getAllByTestId('message-item')).toHaveLength(10);
     const indicator = container.querySelector('.collapsed-messages-indicator');
     expect(indicator).toBeTruthy();
-    expect(indicator?.textContent).toContain('Show 10 earlier');
-    expect(indicator?.textContent).toContain('(40)');
+    expect(indicator?.textContent).toBe('Show 5 earlier turns (20 remaining)');
   });
 
   it('reveals five complete turns per click instead of expanding everything', () => {
@@ -117,7 +127,7 @@ describe('MessageList paged collapse', () => {
     expect(screen.getAllByTestId('message-item')).toHaveLength(10);
 
     const indicator = container.querySelector('.collapsed-messages-indicator');
-    expect(indicator?.textContent).toContain('Show 10 earlier');
+    expect(indicator?.textContent).toBe('Show 5 earlier turns (45 remaining)');
     fireEvent.click(indicator!);
     expect(screen.getAllByTestId('message-item')).toHaveLength(20);
 
@@ -128,8 +138,7 @@ describe('MessageList paged collapse', () => {
   it('removes the indicator once everything is revealed', () => {
     const { container } = renderList(makeMessages(16));
     const indicator = container.querySelector('.collapsed-messages-indicator');
-    expect(indicator?.textContent).toContain('Show 6 earlier');
-    expect(indicator?.textContent).not.toMatch(/\(\d+\)/);
+    expect(indicator?.textContent).toBe('Show 3 earlier turns (3 remaining)');
 
     fireEvent.click(indicator!);
     expect(screen.getAllByTestId('message-item')).toHaveLength(16);
@@ -142,7 +151,8 @@ describe('MessageList paged collapse', () => {
 
     expect(visible).toHaveLength(25);
     expect(visible[0].textContent).toBe('user 3');
-    expect(container.querySelector('.collapsed-messages-indicator')?.textContent).toContain('Show 15 earlier');
+    expect(container.querySelector('.collapsed-messages-indicator')?.textContent)
+      .toBe('Show 3 earlier turns (3 remaining)');
   });
 
   it('tolerates malformed raw content blocks from history transport', () => {
@@ -250,6 +260,55 @@ describe('MessageList paged collapse', () => {
     );
 
     expect(screen.getAllByTestId('message-item')).toHaveLength(10);
+  });
+
+  it('requests the previous disk page only after all loaded turns are revealed', () => {
+    const sendToJava = vi.fn();
+    window.sendToJava = sendToJava;
+    const endRef = createRef<HTMLDivElement>();
+    const { container } = render(
+      <MessageList
+        messages={makeMessages(20)}
+        streamingActive={false}
+        isThinking={false}
+        loading={false}
+        loadingStartTime={null}
+        t={t}
+        getMessageText={noopGetText}
+        getContentBlocks={noopGetBlocks}
+        findToolResult={noopFindToolResult}
+        extractMarkdownContent={noopExtractMd}
+        messagesEndRef={endRef}
+        currentProvider="codex"
+        currentSessionId="session-1"
+      />
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('codex-history-page-info', {
+        detail: {
+          pageId: 'page-1',
+          sessionId: 'session-1',
+          mode: 'replace',
+          fromTurn: 70,
+          toTurn: 100,
+          totalTurns: 100,
+          hasMore: true,
+          loadedMessageCount: 20,
+        },
+      }));
+    });
+
+    fireEvent.click(container.querySelector('.collapsed-messages-indicator')!);
+    expect(container.querySelector('.collapsed-messages-indicator')?.textContent)
+      .toBe('Load 30 earlier turns (70 remaining)');
+
+    fireEvent.click(container.querySelector('.collapsed-messages-indicator')!);
+    expect(sendToJava).toHaveBeenCalledWith(
+      'load_codex_history_page:{"sessionId":"session-1","beforeTurn":70}',
+    );
+    expect(container.querySelector('.collapsed-messages-indicator')?.textContent)
+      .toBe('Loading earlier turns...');
   });
 });
 

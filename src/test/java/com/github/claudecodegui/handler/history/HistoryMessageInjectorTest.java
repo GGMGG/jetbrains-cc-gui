@@ -269,6 +269,44 @@ public class HistoryMessageInjectorTest {
     }
 
     @Test
+    public void paginatesCompleteCodexTurnsWithoutPermanentlyDroppingEarlierHistory() {
+        JsonArray history = createTurnHistory(65);
+
+        HistoryMessageInjector.CodexHistoryPage latest =
+                HistoryMessageInjector.paginateCodexMessages(history, null, 30);
+        HistoryMessageInjector.CodexHistoryPage previous =
+                HistoryMessageInjector.paginateCodexMessages(history, latest.fromTurn, 30);
+        HistoryMessageInjector.CodexHistoryPage first =
+                HistoryMessageInjector.paginateCodexMessages(history, previous.fromTurn, 30);
+
+        assertEquals(65, latest.totalTurns);
+        assertEquals(35, latest.fromTurn);
+        assertEquals(65, latest.toTurn);
+        assertEquals("user-35", latest.messages.get(0).get("content").getAsString());
+        assertEquals("assistant-64", latest.messages.get(latest.messages.size() - 1).get("content").getAsString());
+
+        assertEquals(5, previous.fromTurn);
+        assertEquals(35, previous.toTurn);
+        assertEquals("user-5", previous.messages.get(0).get("content").getAsString());
+
+        assertEquals(0, first.fromTurn);
+        assertEquals(5, first.toTurn);
+        assertEquals("user-0", first.messages.get(0).get("content").getAsString());
+        assertEquals("assistant-4", first.messages.get(first.messages.size() - 1).get("content").getAsString());
+    }
+
+    @Test
+    public void resetsToLatestPageWhenCodexHistoryCursorExceedsCurrentFile() {
+        HistoryMessageInjector.CodexHistoryPage page =
+                HistoryMessageInjector.paginateCodexMessages(createTurnHistory(40), 60, 30);
+
+        assertTrue(page.cursorReset);
+        assertEquals(10, page.fromTurn);
+        assertEquals(40, page.toTurn);
+        assertEquals("user-10", page.messages.get(0).get("content").getAsString());
+    }
+
+    @Test
     public void convertsCustomToolCallOutputToToolResult() {
         JsonArray history = new JsonArray();
         history.add(responseItemCustomToolOutput("2026-04-30T09:40:26.701Z", "call-1", "tool output"));
@@ -407,6 +445,17 @@ public class HistoryMessageInjectorTest {
         payload.add("output", output);
         line.add("payload", payload);
         return line;
+    }
+
+    private static JsonArray createTurnHistory(int turnCount) {
+        JsonArray history = new JsonArray();
+        for (int i = 0; i < turnCount; i++) {
+            String timestamp = "2026-04-30T09:40:" + i + ".001Z";
+            history.add(responseItemUserMessage(timestamp, "user-" + i));
+            history.add(eventUserMessage(timestamp, "user-" + i));
+            history.add(responseItemAssistantMessage(timestamp, "assistant-" + i));
+        }
+        return history;
     }
 
     private static JsonObject responseItemMessage(String timestamp, String role, String blockType, String text) {

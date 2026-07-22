@@ -252,6 +252,7 @@ export const ChatScreen = ({
                     setCurrentView('settings');
                   }}
                   currentProvider={currentProvider}
+                  currentSessionId={currentSessionId}
                 />
               </ToolResultRawContext.Provider>
             </SubagentHistoryContext.Provider>
