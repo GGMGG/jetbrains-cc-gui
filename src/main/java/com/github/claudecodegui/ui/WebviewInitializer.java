@@ -226,15 +226,14 @@ public class WebviewInitializer {
                     dispatch = !host.isDisposed() && this.bridges == currentBridges
                             && currentBridges.isCurrentFor(createdBrowser);
                 }
-                // Dispatch outside bridgeLock: handleJavaScriptMessage is
-                // synchronized on the host window, and dispose() holds that
-                // same monitor while calling disposeBridges(). Nesting
-                // bridgeLock -> host monitor would invert dispose()'s
-                // host-monitor -> bridgeLock order and deadlock the EDT
-                // against the JCEF dispatch thread. dispose() flips the
-                // disposed flag before disposeBridges(), so a teardown that
-                // races this gap is still caught by handleJavaScriptMessage's
-                // own disposed guard.
+                // Dispatch outside bridgeLock: handleJavaScriptMessage serializes on the dispatch
+                // gate (MessageDispatchGate), not the host window, and dispose() runs
+                // disposeBridges() outside that gate. Keeping bridgeLock and the gate un-nested -
+                // bridgeLock is released before dispatch acquires the gate, and dispose acquires
+                // the gate only for its short check-and-set (beginTeardown) before releasing it
+                // for heavy teardown - avoids any lock-order inversion between the two. A teardown
+                // that races this gap is caught by the gate: runInDispatch refuses once
+                // beginTeardown has flipped disposed.
                 if (dispatch) {
                     host.handleJavaScriptMessage(msg);
                 }
