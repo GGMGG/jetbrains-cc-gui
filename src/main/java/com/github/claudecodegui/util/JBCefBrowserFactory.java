@@ -1,8 +1,12 @@
 package com.github.claudecodegui.util;
 
+import com.intellij.ide.plugins.IdeaPluginDescriptor;
+import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.application.ApplicationInfo;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.extensions.PluginId;
 import com.intellij.openapi.util.SystemInfo;
+import com.intellij.openapi.util.registry.Registry;
 import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefBrowserBase;
 import com.intellij.ui.jcef.JBCefBrowserBuilder;
@@ -15,6 +19,7 @@ import java.lang.reflect.Method;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.BooleanSupplier;
 
 /**
  * JBCefBrowser factory.
@@ -30,6 +35,8 @@ public final class JBCefBrowserFactory {
 
     private static final Logger LOG = Logger.getInstance(JBCefBrowserFactory.class);
     private static final int CONTROL_CHAR_MAX = 0x1F;
+    private static final String JCEF_ENABLED_REGISTRY_KEY = "ide.browser.jcef.enabled";
+    private static final PluginId JCEF_PLUGIN_ID = PluginId.getId("com.intellij.modules.jcef");
     private static final ConcurrentMap<Class<?>, Optional<Method>> IS_CLOSED_METHODS = new ConcurrentHashMap<>();
 
     /**
@@ -41,6 +48,15 @@ public final class JBCefBrowserFactory {
 
     /** First JBR build line that ships JCefAppConfig.isRemoteEnabled(). */
     public static final String REQUIRED_JBR_BUILD = "b1373";
+
+    /** Describes why JCEF can or cannot be used in the current IDE. */
+    public enum JcefSupportStatus {
+        SUPPORTED,
+        DISABLED_BY_REGISTRY,
+        OUTDATED_JBR,
+        ANDROID_STUDIO_PLUGIN_MISSING,
+        UNAVAILABLE
+    }
 
     private JBCefBrowserFactory() {
         // Utility class, do not instantiate
@@ -233,27 +249,77 @@ public final class JBCefBrowserFactory {
      * @return true if JCEF is supported
      */
     public static boolean isJcefSupported() {
+        return getJcefSupportStatus() == JcefSupportStatus.SUPPORTED;
+    }
+
+    /**
+     * Resolve JCEF availability without calling {@code JBCefApp.isSupported()}
+     * while the IDE registry explicitly disables JCEF. The platform caches the
+     * first support result, so calling it too early would keep returning false
+     * even after the user enables JCEF for the current process.
+     *
+     * @return the current JCEF support status
+     */
+    public static JcefSupportStatus getJcefSupportStatus() {
         try {
-            if (!com.intellij.ui.jcef.JBCefApp.isSupported()) {
-                return false;
-            }
-            // JBCefApp.isSupported() only checks that JCEF classes are present.
-            // It does not detect platform/JBR binary mismatches such as Android
-            // Studio 2026.x shipping an outdated JBR whose JCefAppConfig lacks
-            // isRemoteEnabled() - JBCefApp.getInstance() then dies with an
-            // uncatchable NoSuchMethodError during Holder class init. Detect
-            // that case up front, before anything touches JBCefApp$Holder.
-            if (isJbrMissingJcefRemoteApi()) {
-                LOG.warn("JCEF disabled: this platform requires JCefAppConfig.isRemoteEnabled() but the current"
-                        + " JBR does not provide it. Upgrade the Boot Java Runtime to a JBR with JCEF "
-                        + REQUIRED_JBR_BUILD + " or newer.");
-                return false;
-            }
-            return true;
+            return determineJcefSupport(
+                    Registry.is(JCEF_ENABLED_REGISTRY_KEY, true),
+                    com.intellij.ui.jcef.JBCefApp::isSupported,
+                    JBCefBrowserFactory::isJbrMissingJcefRemoteApi,
+                    JBCefBrowserFactory::isAndroidStudioJcefPluginMissing
+            );
         } catch (Exception | LinkageError e) {
             LOG.warn("Failed to check JCEF support: " + e.getMessage());
+            return JcefSupportStatus.UNAVAILABLE;
+        }
+    }
+
+    static JcefSupportStatus determineJcefSupport(
+            boolean registryEnabled,
+            BooleanSupplier platformSupported,
+            BooleanSupplier remoteApiMissing,
+            BooleanSupplier androidStudioPluginMissing
+    ) {
+        if (!registryEnabled) {
+            return JcefSupportStatus.DISABLED_BY_REGISTRY;
+        }
+        if (!platformSupported.getAsBoolean()) {
+            if (androidStudioPluginMissing.getAsBoolean()) {
+                return JcefSupportStatus.ANDROID_STUDIO_PLUGIN_MISSING;
+            }
+            return JcefSupportStatus.UNAVAILABLE;
+        }
+        if (remoteApiMissing.getAsBoolean()) {
+            LOG.warn("JCEF disabled: this platform requires JCefAppConfig.isRemoteEnabled() but the current"
+                    + " JBR does not provide it. Upgrade the Boot Java Runtime to a JBR with JCEF "
+                    + REQUIRED_JBR_BUILD + " or newer.");
+            return JcefSupportStatus.OUTDATED_JBR;
+        }
+        return JcefSupportStatus.SUPPORTED;
+    }
+
+    /**
+     * Enable the IDE registry flag used by {@code JBCefApp.isSupported()}.
+     * A restart is still required because the platform caches support checks.
+     *
+     * @return true when the registry value was updated successfully
+     */
+    public static boolean enableJcefInRegistry() {
+        try {
+            Registry.get(JCEF_ENABLED_REGISTRY_KEY).setValue(true);
+            return Registry.is(JCEF_ENABLED_REGISTRY_KEY, true);
+        } catch (Exception | LinkageError e) {
+            LOG.warn("Failed to enable JCEF in IDE registry: " + e.getMessage(), e);
             return false;
         }
+    }
+
+    private static boolean isAndroidStudioJcefPluginMissing() {
+        String productCode = ApplicationInfo.getInstance().getBuild().getProductCode();
+        boolean supportedOs = SystemInfo.isWindows || SystemInfo.isMac;
+        IdeaPluginDescriptor descriptor = PluginManagerCore.getPlugin(JCEF_PLUGIN_ID);
+        boolean pluginUnavailable = descriptor == null || !descriptor.isEnabled();
+        return "AI".equals(productCode) && supportedOs && pluginUnavailable;
     }
 
     /**

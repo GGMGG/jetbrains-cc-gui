@@ -145,8 +145,14 @@ export function useChatComputations({
 
   const latestTurnMessages = useMemo(() => sliceLatestConversationTurn(messages), [messages]);
 
+  // While streaming, focus on the current turn's task progress; once settled
+  // (history replay or idle), widen the scope to the whole conversation -
+  // otherwise a multi-turn history session whose last turn has no task tool
+  // would lose its task and subagent lists entirely.
+  const statusScopeMessages = streamingActive ? latestTurnMessages : messages;
+
   const latestTurnSubagents = useSubagents({
-    messages: latestTurnMessages,
+    messages: statusScopeMessages,
     getContentBlocks,
     findToolResult,
     getToolResultRaw,
@@ -158,8 +164,8 @@ export function useChatComputations({
   );
 
   const globalTodos = useMemo(() => {
-    return deriveTodosForTurn(latestTurnMessages, getContentBlocks, streamingActive);
-  }, [latestTurnMessages, getContentBlocks, streamingActive]);
+    return deriveTodosForTurn(statusScopeMessages, getContentBlocks, streamingActive);
+  }, [statusScopeMessages, getContentBlocks, streamingActive]);
 
   const canRewindFromMessageIndex = useCallback(
     (userMessageIndex: number) => {

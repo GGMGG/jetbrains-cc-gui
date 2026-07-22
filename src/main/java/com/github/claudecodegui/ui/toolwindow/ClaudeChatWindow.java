@@ -21,7 +21,6 @@ import com.github.claudecodegui.ui.EditorContextTracker;
 import com.github.claudecodegui.ui.WebviewInitializer;
 import com.github.claudecodegui.ui.WebviewWatchdog;
 import com.github.claudecodegui.util.HtmlLoader;
-import com.github.claudecodegui.util.JBCefBrowserFactory;
 import com.github.claudecodegui.util.JsUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -92,7 +91,15 @@ public class ClaudeChatWindow {
     private final DeferredReload deferredReload = new DeferredReload();
 
     private HandlerContext handlerContext;
-    private MessageDispatcher messageDispatcher;
+    // volatile: assigned once on the EDT during init, then read lock-free from the JCEF UI thread
+    // in handleJavaScriptMessage. The read can no longer piggyback on the host monitor's visibility
+    // now that handleJavaScriptMessage is unsynchronized, so the field carries its own happens-before.
+    private volatile MessageDispatcher messageDispatcher;
+    /**
+     * Serializes webview message dispatch against {@link #dispose()}; see
+     * {@link MessageDispatchGate} for the lifecycle contract.
+     */
+    private final MessageDispatchGate dispatchGate = new MessageDispatchGate();
     private PermissionHandler permissionHandler;
     private HistoryHandler historyHandler;
     private final SessionLifecycleManager sessionLifecycleManager;
@@ -503,10 +510,6 @@ public class ClaudeChatWindow {
             }
             try {
                 org.cef.browser.CefBrowser cefBrowser = targetBrowser.getCefBrowser();
-                if (JBCefBrowserFactory.isBrowserClosed(cefBrowser)) {
-                    LOG.debug("Skip raw JS execution: webview already closed");
-                    return;
-                }
                 cefBrowser.executeJavaScript(jsCode, cefBrowser.getURL(), 0);
             } catch (Exception | LinkageError e) {
                 LOG.warn("Failed to execute raw JS code: " + e.getMessage(), e);
@@ -538,10 +541,6 @@ public class ClaudeChatWindow {
             }
             try {
                 org.cef.browser.CefBrowser cefBrowser = targetBrowser.getCefBrowser();
-                if (JBCefBrowserFactory.isBrowserClosed(cefBrowser)) {
-                    LOG.debug("Skip JS call " + functionName + ": webview already closed");
-                    return;
-                }
                 String callee = functionName;
                 if (!functionName.contains(".")) {
                     callee = "window." + functionName;
@@ -574,10 +573,25 @@ public class ClaudeChatWindow {
         });
     }
 
-    synchronized void handleJavaScriptMessage(String message) {
-        if (this.disposed || message == null) {
+    void handleJavaScriptMessage(String message) {
+        if (message == null) {
             return;
         }
+        // Serialized against dispose() via the dispatch gate. dispose's beginTeardown() waits for
+        // any in-flight dispatch to finish and blocks new ones, so no handler side effect (e.g.
+        // SessionHandler scheduling an async session.send) can start after teardown has begun. The
+        // gate monitor is held only across dispatch - dispose runs its heavy teardown (browser
+        // disposal, process cleanup) outside it, so the JCEF thread never waits on the EDT. That
+        // keeps the old dispatch/dispose lifecycle exclusion without the EDT<->JCEF deadlock.
+        this.dispatchGate.runInDispatch(() -> this.handleJavaScriptMessageLocked(message));
+    }
+
+    /**
+     * Dispatch body, run under the {@link MessageDispatchGate} so it is serialized against
+     * {@code dispose()}. The gate guarantees the window is not disposed for the whole call, so no
+     * per-handler disposed re-check is needed here.
+     */
+    private void handleJavaScriptMessageLocked(String message) {
         if (message.startsWith("{\"type\":\"console.")) {
             try {
                 JsonObject json = new Gson().fromJson(message, JsonObject.class);
@@ -612,7 +626,11 @@ public class ClaudeChatWindow {
         String type = parts[0];
         String content = parts.length > 1 ? parts[1] : "";
 
-        if (messageDispatcher.dispatch(type, content)) {
+        MessageDispatcher dispatcher = this.messageDispatcher;
+        if (dispatcher == null) {
+            return;
+        }
+        if (dispatcher.dispatch(type, content)) {
             return;
         }
 
@@ -1007,11 +1025,8 @@ public class ClaudeChatWindow {
         if (this.disposed || targetBrowser == null) {
             return;
         }
-        org.cef.browser.CefBrowser cefBrowser;
         try {
-            cefBrowser = targetBrowser.getCefBrowser();
-            if (JBCefBrowserFactory.isBrowserClosed(cefBrowser) || this.browser != targetBrowser) {
-                LOG.debug("Skip focus input pane: webview already closed");
+            if (this.browser != targetBrowser) {
                 return;
             }
             targetBrowser.getComponent().requestFocus();
@@ -1024,8 +1039,15 @@ public class ClaudeChatWindow {
 
     // ==================== Dispose ====================
 
-    public synchronized void dispose() {
-        if (this.disposed) { return; }
+    public void dispose() {
+        // Begin teardown under the dispatch gate: this waits for any in-flight dispatch to finish
+        // (so no handler side effect - e.g. an async session.send - can start after this point) and
+        // blocks new dispatch from entering. The gate monitor is released before the heavy teardown
+        // below, so the JCEF thread never waits on the EDT - that was the original EDT<->JCEF
+        // deadlock. beginTeardown() is idempotent; a repeat dispose returns immediately.
+        if (!this.dispatchGate.beginTeardown()) {
+            return;
+        }
         this.disposed = true;
         JBCefBrowser targetBrowser = this.browser;
         this.browser = null;
@@ -1185,6 +1207,11 @@ public class ClaudeChatWindow {
             }
 
             @Override
+            public boolean isFrontendReady() {
+                return frontendReady;
+            }
+
+            @Override
             public void setFrontendReady(boolean ready) {
                 frontendReady = ready;
                 if (ready) {
@@ -1192,6 +1219,39 @@ public class ClaudeChatWindow {
                 }
             }
         };
+    }
+
+    /**
+     * Soft-reload the active session's transcript from the server without
+     * interrupting any in-flight turn.
+     * <p>Used when the user re-opens the session that is already active: instead
+     * of tearing it down (interrupt + recreate), we merely refresh the transcript
+     * so the latest on-disk state is reflected. Reuses the {@code session_updated}
+     * reload path (coalescing + isSessionActive guard), and defers to stream end
+     * when a turn is live so the streaming bubble is never disturbed.</p>
+     */
+    void reloadActiveSessionMessages() {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (disposed) {
+                return;
+            }
+            ClaudeSession current = session;
+            if (current == null) {
+                return;
+            }
+            String currentId = current.getSessionId();
+            if (currentId == null) {
+                return;
+            }
+            if (streamCoalescer != null && streamCoalescer.isStreamActive()) {
+                deferredReload.defer(currentId);
+                LOG.info("[ClaudeChatWindow] Same-session resume deferred — "
+                        + "turn streaming, will reload at stream end, sessionId=" + currentId);
+                return;
+            }
+            LOG.info("[ClaudeChatWindow] Same-session resume soft reload (no interrupt), sessionId=" + currentId);
+            requestSessionReload(currentId);
+        });
     }
 
     private ChatWindowDelegate.DelegateHost createDelegateHost() {
@@ -1337,6 +1397,11 @@ public class ClaudeChatWindow {
             @Override
             public void persistTabSessionState() {
                 ClaudeChatWindow.this.persistTabSessionState();
+            }
+
+            @Override
+            public void reloadActiveSessionMessages() {
+                ClaudeChatWindow.this.reloadActiveSessionMessages();
             }
         };
     }
