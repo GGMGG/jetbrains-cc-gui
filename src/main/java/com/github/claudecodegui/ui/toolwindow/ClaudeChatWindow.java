@@ -1194,6 +1194,39 @@ public class ClaudeChatWindow {
         };
     }
 
+    /**
+     * Soft-reload the active session's transcript from the server without
+     * interrupting any in-flight turn.
+     * <p>Used when the user re-opens the session that is already active: instead
+     * of tearing it down (interrupt + recreate), we merely refresh the transcript
+     * so the latest on-disk state is reflected. Reuses the {@code session_updated}
+     * reload path (coalescing + isSessionActive guard), and defers to stream end
+     * when a turn is live so the streaming bubble is never disturbed.</p>
+     */
+    void reloadActiveSessionMessages() {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (disposed) {
+                return;
+            }
+            ClaudeSession current = session;
+            if (current == null) {
+                return;
+            }
+            String currentId = current.getSessionId();
+            if (currentId == null) {
+                return;
+            }
+            if (streamCoalescer != null && streamCoalescer.isStreamActive()) {
+                deferredReload.defer(currentId);
+                LOG.info("[ClaudeChatWindow] Same-session resume deferred — "
+                        + "turn streaming, will reload at stream end, sessionId=" + currentId);
+                return;
+            }
+            LOG.info("[ClaudeChatWindow] Same-session resume soft reload (no interrupt), sessionId=" + currentId);
+            requestSessionReload(currentId);
+        });
+    }
+
     private ChatWindowDelegate.DelegateHost createDelegateHost() {
         return new ChatWindowDelegate.DelegateHost() {
             @Override
@@ -1337,6 +1370,11 @@ public class ClaudeChatWindow {
             @Override
             public void persistTabSessionState() {
                 ClaudeChatWindow.this.persistTabSessionState();
+            }
+
+            @Override
+            public void reloadActiveSessionMessages() {
+                ClaudeChatWindow.this.reloadActiveSessionMessages();
             }
         };
     }

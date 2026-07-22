@@ -223,19 +223,38 @@ export function useSessionManagement({
 
   // Load history session
   const loadHistorySession = useCallback((sessionId: string, provider?: string) => {
-    // [FIX] Send interrupt signal if AI is responding
+    const session = historyDataRef.current?.sessions?.find(s => s.sessionId === sessionId);
+    const effectiveProvider = provider || session?.provider || 'claude';
+
+    // Re-opening the very session already active: don't interrupt the in-flight
+    // turn or wipe the view - just ask the backend to soft-reload the transcript
+    // from the server. The backend sessionLoadCallback detects the same-session
+    // case and routes through reloadActiveSessionMessages (reusing the
+    // session_updated reload path, never interrupting).
+    // Claude only: codex goes through loadCodexSession, which lacks streaming
+    // defer - skipping interrupt there would clearMessages mid-stream and
+    // disturb the live reply.
+    if (sessionId === currentSessionId && effectiveProvider === 'claude') {
+      sendBridgeEvent('load_session', JSON.stringify({
+        sessionId,
+        provider: effectiveProvider,
+      }));
+      setCurrentView('chat');
+      return;
+    }
+
+    // Switching to a different session (or codex same-session): interrupt first
+    // if the AI is mid-reply, then do a full session swap.
     if (loading) {
       sendBridgeEvent('interrupt_session');
     }
-
-    const session = historyDataRef.current?.sessions?.find(s => s.sessionId === sessionId);
     beginSessionTransition(sessionId, session?.title ?? null);
     sendBridgeEvent('load_session', JSON.stringify({
       sessionId,
-      provider: provider || session?.provider || 'claude',
+      provider: effectiveProvider,
     }));
     setCurrentView('chat');
-  }, [beginSessionTransition, loading, setCurrentView]);
+  }, [beginSessionTransition, loading, setCurrentView, currentSessionId]);
 
   // Delete history session
   const deleteHistorySession = useCallback((sessionId: string) => {
