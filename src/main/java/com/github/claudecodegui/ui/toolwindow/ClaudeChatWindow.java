@@ -13,6 +13,7 @@ import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.SessionCallbackAdapter;
 import com.github.claudecodegui.session.SessionLifecycleManager;
+import com.github.claudecodegui.session.SessionState;
 import com.github.claudecodegui.session.StreamMessageCoalescer;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.settings.TabStateService;
@@ -32,6 +33,7 @@ import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.ui.content.Content;
 import com.intellij.ui.content.ContentManager;
 import com.intellij.ui.jcef.JBCefBrowser;
+import org.cef.browser.CefBrowser;
 
 import javax.swing.*;
 import java.awt.*;
@@ -346,6 +348,84 @@ public class ClaudeChatWindow {
         return mainPanel;
     }
 
+    /**
+     * Restore the native JCEF surface after this content tab becomes active again.
+     * Reloading is intentionally avoided so the tab keeps its in-memory React state.
+     */
+    public void onTabActivated() {
+        Runnable repaint = () -> {
+            if (disposed || !isSelectedContent()) {
+                return;
+            }
+            webviewWatchdog.resetTimestamps();
+
+            JBCefBrowser currentBrowser = browser;
+            if (currentBrowser != null) {
+                try {
+                    refreshActivatedWebview(
+                            mainPanel,
+                            currentBrowser.getComponent(),
+                            currentBrowser.getCefBrowser(),
+                            currentBrowser.isOffScreenRendering(),
+                            () -> callJavaScript("window.onTabActivated")
+                    );
+                } catch (Exception | LinkageError e) {
+                    LOG.warn("Failed to refresh activated JCEF tab: " + e.getMessage(), e);
+                }
+            }
+        };
+
+        // selectionChanged runs before ContentManager fully remaps the heavyweight
+        // JCEF child. Waiting one EDT turn is essential for empty tabs because they
+        // have no later DOM update that would incidentally repaint the native surface.
+        ApplicationManager.getApplication().invokeLater(repaint);
+    }
+
+    private boolean isSelectedContent() {
+        Content content = parentContent;
+        ContentManager contentManager = content == null ? null : content.getManager();
+        return contentManager != null && contentManager.getSelectedContent() == content;
+    }
+
+    static void refreshActivatedWebview(
+            JPanel mainPanel,
+            JComponent browserComponent,
+            CefBrowser cefBrowser,
+            boolean offScreenRendering,
+            Runnable frontendRepaint
+    ) {
+        mainPanel.revalidate();
+        mainPanel.repaint();
+        browserComponent.revalidate();
+        browserComponent.repaint();
+
+        try {
+            if (offScreenRendering) {
+                int width = browserComponent.getWidth();
+                int height = browserComponent.getHeight();
+                if (width > 0 && height > 0) {
+                    cefBrowser.wasResized(width, height);
+                }
+            } else {
+                Component nativeComponent = cefBrowser.getUIComponent();
+                if (nativeComponent != null) {
+                    nativeComponent.setVisible(false);
+                    nativeComponent.invalidate();
+                    nativeComponent.setVisible(true);
+                    Container parent = nativeComponent.getParent();
+                    if (parent != null) {
+                        parent.validate();
+                        parent.repaint();
+                    }
+                    nativeComponent.repaint();
+                }
+            }
+            cefBrowser.notifyScreenInfoChanged();
+        } finally {
+            frontendRepaint.run();
+        }
+    }
+
     public ClaudeSDKBridge getClaudeSDKBridge() {
         return claudeSDKBridge;
     }
@@ -381,6 +461,31 @@ public class ClaudeChatWindow {
 
     public ClaudeSession getSession() {
         return session;
+    }
+
+    /**
+     * Copies provider-specific preferences into a newly-created tab without
+     * carrying over the source tab's conversation or runtime channel.
+     */
+    public void inheritSessionPreferencesFrom(ClaudeChatWindow sourceWindow) {
+        if (sourceWindow == null || sourceWindow.session == null || session == null) {
+            return;
+        }
+
+        ClaudeSession sourceSession = sourceWindow.session;
+        copySessionPreferences(sourceSession.getState(), session.getState());
+        if (handlerContext != null) {
+            handlerContext.setCurrentProvider(sourceSession.getProvider());
+            handlerContext.setCurrentModel(sourceSession.getModel());
+        }
+        persistTabSessionState();
+    }
+
+    static void copySessionPreferences(SessionState source, SessionState target) {
+        target.setProvider(source.getProvider());
+        target.setModel(source.getModel());
+        target.setPermissionMode(source.getPermissionMode());
+        target.setReasoningEffort(source.getReasoningEffort());
     }
 
     public SessionLifecycleManager getSessionLifecycleManager() {
@@ -433,7 +538,7 @@ public class ClaudeChatWindow {
     }
 
     public void loadRestoredHistoryIfNeeded() {
-        if (session == null) {
+        if (session == null || !frontendReady) {
             return;
         }
 
@@ -443,7 +548,7 @@ public class ClaudeChatWindow {
     }
 
     private void loadRestoredHistoryIfNeeded(TabStateService.TabSessionState savedState) {
-        if (!TabSessionRestorePolicy.shouldLoadHistory(savedState) || session == null) {
+        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady) || session == null) {
             return;
         }
         if (!restoredHistoryLoadStarted.compareAndSet(false, true)) {
@@ -484,6 +589,19 @@ public class ClaudeChatWindow {
         if (snippet != null) {
             addCodeSnippet(snippet);
         }
+    }
+
+    private void updateFrontendReadyState(boolean ready) {
+        frontendReady = ready;
+        if (!ready) {
+            return;
+        }
+        flushPendingCodeSnippet();
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (!disposed) {
+                loadRestoredHistoryIfNeeded();
+            }
+        });
     }
 
     public void updateTabStatus(ChatWindowDelegate.TabAnswerStatus status) {
@@ -1213,10 +1331,7 @@ public class ClaudeChatWindow {
 
             @Override
             public void setFrontendReady(boolean ready) {
-                frontendReady = ready;
-                if (ready) {
-                    flushPendingCodeSnippet();
-                }
+                updateFrontendReadyState(ready);
             }
         };
     }
@@ -1378,10 +1493,7 @@ public class ClaudeChatWindow {
 
             @Override
             public void setFrontendReady(boolean ready) {
-                frontendReady = ready;
-                if (ready) {
-                    flushPendingCodeSnippet();
-                }
+                updateFrontendReadyState(ready);
             }
 
             @Override
