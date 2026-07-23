@@ -215,13 +215,12 @@ public class CodexSkillService {
                     return FileVisitResult.CONTINUE;
                 }
             });
-            entries = entries.stream().distinct().sorted().toList();
         } catch (IOException e) {
             LOG.warn("[CodexSkills] Failed to scan skills directory: " + dirPath, e);
             return skills;
         }
 
-        for (File entry : entries) {
+        for (File entry : entries.stream().distinct().sorted().toList()) {
             // Use normalized path in id to prevent collisions when same-named skills
             // exist in different scan directories (child vs parent)
             String normalizedEntryPath = normalizePath(entry.getAbsolutePath());
