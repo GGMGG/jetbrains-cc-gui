@@ -157,11 +157,11 @@ export async function loadClaudeSdk() {
 
     const sdkRootDir = getSdkRootDir('claude-sdk');
     const sdkPath = getPackageDirFromRoot(sdkRootDir, '@anthropic-ai/claude-agent-sdk');
-        console.error('[DIAG-SDK] SDK path:', sdkPath);
-        console.error('[DIAG-SDK] SDK path exists:', existsSync(sdkPath));
+    console.error('[DIAG-SDK] SDK path:', sdkPath);
+    console.error('[DIAG-SDK] SDK path exists:', existsSync(sdkPath));
 
     if (!existsSync(sdkPath)) {
-            console.error('[DIAG-SDK] SDK not installed at path');
+        console.error('[DIAG-SDK] SDK not installed at path');
         throw new Error('SDK_NOT_INSTALLED:claude');
     }
 
