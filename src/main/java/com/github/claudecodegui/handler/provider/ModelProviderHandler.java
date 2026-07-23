@@ -316,28 +316,24 @@ public class ModelProviderHandler {
             return baseModel;
         }
 
-        String mainModel = readConfiguredEnvValue(env, "ANTHROPIC_MODEL");
-        if (mainModel != null) {
-            return mainModel;
-        }
-
         String lowerBaseModel = baseModel.toLowerCase();
         boolean isClaudeModel = lowerBaseModel.startsWith("claude-") || lowerBaseModel.startsWith("claude_");
         if (!isClaudeModel) {
             return baseModel;
         }
 
+        String mainModel = readConfiguredEnvValue(env, "ANTHROPIC_MODEL");
         if (lowerBaseModel.contains("opus")) {
             String mappedOpus = readConfiguredEnvValue(env, "ANTHROPIC_DEFAULT_OPUS_MODEL");
-            return mappedOpus != null ? mappedOpus : baseModel;
+            return mappedOpus != null ? mappedOpus : mainModel != null ? mainModel : baseModel;
         }
         if (lowerBaseModel.contains("haiku")) {
             String mappedHaiku = readConfiguredEnvValue(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL");
-            return mappedHaiku != null ? mappedHaiku : baseModel;
+            return mappedHaiku != null ? mappedHaiku : mainModel != null ? mainModel : baseModel;
         }
         if (lowerBaseModel.contains("sonnet")) {
             String mappedSonnet = readConfiguredEnvValue(env, "ANTHROPIC_DEFAULT_SONNET_MODEL");
-            return mappedSonnet != null ? mappedSonnet : baseModel;
+            return mappedSonnet != null ? mappedSonnet : mainModel != null ? mainModel : baseModel;
         }
 
         return baseModel;
