@@ -429,11 +429,15 @@ export const MAX_EFFORT_CLAUDE_MODELS = new Set([
   'claude-sonnet-4-6',
 ]);
 
+export function codexModelSupportsMaxEffort(modelId: string): boolean {
+  return modelId.trim().toLowerCase().includes('gpt-5.6');
+}
+
 /**
  * Reasoning Effort (thinking depth)
  * Controls the depth of reasoning for AI models
  * Claude API values: low, medium, high, xhigh, max
- * Codex API values: low, medium, high, xhigh
+ * Codex API values: low, medium, high, xhigh; GPT-5.6 also supports max
  */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
