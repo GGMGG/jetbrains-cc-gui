@@ -90,7 +90,6 @@ public class PromptHandler extends BaseMessageHandler {
      * Cleanup method called when the handler is disposed.
      * Stops the file watcher to prevent memory leaks.
      */
-    @Override
     public void dispose() {
         if (fileWatcher != null) {
             fileWatcher.stopWatching();
