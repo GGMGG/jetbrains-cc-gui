@@ -156,7 +156,6 @@ public class ClaudeChatWindow {
         this.webviewWatchdog = new WebviewWatchdog(
                 mainPanel,
                 () -> browser,
-                htmlLoader,
                 () -> webviewInitializer.reloadWebview("watchdog_reload"),
                 () -> webviewInitializer.recreateWebview("watchdog_recreate"),
                 () -> disposed,
@@ -359,7 +358,7 @@ public class ClaudeChatWindow {
             if (disposed || !isSelectedContent()) {
                 return;
             }
-            webviewWatchdog.resetTimestamps();
+            webviewWatchdog.markTabActivated();
 
             JBCefBrowser currentBrowser = browser;
             if (currentBrowser != null) {

@@ -41,4 +41,64 @@ public class WebviewWatchdogTest {
         // Editor focus is independent from Webview render health.
         assertTrue(WebviewWatchdog.shouldMonitor(true, true, true, false));
     }
+
+    @Test
+    public void capsBackgroundStartupRecovery() {
+        WebviewWatchdog watchdog = createWatchdog();
+
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertFalse(watchdog.tryAcquireRecoveryPermit(false));
+    }
+
+    @Test
+    public void frontendReadinessRestoresStartupRecoveryBudget() {
+        WebviewWatchdog watchdog = exhaustedWatchdog();
+
+        watchdog.markFrontendReady();
+
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertFalse(watchdog.tryAcquireRecoveryPermit(false));
+    }
+
+    @Test
+    public void tabActivationRestoresStartupRecoveryBudget() {
+        WebviewWatchdog watchdog = exhaustedWatchdog();
+
+        watchdog.markTabActivated();
+
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertFalse(watchdog.tryAcquireRecoveryPermit(false));
+    }
+
+    @Test
+    public void runtimeRecoveryIsNotCappedByStartupBudget() {
+        WebviewWatchdog watchdog = createWatchdog();
+
+        for (int attempt = 0; attempt < 10; attempt++) {
+            assertTrue(watchdog.tryAcquireRecoveryPermit(true));
+        }
+    }
+
+    private static WebviewWatchdog exhaustedWatchdog() {
+        WebviewWatchdog watchdog = createWatchdog();
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertTrue(watchdog.tryAcquireRecoveryPermit(false));
+        assertFalse(watchdog.tryAcquireRecoveryPermit(false));
+        return watchdog;
+    }
+
+    private static WebviewWatchdog createWatchdog() {
+        return new WebviewWatchdog(
+                new javax.swing.JPanel(),
+                () -> null,
+                () -> { },
+                () -> { },
+                () -> false,
+                () -> false,
+                () -> false
+        );
+    }
 }

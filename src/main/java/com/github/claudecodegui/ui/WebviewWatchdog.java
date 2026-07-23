@@ -1,6 +1,5 @@
 package com.github.claudecodegui.ui;
 
-import com.github.claudecodegui.util.HtmlLoader;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.application.ApplicationManager;
@@ -11,6 +10,7 @@ import com.intellij.util.concurrency.AppExecutorUtil;
 import javax.swing.*;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Webview render watchdog for JCEF stall/black-screen recovery.
@@ -26,6 +26,7 @@ public class WebviewWatchdog {
     private static final long RECOVERY_COOLDOWN_MS = 60_000L;
     private static final long STARTUP_READY_TIMEOUT_MS = 15_000L;
     private static final long STARTUP_RECOVERY_COOLDOWN_MS = 15_000L;
+    private static final int MAX_STARTUP_RECOVERY_ATTEMPTS = 2;
 
     private volatile long lastHeartbeatAtMs = System.currentTimeMillis();
     private volatile long lastRafAtMs = System.currentTimeMillis();
@@ -34,10 +35,10 @@ public class WebviewWatchdog {
     private volatile int stallCount = 0;
     private volatile long lastRecoveryAtMs = 0L;
     private volatile ScheduledFuture<?> watchdogFuture = null;
+    private final AtomicInteger startupRecoveryAttempts = new AtomicInteger();
 
     private final JPanel mainPanel;
     private final BrowserProvider browserProvider;
-    private final HtmlLoader htmlLoader;
     private final Runnable onReloadWebview;
     private final Runnable onRecreateWebview;
     private final DisposedCheck disposedCheck;
@@ -80,7 +81,6 @@ public class WebviewWatchdog {
     public WebviewWatchdog(
             JPanel mainPanel,
             BrowserProvider browserProvider,
-            HtmlLoader htmlLoader,
             Runnable onReloadWebview,
             Runnable onRecreateWebview,
             DisposedCheck disposedCheck,
@@ -89,7 +89,6 @@ public class WebviewWatchdog {
     ) {
         this.mainPanel = mainPanel;
         this.browserProvider = browserProvider;
-        this.htmlLoader = htmlLoader;
         this.onReloadWebview = onReloadWebview;
         this.onRecreateWebview = onRecreateWebview;
         this.disposedCheck = disposedCheck;
@@ -172,13 +171,13 @@ public class WebviewWatchdog {
 
     public void markFrontendReady() {
         resetTimestamps();
-        stallCount = 0;
-        lastRecoveryAtMs = 0L;
+        resetRecoveryState();
     }
 
     /** Give an activated tab one heartbeat window before evaluating stale metadata. */
     public void markTabActivated() {
         resetTimestamps();
+        resetRecoveryState();
     }
 
     private void checkHealth() {
@@ -214,6 +213,7 @@ public class WebviewWatchdog {
         }
 
         if (disposedCheck.isDisposed()) { return; }
+        if (!tryAcquireRecoveryPermit(frontendReady)) { return; }
 
         stallCount += 1;
         String reason = "frontendReady=" + frontendReady
@@ -231,6 +231,33 @@ public class WebviewWatchdog {
             onRecreateWebview.run();
             stallCount = 0;
         }
+
+        if (!frontendReady && startupRecoveryAttempts.get() == MAX_STARTUP_RECOVERY_ATTEMPTS) {
+            LOG.warn("[WebviewWatchdog] Startup recovery limit reached; "
+                    + "waiting for frontend readiness or tab activation before retrying");
+        }
+    }
+
+    boolean tryAcquireRecoveryPermit(boolean frontendReady) {
+        if (frontendReady) {
+            return true;
+        }
+
+        while (true) {
+            int attempts = startupRecoveryAttempts.get();
+            if (attempts >= MAX_STARTUP_RECOVERY_ATTEMPTS) {
+                return false;
+            }
+            if (startupRecoveryAttempts.compareAndSet(attempts, attempts + 1)) {
+                return true;
+            }
+        }
+    }
+
+    private void resetRecoveryState() {
+        stallCount = 0;
+        lastRecoveryAtMs = 0L;
+        startupRecoveryAttempts.set(0);
     }
 
     static long heartbeatTimeoutMs(boolean frontendReady, boolean streaming) {
