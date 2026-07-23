@@ -132,7 +132,6 @@ export function registerMessageCallbacks(
   let pendingUpdateJson: string | null = null;
   let pendingUpdateRaf: number | null = null;
   let pendingUpdateSequence: number | null = null;
-  const pendingHistoryChunks = new Map<string, string[]>();
   const pendingCodexHistoryPages = new Map<string, {
     sessionId: string;
     mode: 'replace' | 'prepend';
@@ -140,6 +139,15 @@ export function registerMessageCallbacks(
     chunks: Map<string, string[]>;
     timeoutId: ReturnType<typeof setTimeout>;
   }>();
+  const getPrependedHistoryMessageCount = (messageCount: number): number => {
+    const count = window.__prependedHistoryMessageCount;
+    return typeof count === 'number'
+      && Number.isSafeInteger(count)
+      && count >= 0
+      && count <= messageCount
+      ? count
+      : 0;
+  };
   const failCodexHistoryPage = (pageId: string | undefined, message: string) => {
     const pending = pageId ? pendingCodexHistoryPages.get(pageId) : undefined;
     if (pending) clearTimeout(pending.timeoutId);
@@ -188,16 +196,20 @@ export function registerMessageCallbacks(
       // The trailing turn is skipped while streaming: live stamping owns it.
       const raw = JSON.parse(json) as unknown;
       if (!Array.isArray(raw)) return;
-      const parsed = reconstructTurnMetadata(
-        raw as ClaudeMessage[],
-        { skipTrailingTurn: isStreamingRef.current },
-      );
+      const backendMessages = raw as ClaudeMessage[];
       if (sequence != null) {
         window.__minAcceptedUpdateSequence = Math.max(minAcceptedSequence, sequence);
       }
       window.__messageBaseIndex = 0;
 
       setMessages((prev) => {
+        const prependedCount = getPrependedHistoryMessageCount(prev.length);
+        const parsed = reconstructTurnMetadata(
+          prependedCount > 0
+            ? [...prev.slice(0, prependedCount), ...backendMessages]
+            : backendMessages,
+          { skipTrailingTurn: isStreamingRef.current },
+        );
         // If streaming is active, delegate to the streaming logic
         if (isStreamingRef.current) {
           if (useBackendStreamingRenderRef.current) {
@@ -435,14 +447,19 @@ export function registerMessageCallbacks(
       }
 
       setMessages((prev) => {
+        const prependedCount = getPrependedHistoryMessageCount(prev.length);
+        const prependedHistory = prependedCount > 0
+          ? prev.slice(0, prependedCount)
+          : [];
         const storedBaseIndex = window.__messageBaseIndex;
         const currentBaseIndex = typeof storedBaseIndex === 'number' && Number.isSafeInteger(storedBaseIndex)
           ? Math.max(0, storedBaseIndex)
           : 0;
-        const hasFullPrefix = currentBaseIndex === 0 && baseIndex <= prev.length;
+        const backendMessageCount = prev.length - prependedCount;
+        const hasFullPrefix = currentBaseIndex === 0 && baseIndex <= backendMessageCount;
         let merged = hasFullPrefix
-          ? [...prev.slice(0, baseIndex), ...tail]
-          : tail;
+          ? [...prev.slice(0, prependedCount + baseIndex), ...tail]
+          : [...prependedHistory, ...tail];
         window.__messageBaseIndex = hasFullPrefix ? 0 : baseIndex;
 
         merged = appendOptimisticMessageIfMissing(prev, merged);
@@ -470,6 +487,10 @@ export function registerMessageCallbacks(
           }
         }
 
+        merged = reconstructTurnMetadata(
+          merged,
+          { skipTrailingTurn: isStreamingRef.current },
+        );
         return finalizeMessageList(prev, merged);
       });
     } catch (error) {
@@ -699,11 +720,11 @@ export function registerMessageCallbacks(
     }
     window.__deniedToolIds?.clear();
     window.__codexHistoryPageInfo = undefined;
-    pendingHistoryChunks.clear();
     for (const pending of pendingCodexHistoryPages.values()) {
       clearTimeout(pending.timeoutId);
     }
     pendingCodexHistoryPages.clear();
+    window.__prependedHistoryMessageCount = 0;
     window.__messageBaseIndex = 0;
     resetTransientUiState();
     closeContextUsageDialog();
@@ -742,32 +763,6 @@ export function registerMessageCallbacks(
   window.addHistoryMessage = (message: ClaudeMessage) => {
     if (window.__sessionTransitioning) return;
     setMessages((prev) => [...prev, message]);
-  };
-
-  const appendHistoryMessages = (json: string) => {
-    try {
-      const batch = JSON.parse(json) as ClaudeMessage[];
-      if (!Array.isArray(batch) || batch.length === 0) return;
-      // History replay is the one trusted producer allowed through the session
-      // transition barrier. The barrier remains active until historyLoadComplete
-      // so stale updateMessages callbacks cannot interleave with these batches.
-      setMessages((prev) => [...prev, ...batch]);
-    } catch (error) {
-      console.error('[Frontend] Failed to parse history batch:', error);
-    }
-  };
-  window.appendHistoryMessages = appendHistoryMessages;
-
-  window.appendHistoryMessageChunk = (chunk, transferId, isFinal) => {
-    if (!transferId) return;
-    const chunks = pendingHistoryChunks.get(transferId) ?? [];
-    chunks.push(chunk);
-    if (!isTruthy(isFinal)) {
-      pendingHistoryChunks.set(transferId, chunks);
-      return;
-    }
-    pendingHistoryChunks.delete(transferId);
-    appendHistoryMessages(chunks.join(''));
   };
 
   window.beginCodexHistoryPage = (json: string) => {
@@ -850,6 +845,20 @@ export function registerMessageCallbacks(
       const container = messagesContainerRef.current;
       const oldScrollHeight = container?.scrollHeight ?? 0;
       const oldScrollTop = container?.scrollTop ?? 0;
+      const storedPrependedCount = window.__prependedHistoryMessageCount;
+      const prependedCount = typeof storedPrependedCount === 'number'
+        && Number.isSafeInteger(storedPrependedCount)
+        && storedPrependedCount >= 0
+        ? storedPrependedCount
+        : 0;
+      window.__prependedHistoryMessageCount = pending.mode === 'replace'
+        ? 0
+        : prependedCount + pageMessages.length;
+      if (pending.mode === 'prepend'
+          && isStreamingRef.current
+          && streamingMessageIndexRef.current >= 0) {
+        streamingMessageIndexRef.current += pageMessages.length;
+      }
       setMessages((prev) => pending.mode === 'replace'
         ? pageMessages
         : [...pageMessages, ...prev]);

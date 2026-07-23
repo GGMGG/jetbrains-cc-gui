@@ -516,26 +516,6 @@ public class HistoryMessageInjector {
         }
     }
 
-    static List<JsonObject> retainRecentUserTurns(List<JsonObject> messages, int maxUserTurns) {
-        if (messages == null || messages.isEmpty() || maxUserTurns <= 0) {
-            return new ArrayList<>();
-        }
-
-        int userTurns = 0;
-        int startIndex = 0;
-        for (int i = messages.size() - 1; i >= 0; i--) {
-            if (!isHumanUserMessage(messages.get(i))) {
-                continue;
-            }
-            userTurns++;
-            if (userTurns == maxUserTurns) {
-                startIndex = i;
-                break;
-            }
-        }
-        return new ArrayList<>(messages.subList(startIndex, messages.size()));
-    }
-
     private static boolean isHumanUserMessage(JsonObject message) {
         if (!isUserMessage(message)) {
             return false;

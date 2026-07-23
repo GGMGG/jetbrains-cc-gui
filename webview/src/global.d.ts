@@ -89,14 +89,6 @@ interface Window {
    * Add single history message (used for Codex session loading)
    */
   addHistoryMessage?: (message: any) => void;
-  /** Append one history batch without replacing batches already received. */
-  appendHistoryMessages?: (json: string) => void;
-  /** Reassemble an oversized history batch from bounded bridge chunks. */
-  appendHistoryMessageChunk?: (
-    chunk: string,
-    transferId: string,
-    isFinal: string | boolean,
-  ) => void;
   beginCodexHistoryPage?: (json: string) => void;
   appendCodexHistoryPageBatch?: (pageId: string, json: string) => void;
   appendCodexHistoryPageChunk?: (
@@ -833,7 +825,9 @@ interface Window {
   __pendingUpdateJson?: string | null;
   __pendingUpdateSequence?: number | null;
   __minAcceptedUpdateSequence?: number;
-  /** Backend index represented by messages[0]; zero means the full prefix is present. */
+  /** Number of paged history messages prepended ahead of the backend session snapshot. */
+  __prependedHistoryMessageCount?: number;
+  /** Backend index represented by the first non-prepended message; zero means its full prefix is present. */
   __messageBaseIndex?: number;
   /** Cancel pending rAF-deferred updateMessages (set by messageCallbacks, called by onStreamEnd). */
   __cancelPendingUpdateMessages?: () => void;

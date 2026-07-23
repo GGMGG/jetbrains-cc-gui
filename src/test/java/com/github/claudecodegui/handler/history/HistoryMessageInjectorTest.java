@@ -235,40 +235,6 @@ public class HistoryMessageInjectorTest {
     }
 
     @Test
-    public void retainsThirtyCompleteUserTurnsWithAssistantAndToolMessages() {
-        List<JsonObject> messages = new java.util.ArrayList<>();
-        for (int i = 0; i < 35; i++) {
-            messages.add(frontendMessage("user", "user-" + i, "text"));
-            messages.add(frontendMessage("assistant", "assistant-" + i, "text"));
-            messages.add(frontendMessage("assistant", "tool-" + i, "tool_use"));
-            messages.add(frontendMessage("user", "[tool_result]", "tool_result"));
-        }
-
-        List<JsonObject> result = HistoryMessageInjector.retainRecentUserTurns(messages, 30);
-
-        assertEquals(120, result.size());
-        assertEquals("user-5", result.get(0).get("content").getAsString());
-        assertEquals("[tool_result]", result.get(result.size() - 1).get("content").getAsString());
-    }
-
-    @Test
-    public void retainsThirtyActualTurnsWhenCodexRecordsEachUserMessageTwice() {
-        JsonArray history = new JsonArray();
-        for (int i = 0; i < 35; i++) {
-            history.add(responseItemUserMessage("2026-04-30T09:40:" + i + ".001Z", "user-" + i));
-            history.add(eventUserMessage("2026-04-30T09:40:" + i + ".002Z", "user-" + i));
-            history.add(responseItemAssistantMessage("2026-04-30T09:40:" + i + ".003Z", "assistant-" + i));
-        }
-
-        List<JsonObject> converted = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(history);
-        List<JsonObject> result = HistoryMessageInjector.retainRecentUserTurns(converted, 30);
-
-        assertEquals(60, result.size());
-        assertEquals("user-5", result.get(0).get("content").getAsString());
-        assertEquals("assistant-34", result.get(result.size() - 1).get("content").getAsString());
-    }
-
-    @Test
     public void paginatesCompleteCodexTurnsWithoutPermanentlyDroppingEarlierHistory() {
         JsonArray history = createTurnHistory(65);
 
@@ -319,25 +285,6 @@ public class HistoryMessageInjectorTest {
         assertEquals("tool_result", block.get("type").getAsString());
         assertEquals("call-1", block.get("tool_use_id").getAsString());
         assertEquals("tool output", block.get("content").getAsString());
-    }
-
-    @Test
-    public void toolResultsDoNotCountAsUserTurns() {
-        List<JsonObject> messages = new java.util.ArrayList<>();
-        messages.add(frontendMessage("user", "old-user", "text"));
-        for (int i = 0; i < 40; i++) {
-            messages.add(frontendMessage("user", "[tool_result]", "tool_result"));
-        }
-        for (int i = 0; i < 30; i++) {
-            messages.add(frontendMessage("user", "recent-user-" + i, "text"));
-            messages.add(frontendMessage("assistant", "reply-" + i, "text"));
-        }
-
-        List<JsonObject> result = HistoryMessageInjector.retainRecentUserTurns(messages, 30);
-
-        assertEquals(60, result.size());
-        assertEquals("recent-user-0", result.get(0).get("content").getAsString());
-        assertEquals("reply-29", result.get(result.size() - 1).get("content").getAsString());
     }
 
     @Test
