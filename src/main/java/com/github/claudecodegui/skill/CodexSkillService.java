@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
@@ -200,8 +202,8 @@ public class CodexSkillService {
         }
 
         List<File> entries = new ArrayList<>();
-        int[] visitedNodes = {0};
-        boolean[] limitReached = {false};
+        AtomicInteger visitedNodes = new AtomicInteger();
+        AtomicBoolean limitReached = new AtomicBoolean();
         try {
             Files.walkFileTree(rootDir, EnumSet.noneOf(FileVisitOption.class), MAX_SKILL_SCAN_DEPTH,
                     new SimpleFileVisitor<>() {
@@ -211,13 +213,13 @@ public class CodexSkillService {
                             || isSkippedSkillScanDirectory(currentDir))) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
-                    if (++visitedNodes[0] > maxScanNodes) {
-                        limitReached[0] = true;
+                    if (visitedNodes.incrementAndGet() > maxScanNodes) {
+                        limitReached.set(true);
                         return FileVisitResult.TERMINATE;
                     }
                     if (!currentDir.equals(rootDir) && locateSkillDefinition(currentDir) != null) {
                         if (entries.size() >= MAX_DISCOVERED_SKILLS) {
-                            limitReached[0] = true;
+                            limitReached.set(true);
                             return FileVisitResult.TERMINATE;
                         }
                         entries.add(currentDir.toFile());
@@ -228,8 +230,8 @@ public class CodexSkillService {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (++visitedNodes[0] > maxScanNodes) {
-                        limitReached[0] = true;
+                    if (visitedNodes.incrementAndGet() > maxScanNodes) {
+                        limitReached.set(true);
                         return FileVisitResult.TERMINATE;
                     }
                     return FileVisitResult.CONTINUE;
@@ -245,7 +247,7 @@ public class CodexSkillService {
             LOG.warn("[CodexSkills] Failed to scan skills directory: " + dirPath, e);
             return skills;
         }
-        if (limitReached[0]) {
+        if (limitReached.get()) {
             LOG.warn("[CodexSkills] Skill scan limit reached: " + dirPath);
         }
 
