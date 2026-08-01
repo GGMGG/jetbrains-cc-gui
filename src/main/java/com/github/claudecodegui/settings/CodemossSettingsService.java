@@ -16,8 +16,9 @@ import com.intellij.openapi.project.Project;
 
 import java.io.File;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -180,12 +181,8 @@ public class CodemossSettingsService {
         // Initialize CodexSettingsManager
         this.codexSettingsManager = new CodexSettingsManager(gson);
 
-        // Initialize CodexMcpServerManager
-        this.codexMcpServerManager = new CodexMcpServerManager(codexSettingsManager);
-
         // Initialize CodexProviderManager
         this.codexProviderManager = new CodexProviderManager(
-                gson,
                 (ignored) -> {
                     try {
                         return readConfig();
@@ -202,6 +199,12 @@ public class CodemossSettingsService {
                 },
                 pathManager,
                 codexSettingsManager
+        );
+
+        // Initialize CodexMcpServerManager after the provider manager used by its access guard.
+        this.codexMcpServerManager = new CodexMcpServerManager(
+                codexSettingsManager,
+                this::isCodexConfigManagementAllowed
         );
     }
 
@@ -245,16 +248,28 @@ public class CodemossSettingsService {
         // Back up existing config
         backupConfig();
 
-        String configPath = getConfigPath();
-        try (FileWriter writer = new FileWriter(configPath, StandardCharsets.UTF_8)) {
-            gson.toJson(config, writer);
+        Path configPath = pathManager.getConfigFilePath();
+        Path parent = configPath.getParent();
+        Path tempPath = Files.createTempFile(parent, "config.json-", ".tmp");
+        try {
+            hardenFilePermissions(tempPath);
+            try (Writer writer = Files.newBufferedWriter(tempPath, StandardCharsets.UTF_8)) {
+                gson.toJson(config, writer);
+            }
+            try {
+                Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
+            }
             LOG.info("[CodemossSettings] Successfully wrote config to: " + configPath);
         } catch (Exception e) {
             LOG.warn("[CodemossSettings] Failed to write config: " + e.getMessage());
             throw e;
+        } finally {
+            Files.deleteIfExists(tempPath);
         }
         // Security (J): config.json holds provider API keys/tokens; restrict to 0600.
-        hardenFilePermissions(Paths.get(configPath));
+        hardenFilePermissions(configPath);
     }
 
     private void backupConfig() {
@@ -1966,12 +1981,12 @@ public class CodemossSettingsService {
         codexProviderManager.switchCodexProvider(id);
     }
 
-    public void applyActiveProviderToCodexSettings() throws IOException {
-        codexProviderManager.applyActiveProviderToCodexSettings();
+    public void switchToCodexCliLogin() throws IOException {
+        codexProviderManager.switchToCodexCliLogin();
     }
 
     public JsonObject getCurrentCodexConfig() throws IOException {
-        if (!isCodexLocalConfigAuthorized()) {
+        if (!isCodexLocalConfigAuthorized() && !codexProviderManager.isManagedProviderReady()) {
             return new JsonObject();
         }
         return codexProviderManager.getCurrentCodexConfig();
@@ -1987,14 +2002,6 @@ public class CodemossSettingsService {
             LOG.warn("[CodemossSettings] Failed to check Codex local authorization: " + e.getMessage());
             return false;
         }
-    }
-
-    public void applyCodexCliLoginToSettings() throws IOException {
-        codexSettingsManager.applyCodexCliLoginToSettings();
-    }
-
-    public void removeCodexCliLoginFromSettings() throws IOException {
-        codexSettingsManager.removeCodexCliLoginFromSettings();
     }
 
     public JsonObject readCodexCliLoginAccountInfo() {
@@ -2020,20 +2027,21 @@ public class CodemossSettingsService {
                 && codex.get("localConfigAuthorized").getAsBoolean();
     }
 
-    public void setCodexLocalConfigAuthorized(boolean authorized) throws IOException {
-        JsonObject config = readConfig();
-        JsonObject codex;
-        if (config.has("codex") && config.get("codex").isJsonObject()) {
-            codex = config.getAsJsonObject("codex");
-        } else {
-            codex = new JsonObject();
-            codex.add("providers", new JsonObject());
-            codex.addProperty("current", "");
-            config.add("codex", codex);
+    /**
+     * Returns whether the plugin may manage the currently active Codex config.toml.
+     * Managed providers own the active config written by the plugin, while local
+     * CLI configuration still requires explicit authorization.
+     */
+    public boolean isCodexConfigManagementAllowed() throws IOException {
+        String accessMode = getCodexRuntimeAccessMode();
+        if (CODEX_RUNTIME_ACCESS_CLI_LOGIN.equals(accessMode)) {
+            return isCodexLocalConfigAuthorized();
         }
+        return CODEX_RUNTIME_ACCESS_MANAGED.equals(accessMode);
+    }
 
-        codex.addProperty("localConfigAuthorized", authorized);
-        writeConfig(config);
+    public void setCodexLocalConfigAuthorized(boolean authorized) throws IOException {
+        codexProviderManager.setLocalConfigAuthorized(authorized);
     }
 
     public String getCodexRuntimeAccessMode() throws IOException {
@@ -2053,10 +2061,7 @@ public class CodemossSettingsService {
                     : CODEX_RUNTIME_ACCESS_INACTIVE;
         }
 
-        if (!currentId.isEmpty()
-                && codex.has("providers")
-                && codex.get("providers").isJsonObject()
-                && codex.getAsJsonObject("providers").has(currentId)) {
+        if (!currentId.isEmpty() && codexProviderManager.isManagedProviderReady()) {
             return CODEX_RUNTIME_ACCESS_MANAGED;
         }
 
