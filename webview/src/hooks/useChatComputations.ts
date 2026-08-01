@@ -18,12 +18,13 @@ import {
 } from '../utils/messageUtils';
 import { extractTodosFromToolUse, extractAccumulatedTasks } from '../utils/todoToolNormalization';
 import {
-  finalizeSubagentsForSettledTurn,
   finalizeTodosForSettledTurn,
+  selectLatestSubagentTurn,
   sliceLatestConversationTurn,
 } from '../utils/turnScope';
 import { FILE_MODIFY_TOOL_NAMES, isToolName } from '../utils/toolConstants';
 import { useSubagents } from './useSubagents';
+import { useCodexSubagentStatusPolling } from './useCodexSubagentStatusPolling';
 import { useFileChanges } from './useFileChanges';
 import { useFileChangesManagement } from './useFileChangesManagement';
 import type { useMessageProcessing } from './useMessageProcessing';
@@ -66,27 +67,49 @@ export function deriveTodosForTurn(
   turnMessages: ClaudeMessage[],
   getContentBlocks: (message: ClaudeMessage) => ClaudeContentBlock[],
   streamingActive: boolean,
+  currentProvider: string,
 ): TodoItem[] {
   let latestTodos: ReturnType<typeof extractTodosFromToolUse> = null;
+  let sawEmptyClaudeSnapshot = false;
   for (let i = turnMessages.length - 1; i >= 0; i--) {
     const msg = turnMessages[i];
     if (msg.type !== 'assistant') continue;
     const blocks = getContentBlocks(msg);
     for (let j = blocks.length - 1; j >= 0; j--) {
-      const todos = extractTodosFromToolUse(blocks[j]);
+      const block = blocks[j];
+      const todos = extractTodosFromToolUse(block);
+      const input = block.type === 'tool_use' ? block.input : undefined;
+      const isExplicitEmptySnapshot = Boolean(input) && (
+        (Array.isArray(input?.todos) && input.todos.length === 0)
+        || (Array.isArray(input?.plan) && input.plan.length === 0)
+      );
       if (todos && todos.length > 0) {
         latestTodos = todos;
         break;
+      }
+      if (todos && isExplicitEmptySnapshot) {
+        if (currentProvider === 'codex') {
+          latestTodos = todos;
+          break;
+        }
+        sawEmptyClaudeSnapshot = true;
       }
     }
     if (latestTodos) break;
   }
 
-  if (latestTodos) {
-    return finalizeTodosForSettledTurn(latestTodos, streamingActive);
+  const accumulatedTasks = sawEmptyClaudeSnapshot
+    ? extractAccumulatedTasks(turnMessages, getContentBlocks)
+    : null;
+  if (accumulatedTasks && accumulatedTasks.length > 0) {
+    return accumulatedTasks;
   }
 
-  return extractAccumulatedTasks(turnMessages, getContentBlocks);
+  if (latestTodos !== null) {
+    return finalizeTodosForSettledTurn(latestTodos, streamingActive, currentProvider);
+  }
+
+  return accumulatedTasks ?? extractAccumulatedTasks(turnMessages, getContentBlocks);
 }
 
 /**
@@ -168,7 +191,7 @@ export function useChatComputations({
 
   const latestTurnMessages = useMemo(() => sliceLatestConversationTurn(messages), [messages]);
 
-  // While streaming, focus on the current turn's task progress; once settled
+  // While streaming, focus on the current turn's subagent progress; once settled
   // (history replay or idle), widen the scope to the whole conversation -
   // otherwise a multi-turn history session whose last turn has no task tool
   // would lose its task and subagent lists entirely.
@@ -176,7 +199,7 @@ export function useChatComputations({
   // Exception: if the latest-turn slice carries no tool_use at all (e.g. a
   // same-session reload snapshot whose latest turn predates the active work, or
   // a text-only turn), widen to the full conversation. Without this, the
-  // StatusPanel subagent/todo lists can briefly disappear when a deferred
+  // StatusPanel subagent list can briefly disappear when a deferred
   // reload's message refresh lands at the frontend a moment before the
   // stream-end signal flips streamingActive back to false. Widening only adds
   // content (earlier turns' settled items) - it never drops the current turn's.
@@ -187,22 +210,37 @@ export function useChatComputations({
       : messages;
   }, [streamingActive, latestTurnMessages, messages, getContentBlocks]);
 
-  const latestTurnSubagents = useSubagents({
-    messages: statusScopeMessages,
+  // Plans belong to the current user turn while streaming. Unlike subagents,
+  // a text-only new turn must not temporarily revive a previous turn's plan.
+  // Settled/history views still scan the full transcript to restore the latest
+  // persisted plan snapshot.
+  const todoScopeMessages = useMemo(
+    () => (streamingActive ? latestTurnMessages : messages),
+    [streamingActive, latestTurnMessages, messages],
+  );
+
+  const extractedSubagents = useSubagents({
+    messages: currentProvider === 'codex' ? messages : statusScopeMessages,
     getContentBlocks,
     findToolResult,
     getToolResultRaw,
     subagentHistories,
   });
 
-  const subagents = useMemo(
-    () => finalizeSubagentsForSettledTurn(latestTurnSubagents, streamingActive),
-    [latestTurnSubagents, streamingActive],
+  const latestTurnSubagents = useMemo(
+    () => (currentProvider === 'codex'
+      ? selectLatestSubagentTurn(messages, extractedSubagents)
+      : extractedSubagents),
+    [currentProvider, messages, extractedSubagents],
   );
 
+  const subagents = latestTurnSubagents;
+
+  useCodexSubagentStatusPolling({ subagents, currentSessionId, currentProvider });
+
   const globalTodos = useMemo(() => {
-    return deriveTodosForTurn(statusScopeMessages, getContentBlocks, streamingActive);
-  }, [statusScopeMessages, getContentBlocks, streamingActive]);
+    return deriveTodosForTurn(todoScopeMessages, getContentBlocks, streamingActive, currentProvider);
+  }, [todoScopeMessages, getContentBlocks, streamingActive, currentProvider]);
 
   const canRewindFromMessageIndex = useCallback(
     (userMessageIndex: number) => {

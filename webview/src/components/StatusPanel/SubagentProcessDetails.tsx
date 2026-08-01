@@ -54,7 +54,7 @@ const SubagentProcessDetails = memo(function SubagentProcessDetails({
         {stats && <div className="subagent-process-stats">{stats}</div>}
       </div>
 
-      {history?.error && <div className="subagent-error">{history.error}</div>}
+      {history?.status === 'error' && history.error && <div className="subagent-error">{history.error}</div>}
 
       {hasContent ? (
         <div className="subagent-process-sections">

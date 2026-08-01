@@ -127,6 +127,9 @@ interface Window {
    */
   onSubagentHistoryLoaded?: (json: string) => void;
 
+  /** Batched lightweight Codex subagent lifecycle status callback. */
+  onSubagentStatusesLoaded?: (json: string) => void;
+
   /**
    * task_* SDK system event callback (async subagent lifecycle).
    * Payload: { subtype: 'task_started'|'task_progress'|'task_notification',
