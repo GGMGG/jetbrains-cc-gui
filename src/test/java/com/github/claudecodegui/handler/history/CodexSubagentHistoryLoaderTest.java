@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -107,6 +108,64 @@ public class CodexSubagentHistoryLoaderTest {
 
         assertEquals("error", result.status());
         assertEquals("Codex subagent turn was aborted", result.error());
+    }
+
+    @Test
+    public void loadsMultipleStatusesFromOneParentActivityMap() throws Exception {
+        Path sessionsDir = temporaryFolder.newFolder("status-sessions").toPath();
+        String parentId = "019fa70f-0653-73e2-a613-1fb0a9e83a2b";
+        String completedChildId = "019fb0fe-c344-7da0-9d10-20659f884100";
+        String runningChildId = "019fb0fe-c344-7da0-9d10-20659f884101";
+        writeRollout(sessionsDir.resolve("rollout-parent-" + parentId + ".jsonl"),
+                event("sub_agent_activity", "event_id", "call-completed",
+                        "agent_thread_id", completedChildId, "agent_path", "/root/completed"),
+                event("sub_agent_activity", "event_id", "call-running",
+                        "agent_thread_id", runningChildId, "agent_path", "/root/running"));
+        writeRollout(sessionsDir.resolve("rollout-child-" + completedChildId + ".jsonl"),
+                sessionMeta(completedChildId, parentId, "/root/completed"),
+                event("task_started", "turn_id", "completed-turn"),
+                turnContext("completed-turn"),
+                responseMessage("assistant", "large transcript must not be returned"),
+                event("task_complete", "turn_id", "completed-turn"));
+        writeRollout(sessionsDir.resolve("rollout-child-" + runningChildId + ".jsonl"),
+                sessionMeta(runningChildId, parentId, "/root/running"),
+                event("task_started", "turn_id", "running-turn"),
+                turnContext("running-turn"),
+                responseMessage("assistant", "still working"));
+
+        List<CodexSubagentHistoryLoader.StatusResult> results =
+                new CodexSubagentHistoryLoader(sessionsDir).loadStatuses(parentId, List.of(
+                        new CodexSubagentHistoryLoader.StatusRequest("call-completed", "/root/completed", null),
+                        new CodexSubagentHistoryLoader.StatusRequest("call-running", "/root/running", null)
+                ));
+
+        assertEquals(2, results.size());
+        assertTrue(results.get(0).success());
+        assertEquals(completedChildId, results.get(0).agentId());
+        assertEquals("completed", results.get(0).status());
+        assertTrue(results.get(0).completed());
+        assertTrue(results.get(1).success());
+        assertEquals(runningChildId, results.get(1).agentId());
+        assertEquals("running", results.get(1).status());
+        assertFalse(results.get(1).completed());
+    }
+
+    @Test
+    public void missingActivityRemainsPending() throws Exception {
+        Path sessionsDir = temporaryFolder.newFolder("pending-status-sessions").toPath();
+        String parentId = "019fa70f-0653-73e2-a613-1fb0a9e83a2b";
+        writeRollout(sessionsDir.resolve("rollout-parent-" + parentId + ".jsonl"), event("noop"));
+
+        List<CodexSubagentHistoryLoader.StatusResult> results =
+                new CodexSubagentHistoryLoader(sessionsDir).loadStatuses(parentId, List.of(
+                        new CodexSubagentHistoryLoader.StatusRequest("call-pending", null, null)
+                ));
+
+        assertEquals(1, results.size());
+        assertFalse(results.get(0).success());
+        assertEquals("running", results.get(0).status());
+        assertFalse(results.get(0).completed());
+        assertEquals("Codex subagent activity not found yet", results.get(0).error());
     }
 
     private static void writeRollout(Path path, JsonObject... records) throws IOException {
