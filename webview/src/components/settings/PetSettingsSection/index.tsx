@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import ConfirmDialog from '../../ConfirmDialog';
 import {
   petBridge,
   BUBBLE_EVENTS,
+  DEFAULT_ACTION_MAPPINGS,
   DEFAULT_BUBBLE_TEMPLATES,
+  PET_ACTIONS,
+  PET_VISUAL_STATES,
   type CodexPetBubbleEvent,
   type CodexPetBubbleSize,
   type CodexPetScope,
@@ -36,6 +40,8 @@ const DEFAULT_CONFIG: CodexPetConfig = {
   catalogPageSize: 12,
   catalogSort: 'default',
   showStatusIndicator: false,
+  confirmBeforeDelete: true,
+  actionMappings: DEFAULT_ACTION_MAPPINGS,
   bubbleEnabled: true,
   bubbleDurationSeconds: 4,
   bubbleSize: 'medium',
@@ -57,12 +63,19 @@ const CATALOG_SORT_OPTIONS: CatalogSort[] = [
 ];
 const SCOPE_OPTIONS: CodexPetScope[] = ['project', 'global'];
 type PendingPetOperation = {
-  operation: 'install' | 'uninstall' | 'alias';
-  slug: string;
+  operation: 'install' | 'uninstall' | 'delete' | 'alias';
+  target: string;
 };
-type PetSettingsTab = 'basic' | 'bubble' | 'local' | 'petdex';
+type HatchPetAction = 'install' | 'create' | 'repair';
+type PetConfirmation =
+  | { kind: 'delete'; petId: string; name: string }
+  | { kind: 'uninstall'; slug: string; name: string }
+  | { kind: 'replace-draft'; action: HatchPetAction }
+  | null;
+type PetSettingsTab = 'basic' | 'actions' | 'bubble' | 'local' | 'petdex';
 const PET_TABS: Array<{ key: PetSettingsTab; labelKey: string; icon: string }> = [
   { key: 'basic', labelKey: 'settings.pet.tabs.basic', icon: 'codicon-hubot' },
+  { key: 'actions', labelKey: 'settings.pet.tabs.actions', icon: 'codicon-run-all' },
   { key: 'bubble', labelKey: 'settings.pet.tabs.bubble', icon: 'codicon-comment-discussion' },
   { key: 'local', labelKey: 'settings.pet.tabs.local', icon: 'codicon-folder-opened' },
   { key: 'petdex', labelKey: 'settings.pet.tabs.petdex', icon: 'codicon-globe' },
@@ -82,6 +95,8 @@ const PET_ERROR_TRANSLATIONS: Record<string, string> = {
   PET_ALIAS_TOO_LONG: 'settings.pet.aliasTooLong',
   INVALID_PET_ALIAS: 'settings.pet.invalidAlias',
   PET_ALIAS_UPDATE_FAILED: 'settings.pet.aliasUpdateFailed',
+  INVALID_LOCAL_PET_ID: 'settings.pet.invalidPackage',
+  LOCAL_PET_NOT_FOUND: 'settings.pet.petNotFound',
   LOCAL_PET_OPERATION_FAILED: 'settings.pet.localPetOperationFailed',
   PET_DIRECTORY_UNAVAILABLE: 'settings.pet.petDirectoryUnavailable',
   INVALID_HATCH_PET_ACTION: 'settings.pet.hatchCommandFailed',
@@ -374,6 +389,7 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [pendingPetOperation, setPendingPetOperation] = useState<PendingPetOperation | null>(null);
+  const [confirmation, setConfirmation] = useState<PetConfirmation>(null);
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
@@ -440,9 +456,12 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
       setCatalogLoading(false);
     });
     const unsubscribeOperation = petBridge.subscribeOperation((operation) => {
+      const operationTarget = operation.operation === 'delete'
+        ? operation.petId
+        : operation.slug;
       setPendingPetOperation((pending) => pending
         && pending.operation === operation.operation
-        && pending.slug === operation.slug
+        && pending.target === operationTarget
         ? null
         : pending);
       if (operation.success) {
@@ -450,13 +469,15 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
           ? 'settings.pet.installSuccess'
           : operation.operation === 'uninstall'
             ? 'settings.pet.uninstallSuccess'
+            : operation.operation === 'delete'
+              ? 'settings.pet.deleteSuccess'
             : operation.operation === 'alias'
               ? 'settings.pet.aliasSuccess'
               : null;
         if (successKey) {
           addToast(t(successKey), 'success');
         }
-        if (['install', 'uninstall', 'alias'].includes(operation.operation)) {
+        if (['install', 'uninstall', 'delete', 'alias'].includes(operation.operation)) {
           setCatalogLoading(true);
           requestCatalog(
             operation.operation !== 'alias',
@@ -607,14 +628,36 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
   }, [currentPage, goToPage, pageInput]);
 
   const installPet = useCallback((slug: string) => {
-    setPendingPetOperation({ operation: 'install', slug });
+    setPendingPetOperation({ operation: 'install', target: slug });
     petBridge.install(slug);
   }, []);
 
-  const uninstallPet = useCallback((slug: string) => {
-    setPendingPetOperation({ operation: 'uninstall', slug });
+  const startUninstall = useCallback((slug: string) => {
+    setPendingPetOperation({ operation: 'uninstall', target: slug });
     petBridge.uninstall(slug);
   }, []);
+
+  const startDelete = useCallback((petId: string) => {
+    setPendingPetOperation({ operation: 'delete', target: petId });
+    petBridge.deleteLocalPet(petId);
+  }, []);
+
+  const uninstallPet = useCallback((slug: string, name: string) => {
+    if (config.confirmBeforeDelete) {
+      setConfirmation({ kind: 'uninstall', slug, name });
+      return;
+    }
+    startUninstall(slug);
+  }, [config.confirmBeforeDelete, startUninstall]);
+
+  const deleteCurrentPet = useCallback(() => {
+    if (!currentPet) return;
+    if (config.confirmBeforeDelete) {
+      setConfirmation({ kind: 'delete', petId: currentPet.id, name: currentPet.name });
+      return;
+    }
+    startDelete(currentPet.id);
+  }, [config.confirmBeforeDelete, currentPet, startDelete]);
 
   const saveAlias = useCallback((alias: string) => {
     const normalizedAlias = normalizeAliasDraft(alias);
@@ -622,12 +665,11 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
       || !currentPet.slug
       || pendingPetOperation !== null
       || normalizedAlias === (currentPet.alias ?? '')) return;
-    setPendingPetOperation({ operation: 'alias', slug: currentPet.slug });
+    setPendingPetOperation({ operation: 'alias', target: currentPet.slug });
     petBridge.setAlias(currentPet.slug, normalizedAlias);
   }, [currentPet, pendingPetOperation]);
 
-  const prepareHatchCommand = useCallback((action: 'install' | 'create' | 'repair') => {
-    if (draftInput.trim() && !window.confirm(t('settings.pet.hatchReplaceDraftConfirm'))) return;
+  const startHatchCommand = useCallback((action: HatchPetAction) => {
     petBridge.prepareHatchCommand({
       action,
       name: hatchName,
@@ -635,7 +677,28 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
       style: hatchStyle,
       referencePath: hatchReference,
     });
-  }, [draftInput, hatchDescription, hatchName, hatchReference, hatchStyle, t]);
+  }, [hatchDescription, hatchName, hatchReference, hatchStyle]);
+
+  const prepareHatchCommand = useCallback((action: HatchPetAction) => {
+    if (draftInput.trim()) {
+      setConfirmation({ kind: 'replace-draft', action });
+      return;
+    }
+    startHatchCommand(action);
+  }, [draftInput, startHatchCommand]);
+
+  const closeConfirmation = useCallback(() => setConfirmation(null), []);
+  const confirmOperation = useCallback(() => {
+    if (!confirmation) return;
+    closeConfirmation();
+    if (confirmation.kind === 'delete') {
+      startDelete(confirmation.petId);
+    } else if (confirmation.kind === 'uninstall') {
+      startUninstall(confirmation.slug);
+    } else {
+      startHatchCommand(confirmation.action);
+    }
+  }, [closeConfirmation, confirmation, startDelete, startHatchCommand, startUninstall]);
 
   return (
     <div className={styles.section}>
@@ -714,6 +777,14 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
                       />
                       <span>{t('settings.pet.showStatusIndicator')}</span>
                     </label>
+                    <label className={styles.switchLabel}>
+                      <input
+                        type="checkbox"
+                        checked={config.confirmBeforeDelete}
+                        onChange={(event) => updateConfig({ confirmBeforeDelete: event.target.checked })}
+                      />
+                      <span>{t('settings.pet.confirmBeforeDelete')}</span>
+                    </label>
                     <button type="button" className={styles.secondaryButton} onClick={petBridge.resetPosition}>
                       <span className="codicon codicon-target" aria-hidden="true" />
                       {t('settings.pet.resetPosition')}
@@ -734,14 +805,30 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
                 <div className={styles.controls}>
                   <div className={styles.field}>
                     <span>{t('settings.pet.currentPet')}</span>
-                    <SearchablePetSelect
-                      value={config.selectedPetId}
-                      options={petOptions}
-                      ariaLabel={t('settings.pet.currentPet')}
-                      searchPlaceholder={t('settings.pet.petSearchPlaceholder')}
-                      emptyLabel={t('settings.pet.noMatchingLocalPets')}
-                      onChange={(selectedPetId) => updateConfig({ selectedPetId })}
-                    />
+                    <div className={styles.petSelectionRow}>
+                      <SearchablePetSelect
+                        value={config.selectedPetId}
+                        options={petOptions}
+                        ariaLabel={t('settings.pet.currentPet')}
+                        searchPlaceholder={t('settings.pet.petSearchPlaceholder')}
+                        emptyLabel={t('settings.pet.noMatchingLocalPets')}
+                        onChange={(selectedPetId) => updateConfig({ selectedPetId })}
+                      />
+                      {currentPet && (
+                        <button
+                          type="button"
+                          className={styles.dangerButton}
+                          onClick={deleteCurrentPet}
+                          disabled={pendingPetOperation !== null}
+                        >
+                          <span className="codicon codicon-trash" aria-hidden="true" />
+                          {pendingPetOperation?.operation === 'delete'
+                            && pendingPetOperation.target === currentPet.id
+                            ? t('settings.pet.processing')
+                            : t('settings.pet.delete')}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {currentPet?.managed && currentPet.slug && (
@@ -824,6 +911,58 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
 
                 </div>
               </div>
+            </section>
+          )}
+          {activeTab === 'actions' && (
+            <section className={styles.controlSection}>
+              <div className={styles.sectionHeader}>
+                <div>
+                  <h4>{t('settings.pet.actionsTitle')}</h4>
+                  <p>{t('settings.pet.actionsDescription')}</p>
+                </div>
+              </div>
+              <div className={styles.actionMappingGrid}>
+                {PET_VISUAL_STATES.map((state) => {
+                  const selectedActions = config.actionMappings[state];
+                  return (
+                    <div key={state} className={styles.field}>
+                      <span>{t(`settings.pet.visualStates.${state}`)}</span>
+                      <div
+                        className={styles.actionMappingOptions}
+                        role="group"
+                        aria-label={t(`settings.pet.visualStates.${state}`)}
+                      >
+                        {PET_ACTIONS.map((action) => {
+                          const checked = selectedActions.includes(action);
+                          return (
+                            <label key={action} className={styles.actionOption}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={checked && selectedActions.length === 1}
+                                onChange={(event) => {
+                                  const nextActions = event.target.checked
+                                    ? [...selectedActions, action]
+                                    : selectedActions.filter((item) => item !== action);
+                                  if (nextActions.length === 0) return;
+                                  updateConfig({
+                                    actionMappings: {
+                                      ...config.actionMappings,
+                                      [state]: [...new Set(nextActions)],
+                                    },
+                                  });
+                                }}
+                              />
+                              <span>{t(`settings.pet.actions.${action}`)}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className={styles.actionMappingHint}>{t('settings.pet.actionsHint')}</p>
             </section>
           )}
           {activeTab === 'bubble' && (
@@ -1166,7 +1305,7 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
                 style={{ gridTemplateColumns: `repeat(${config.catalogColumns}, minmax(0, 1fr))` }}
               >
                 {catalog.map((pet) => {
-                  const pending = pendingPetOperation?.slug === pet.slug;
+                  const pending = pendingPetOperation?.target === pet.slug;
                   const displayName = pet.alias || pet.displayName;
                   return (
                     <article key={pet.slug} className={styles.petCard}>
@@ -1185,7 +1324,7 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
                         <button
                           type="button"
                           className={styles.dangerButton}
-                          onClick={() => uninstallPet(pet.slug)}
+                          onClick={() => uninstallPet(pet.slug, displayName)}
                           disabled={pendingPetOperation !== null}
                         >
                           <span className="codicon codicon-trash" aria-hidden="true" />
@@ -1266,6 +1405,27 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
           )}
         </div>
       </div>
+      <ConfirmDialog
+        isOpen={confirmation !== null}
+        title={confirmation?.kind === 'delete'
+          ? t('settings.pet.deleteConfirmTitle')
+          : confirmation?.kind === 'uninstall'
+            ? t('settings.pet.uninstallConfirmTitle')
+            : t('settings.pet.hatchReplaceDraftConfirmTitle')}
+        message={confirmation?.kind === 'delete'
+          ? t('settings.pet.deleteConfirm', { name: confirmation.name })
+          : confirmation?.kind === 'uninstall'
+            ? t('settings.pet.uninstallConfirm', { name: confirmation.name })
+            : t('settings.pet.hatchReplaceDraftConfirm')}
+        confirmText={confirmation?.kind === 'delete'
+          ? t('settings.pet.delete')
+          : confirmation?.kind === 'uninstall'
+            ? t('settings.pet.uninstall')
+            : t('settings.pet.hatchReplaceDraftAction')}
+        cancelText={t('common.cancel')}
+        onConfirm={confirmOperation}
+        onCancel={closeConfirmation}
+      />
     </div>
   );
 }

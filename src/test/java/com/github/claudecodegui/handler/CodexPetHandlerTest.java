@@ -11,6 +11,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
@@ -24,6 +25,7 @@ import java.util.concurrent.Future;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class CodexPetHandlerTest {
@@ -166,6 +168,54 @@ public class CodexPetHandlerTest {
                 .getAsJsonObject();
         String alias = parsed.get("alias").getAsString();
         assertTrue(alias.startsWith("Desk-") || alias.startsWith("Work-"));
+    }
+
+    @Test
+    public void deletesManagedImportedAndStandardPetPackages() throws Exception {
+        Path root = temporaryFolder.newFolder("deletable-pets").toPath();
+
+        Path managed = Files.createDirectories(root.resolve("managed-pet"));
+        Files.write(managed.resolve("spritesheet.png"), pngImage(32, 32));
+        Files.writeString(managed.resolve(".petdex-installed"), "managed-pet", StandardCharsets.UTF_8);
+        assertEquals("managed-pet", CodexPetHandler.deletePetAsset(
+                root, "managed-pet/spritesheet.png").getPackageSlug());
+        assertFalse(Files.exists(managed));
+
+        String importedSlug = createLegacyImportedPet(root, "imported-pet", "Imported Pet");
+        assertEquals(importedSlug, CodexPetHandler.deletePetAsset(
+                root, importedSlug + "/pet.png").getPackageSlug());
+        assertFalse(Files.exists(root.resolve(importedSlug)));
+
+        Path standard = Files.createDirectories(root.resolve("standard-pet"));
+        Files.write(standard.resolve("spritesheet.png"), pngImage(32, 32));
+        Files.writeString(standard.resolve("pet.json"),
+                "{\"displayName\":\"Standard Pet\",\"spritesheetPath\":\"spritesheet.png\"}",
+                StandardCharsets.UTF_8);
+        assertEquals("standard-pet", CodexPetHandler.deletePetAsset(
+                root, "standard-pet/spritesheet.png").getPackageSlug());
+        assertFalse(Files.exists(standard));
+    }
+
+    @Test
+    public void deletesOnlySelectedLooseImageAndRejectsUnsafePetIds() throws Exception {
+        Path root = temporaryFolder.newFolder("loose-pets").toPath();
+        Path directory = Files.createDirectories(root.resolve("loose"));
+        Path selected = directory.resolve("selected.png");
+        Path sibling = directory.resolve("keep.png");
+        Files.write(selected, pngImage(16, 16));
+        Files.write(sibling, pngImage(16, 16));
+
+        assertNull(CodexPetHandler.deletePetAsset(root, "loose/selected.png").getPackageSlug());
+        assertFalse(Files.exists(selected));
+        assertTrue(Files.exists(sibling));
+        assertTrue(Files.isDirectory(directory));
+
+        IOException traversal = assertThrows(IOException.class,
+                () -> CodexPetHandler.deletePetAsset(root, "../outside.png"));
+        assertEquals("PET_PATH_OUTSIDE_ROOT", traversal.getMessage());
+        IOException builtin = assertThrows(IOException.class,
+                () -> CodexPetHandler.deletePetAsset(root, "builtin"));
+        assertEquals("INVALID_LOCAL_PET_ID", builtin.getMessage());
     }
 
     @Test

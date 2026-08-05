@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PetSettingsSection from './index';
 import en from '../../../i18n/locales/en.json';
@@ -47,9 +47,10 @@ interface LocalPreviewPayload {
 }
 
 interface PetOperationPayload {
-  operation: 'configure' | 'install' | 'uninstall' | 'alias' | 'open-directory' | 'skill-command';
+  operation: 'configure' | 'install' | 'uninstall' | 'delete' | 'alias' | 'open-directory' | 'skill-command';
   success: boolean;
   slug?: string;
+  petId?: string;
 }
 
 function collectTranslationLeaves(value: unknown, prefix = ''): string[] {
@@ -80,6 +81,8 @@ const mocks = vi.hoisted(() => ({
   getLocalPets: vi.fn(),
   setConfig: vi.fn(),
   setAlias: vi.fn(),
+  deleteLocalPet: vi.fn(),
+  uninstall: vi.fn(),
   refreshAssets: vi.fn(),
   getHatchStatus: vi.fn(),
   prepareHatchCommand: vi.fn(),
@@ -103,6 +106,11 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('../../codexPet/petBridge', () => ({
   BUBBLE_EVENTS: ['task_started', 'thinking', 'running', 'task_success', 'task_error', 'idle'],
+  PET_ACTIONS: ['idle', 'running-right', 'running-left', 'waving', 'jumping', 'failed', 'waiting', 'running', 'review'],
+  PET_VISUAL_STATES: ['idle', 'success', 'thinking', 'running', 'error'],
+  DEFAULT_ACTION_MAPPINGS: {
+    idle: ['idle'], success: ['jumping'], thinking: ['review'], running: ['running'], error: ['failed'],
+  },
   DEFAULT_BUBBLE_TEMPLATES: {
     task_started: ['Start'],
     thinking: ['Thinking'],
@@ -156,6 +164,7 @@ vi.mock('../../codexPet/petBridge', () => ({
     getPreview: mocks.getPreview,
     setConfig: mocks.setConfig,
     setAlias: mocks.setAlias,
+    deleteLocalPet: mocks.deleteLocalPet,
     refreshAssets: mocks.refreshAssets,
     openPetDirectory: vi.fn(),
     getHatchStatus: mocks.getHatchStatus,
@@ -163,7 +172,7 @@ vi.mock('../../codexPet/petBridge', () => ({
     chooseHatchReference: vi.fn(),
     prepareHatchCommand: mocks.prepareHatchCommand,
     install: vi.fn(),
-    uninstall: vi.fn(),
+    uninstall: mocks.uninstall,
     resetPosition: vi.fn(),
     openWebsite: vi.fn(),
   },
@@ -190,6 +199,8 @@ describe('PetSettingsSection catalog pagination', () => {
     mocks.getLocalPets.mockClear();
     mocks.setConfig.mockClear();
     mocks.setAlias.mockClear();
+    mocks.deleteLocalPet.mockClear();
+    mocks.uninstall.mockClear();
     mocks.refreshAssets.mockClear();
     mocks.getHatchStatus.mockClear();
     mocks.prepareHatchCommand.mockClear();
@@ -212,6 +223,10 @@ describe('PetSettingsSection catalog pagination', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'settings.pet.tabs.petdex' }));
   };
 
+  const openActionsTab = () => {
+    fireEvent.click(screen.getByRole('tab', { name: 'settings.pet.tabs.actions' }));
+  };
+
   it('keeps Simplified Chinese pet translations complete', () => {
     expect(collectTranslationLeaves(zh.codexPet).sort())
       .toEqual(collectTranslationLeaves(en.codexPet).sort());
@@ -221,11 +236,42 @@ describe('PetSettingsSection catalog pagination', () => {
     expect(zh.settings.pet.floatingTitle).toBe('IDE 悬浮宠物');
   });
 
-  it('renders all pet settings in one four-tab group', () => {
+  it('renders all pet settings in one five-tab group', () => {
     render(<PetSettingsSection addToast={vi.fn()} />);
 
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+  });
+
+  it('persists multiple actions for one state and keeps one action selected', () => {
+    render(<PetSettingsSection addToast={vi.fn()} />);
+    openActionsTab();
+
+    const idleGroup = screen.getByRole('group', { name: 'settings.pet.visualStates.idle' });
+    const waving = within(idleGroup).getByRole('checkbox', { name: 'settings.pet.actions.waving' });
+    fireEvent.click(waving);
+
+    expect(mocks.setConfig).toHaveBeenCalledWith({
+      actionMappings: {
+        idle: ['idle', 'waving'],
+        success: ['jumping'],
+        thinking: ['review'],
+        running: ['running'],
+        error: ['failed'],
+      },
+    });
+    fireEvent.click(within(idleGroup).getByRole('checkbox', { name: 'settings.pet.actions.idle' }));
+    expect(mocks.setConfig).toHaveBeenLastCalledWith({
+      actionMappings: {
+        idle: ['waving'],
+        success: ['jumping'],
+        thinking: ['review'],
+        running: ['running'],
+        error: ['failed'],
+      },
+    });
+    expect((within(idleGroup).getByRole('checkbox', { name: 'settings.pet.actions.waving' }) as HTMLInputElement).disabled)
+      .toBe(true);
   });
 
   it('shows scope-specific guidance and keeps the window position hint separate', () => {
@@ -398,9 +444,8 @@ describe('PetSettingsSection catalog pagination', () => {
     expect(mocks.prepareHatchCommand).toHaveBeenCalledWith(expect.objectContaining({ action: 'install' }));
   });
 
-  it('does not overwrite an existing chat draft without confirmation', () => {
+  it('does not overwrite an existing chat draft until the shared confirmation is accepted', () => {
     mocks.draftInput = 'unfinished question';
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<PetSettingsSection addToast={vi.fn()} />);
     openLocalTab();
     act(() => mocks.hatchStatusListeners[0]!({
@@ -409,8 +454,15 @@ describe('PetSettingsSection catalog pagination', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'settings.pet.prepareCreatePet' }));
 
-    expect(window.confirm).toHaveBeenCalledWith('settings.pet.hatchReplaceDraftConfirm');
     expect(mocks.prepareHatchCommand).not.toHaveBeenCalled();
+    let dialog = screen.getByRole('dialog', { name: 'settings.pet.hatchReplaceDraftConfirmTitle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'common.cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.prepareCreatePet' }));
+    dialog = screen.getByRole('dialog', { name: 'settings.pet.hatchReplaceDraftConfirmTitle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.pet.hatchReplaceDraftAction' }));
+    expect(mocks.prepareHatchCommand).toHaveBeenCalledWith(expect.objectContaining({ action: 'create' }));
   });
 
   it('applies the selected catalog column count directly to the grid', () => {
@@ -532,6 +584,64 @@ describe('PetSettingsSection catalog pagination', () => {
     expect(mocks.getLocalPreview).toHaveBeenCalledWith('same-name/spritesheet.png');
   });
 
+  it('requires confirmation before deleting the selected local pet', () => {
+    render(<PetSettingsSection addToast={vi.fn()} />);
+    act(() => mocks.localPetListeners[0]!([
+      localPet('same-name/spritesheet.png', 'Desk Pet', 'Original Pet', 'same-name'),
+    ]));
+    fireEvent.click(screen.getByRole('combobox', { name: 'settings.pet.currentPet' }));
+    fireEvent.click(screen.getByRole('option', { name: /Desk Pet/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.delete' }));
+    expect(mocks.deleteLocalPet).not.toHaveBeenCalled();
+    let dialog = screen.getByRole('dialog', { name: 'settings.pet.deleteConfirmTitle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'common.cancel' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.delete' }));
+    dialog = screen.getByRole('dialog', { name: 'settings.pet.deleteConfirmTitle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.pet.delete' }));
+    expect(mocks.deleteLocalPet).toHaveBeenCalledWith('same-name/spritesheet.png');
+  });
+
+  it('can disable delete confirmation for local and Petdex pets', () => {
+    render(<PetSettingsSection addToast={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText('settings.pet.confirmBeforeDelete'));
+    expect(mocks.setConfig).toHaveBeenCalledWith({ confirmBeforeDelete: false });
+
+    act(() => mocks.localPetListeners[0]!([
+      localPet('same-name/spritesheet.png', 'Desk Pet', 'Original Pet', 'same-name'),
+    ]));
+    fireEvent.click(screen.getByRole('combobox', { name: 'settings.pet.currentPet' }));
+    fireEvent.click(screen.getByRole('option', { name: /Desk Pet/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.delete' }));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mocks.deleteLocalPet).toHaveBeenCalledWith('same-name/spritesheet.png');
+  });
+
+  it('applies the same confirmation rule to Petdex uninstall', () => {
+    render(<PetSettingsSection addToast={vi.fn()} />);
+    openPetdexTab();
+    act(() => mocks.catalogListeners[0]!({
+      pets: [{ ...catalogPet('managed', 'Managed Pet'), installed: true, managed: true }],
+      total: 1,
+      offset: 0,
+      limit: 12,
+      query: '',
+      sort: 'default',
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.uninstall' }));
+    expect(mocks.uninstall).not.toHaveBeenCalled();
+    let dialog = screen.getByRole('dialog', { name: 'settings.pet.uninstallConfirmTitle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'common.cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.uninstall' }));
+
+    dialog = screen.getByRole('dialog', { name: 'settings.pet.uninstallConfirmTitle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.pet.uninstall' }));
+    expect(mocks.uninstall).toHaveBeenCalledWith('managed');
+  });
+
   it('opens keyboard selection on the currently selected pet', () => {
     render(<PetSettingsSection addToast={vi.fn()} />);
     act(() => mocks.localPetListeners[0]!([
@@ -580,6 +690,29 @@ describe('PetSettingsSection catalog pagination', () => {
 
     act(() => mocks.operationListeners[0]!({ operation: 'alias', success: true, slug: 'same-name' }));
     expect(saveButton).toHaveProperty('disabled', false);
+  });
+
+  it('clears install pending state when the response also contains a pet id', () => {
+    render(<PetSettingsSection addToast={vi.fn()} />);
+    openPetdexTab();
+    act(() => mocks.catalogListeners[0]!({
+      pets: [catalogPet('one', 'Pet One')],
+      total: 1,
+      offset: 0,
+      limit: 12,
+      query: '',
+      sort: 'default',
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.install' }));
+    const pendingButton = screen.getByRole('button', { name: 'settings.pet.processing' });
+    expect(pendingButton).toHaveProperty('disabled', true);
+
+    act(() => mocks.operationListeners[0]!({
+      operation: 'install', success: true, slug: 'one', petId: 'one/spritesheet.png',
+    }));
+
+    expect(screen.getByRole('button', { name: 'settings.pet.install' }))
+      .toHaveProperty('disabled', false);
   });
 
   it('jumps to a manually entered page number', () => {

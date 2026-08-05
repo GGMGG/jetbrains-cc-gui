@@ -296,7 +296,8 @@ export const ChatScreen = ({
           </SessionIdContext.Provider>
         </div>
         <CodexPetStatusBridge
-          active={currentProvider === 'codex' && petEnabled}
+          key={currentProvider}
+          active={petEnabled && (currentProvider === 'codex' || currentProvider === 'claude')}
           loading={loading}
           streamingActive={streamingActive}
           isThinking={isThinking}

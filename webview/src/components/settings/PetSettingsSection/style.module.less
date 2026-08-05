@@ -251,6 +251,54 @@
   display: grid;
 }
 
+.petSelectionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.actionMappingGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.actionMappingHint {
+  margin: 14px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.actionMappingOptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px 10px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-secondary);
+  border-radius: 4px;
+}
+
+.actionOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.actionOption input {
+  flex: 0 0 auto;
+  accent-color: var(--accent-primary);
+}
+
+.actionOption input:disabled {
+  cursor: not-allowed;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -892,6 +940,10 @@
   .bubbleActions {
     flex-wrap: wrap;
     gap: 10px 16px;
+  }
+
+  .petSelectionRow {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .placeholderTable th:first-child,
