@@ -69,10 +69,13 @@ export function deriveTodosForTurn(
   streamingActive: boolean,
   currentProvider: string,
 ): TodoItem[] {
+  const scopedMessages = currentProvider === 'codex'
+    ? sliceLatestConversationTurn(turnMessages)
+    : turnMessages;
   let latestTodos: ReturnType<typeof extractTodosFromToolUse> = null;
   let sawEmptyClaudeSnapshot = false;
-  for (let i = turnMessages.length - 1; i >= 0; i--) {
-    const msg = turnMessages[i];
+  for (let i = scopedMessages.length - 1; i >= 0; i--) {
+    const msg = scopedMessages[i];
     if (msg.type !== 'assistant') continue;
     const blocks = getContentBlocks(msg);
     for (let j = blocks.length - 1; j >= 0; j--) {
@@ -99,7 +102,7 @@ export function deriveTodosForTurn(
   }
 
   const accumulatedTasks = sawEmptyClaudeSnapshot
-    ? extractAccumulatedTasks(turnMessages, getContentBlocks)
+    ? extractAccumulatedTasks(scopedMessages, getContentBlocks)
     : null;
   if (accumulatedTasks && accumulatedTasks.length > 0) {
     return accumulatedTasks;
@@ -109,7 +112,7 @@ export function deriveTodosForTurn(
     return finalizeTodosForSettledTurn(latestTodos, streamingActive, currentProvider);
   }
 
-  return accumulatedTasks ?? extractAccumulatedTasks(turnMessages, getContentBlocks);
+  return accumulatedTasks ?? extractAccumulatedTasks(scopedMessages, getContentBlocks);
 }
 
 /**
@@ -212,8 +215,8 @@ export function useChatComputations({
 
   // Plans belong to the current user turn while streaming. Unlike subagents,
   // a text-only new turn must not temporarily revive a previous turn's plan.
-  // Settled/history views still scan the full transcript to restore the latest
-  // persisted plan snapshot.
+  // Settled/history views scan the full transcript for Claude; Codex is always
+  // narrowed to its latest user turn inside deriveTodosForTurn.
   const todoScopeMessages = useMemo(
     () => (streamingActive ? latestTurnMessages : messages),
     [streamingActive, latestTurnMessages, messages],

@@ -18,6 +18,7 @@ import { readFile, unlink, writeFile } from 'fs/promises';
 import { requestPermissionFromJava } from '../../permission-handler.js';
 import { findSessionFileByThreadId } from './codex-agents-loader.js';
 import { extractPatchFromResponseItemPayload, parseApplyPatchToOperations } from './codex-patch-parser.js';
+import { extractUpdatePlanFromResponseItemPayload } from './codex-plan-parser.js';
 import {
   truncateForDisplay, getStableItemId, extractCommand,
   smartToolName, smartDescription, mapCommandToolNameToPermissionToolName,
@@ -226,8 +227,24 @@ function emitSyntheticPatchToolResults(state, batch, isError) {
 function handleCustomToolCallPayload(payload, state, config) {
   if (!payload || payload.type !== 'custom_tool_call') return false;
 
+  let handled = false;
+  const callId = getResponseItemCallId(payload);
+  const planInput = extractUpdatePlanFromResponseItemPayload(payload);
+  if (callId && planInput) {
+    const toolUseId = `codex_plan_${callId}`;
+    if (!state.processedCustomPlanCallIds.has(callId)) {
+      state.processedCustomPlanCallIds.add(callId);
+      if (!state.emittedToolUseIds.has(toolUseId)) {
+        state.emitMessage(toolUseMsg(toolUseId, 'update_plan', planInput));
+        state.emittedToolUseIds.add(toolUseId);
+      }
+      state.pendingCustomPlanToolUseIds.set(callId, toolUseId);
+    }
+    handled = true;
+  }
+
   const batch = createPatchBatchFromPayload(payload, config);
-  if (!batch) return false;
+  if (!batch) return handled;
   if (state.processedPatchCallIds.has(batch.callId)) return true;
 
   state.processedPatchCallIds.add(batch.callId);
@@ -236,15 +253,40 @@ function handleCustomToolCallPayload(payload, state, config) {
   return true;
 }
 
+function extractCustomToolOutputText(output) {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    return output.map((item) => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item.text === 'string') return item.text;
+      return JSON.stringify(item ?? '');
+    }).join('\n');
+  }
+  if (output && typeof output.text === 'string') return output.text;
+  return JSON.stringify(output ?? '');
+}
+
 function handleCustomToolCallOutputPayload(payload, state) {
   if (!payload || payload.type !== 'custom_tool_call_output') return false;
 
   const callId = getResponseItemCallId(payload);
-  const batch = callId ? state.pendingCustomPatchBatches.get(callId) : null;
-  if (!batch) return false;
+  const output = extractCustomToolOutputText(payload.output);
+  const errorOutput = /(?:^|\n)\s*(?:error:|failed to parse|permission denied|command denied|script failed\b|script error:|exit code:\s*[1-9]\d*)/i;
+  const isError = payload.status === 'error' || payload.is_error === true || errorOutput.test(output);
+  let handled = false;
+  const planToolUseId = callId ? state.pendingCustomPlanToolUseIds.get(callId) : null;
+  if (planToolUseId) {
+    if (!state.emittedToolResultIds.has(planToolUseId)) {
+      state.emitMessage(toolResultMsg(planToolUseId, isError, isError ? 'Plan update failed' : 'Plan updated'));
+      state.emittedToolResultIds.add(planToolUseId);
+    }
+    state.pendingCustomPlanToolUseIds.delete(callId);
+    handled = true;
+  }
 
-  const output = typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output ?? '');
-  const isError = payload.status === 'error' || /^(?:error:|failed to parse|permission denied|command denied)/i.test(output);
+  const batch = callId ? state.pendingCustomPatchBatches.get(callId) : null;
+  if (!batch) return handled;
+
   emitSyntheticPatchToolResults(state, batch, isError);
   state.pendingCustomPatchBatches.delete(callId);
   return true;
@@ -255,6 +297,15 @@ function flushPendingCustomPatchBatches(state, isError = false) {
     emitSyntheticPatchToolResults(state, batch, isError);
   }
   state.pendingCustomPatchBatches.clear();
+}
+
+function flushPendingCustomPlanCalls(state, isError = false) {
+  for (const toolUseId of state.pendingCustomPlanToolUseIds.values()) {
+    if (state.emittedToolResultIds.has(toolUseId)) continue;
+    state.emitMessage(toolResultMsg(toolUseId, isError, isError ? 'Plan update failed' : 'Plan updated'));
+    state.emittedToolResultIds.add(toolUseId);
+  }
+  state.pendingCustomPlanToolUseIds.clear();
 }
 
 
@@ -279,6 +330,8 @@ export function createInitialEventState(emitMessage) {
     sessionTurnBoundaryWarningLogged: false,
     processedPatchCallIds: new Set(),
     pendingCustomPatchBatches: new Map(),
+    processedCustomPlanCallIds: new Set(),
+    pendingCustomPlanToolUseIds: new Map(),
     processedSessionFunctionCallIds: new Set(),
     processedSessionFunctionOutputIds: new Set(),
     processedSessionCustomToolCallIds: new Set(),
@@ -1028,6 +1081,7 @@ export async function processCodexEventStream(events, state, config) {
           logDebug('CONTEXT_USAGE', `Replayed current-turn token_count events: ${replayedTokenCounts}`);
         }
         flushPendingCustomPatchBatches(state);
+        flushPendingCustomPlanCalls(state);
         const completedTurnUsage = resolveCompletedTurnUsage(state);
         if (completedTurnUsage) {
           console.log('[DEBUG] Token usage:', completedTurnUsage);

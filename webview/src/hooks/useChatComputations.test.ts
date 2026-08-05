@@ -37,6 +37,25 @@ describe('deriveTodosForTurn', () => {
     expect(deriveTodosForTurn(latestTurn, getContentBlocks, true, 'codex')).toEqual([]);
   });
 
+  it('does not revive an earlier Codex plan after a later turn settles', () => {
+    const messages = [
+      user('previous request'),
+      assistant([
+        toolUse('plan-1', 'update_plan', {
+          plan: [
+            { step: 'Inspect existing UI', status: 'in_progress' },
+            { step: 'Implement page', status: 'pending' },
+            { step: 'Verify integration', status: 'pending' },
+          ],
+        }),
+      ]),
+      user('follow-up request without a plan'),
+      assistant([]),
+    ];
+
+    expect(deriveTodosForTurn(messages, getContentBlocks, false, 'codex')).toEqual([]);
+  });
+
   it('shows the latest plan created in the current turn', () => {
     const messages = [
       user('previous request'),
