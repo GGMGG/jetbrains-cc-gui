@@ -19,6 +19,7 @@ import CommitSection from './CommitSection';
 import PromptEnhancerSection from './PromptEnhancerSection';
 import OtherSettingsSection from './OtherSettingsSection';
 import PetSettingsSection from './PetSettingsSection';
+import AiDataStorageSection from './AiDataStorageSection';
 import { SkillsSettingsSection } from '../skills';
 import SettingsDialogs from './SettingsDialogs';
 import { setNewSessionConfirmEnabled as persistNewSessionConfirmEnabled } from '../../utils/skipNewSessionConfirm';
@@ -73,9 +74,8 @@ const SettingsView = ({
   const { t } = useTranslation();
   const isCodexMode = currentProvider === 'codex';
   // Codex mode: align with Claude capabilities for settings tabs.
-  // The Codex pet entry is temporarily disabled (grayed out, not clickable).
   const disabledTabs = useMemo<SettingsTab[]>(
-    () => ['pet'],
+    () => [],
     []
   );
 
@@ -660,6 +660,10 @@ const SettingsView = ({
 
           <div style={currentTab === 'pet' ? BLOCK_STYLE : NONE_STYLE}>
             {currentTab === 'pet' && <PetSettingsSection addToast={addToast} />}
+          </div>
+
+          <div style={currentTab === 'storage' ? BLOCK_STYLE : NONE_STYLE}>
+            {currentTab === 'storage' && <AiDataStorageSection addToast={addToast} />}
           </div>
 
           {/* Other settings */}
