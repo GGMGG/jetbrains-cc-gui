@@ -5,6 +5,7 @@ import com.github.claudecodegui.util.PlatformUtils;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -129,7 +130,7 @@ public class AiDataDirectoryManagerTest {
     }
 
     @Test
-    public void validatesAllBackupRecordsBeforeDeletingAnyBackup() throws Exception {
+    public void skipsInvalidBackupRecordsWhileCleaningValidBackups() throws Exception {
         Path root = temporaryFolder.getRoot().toPath();
         Path home = Files.createDirectory(root.resolve("prevalidate-home"));
         Path state = Files.createDirectory(root.resolve("prevalidate-state"));
@@ -145,8 +146,14 @@ public class AiDataDirectoryManagerTest {
         IOException error = assertThrows(IOException.class,
                 () -> manager(home, state, null).cleanupBackups());
 
-        assertEquals("BACKUP_METADATA_INVALID", error.getMessage());
-        assertEquals("keep", Files.readString(sentinel, StandardCharsets.UTF_8));
+        assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
+        assertFalse(Files.exists(validBackup, LinkOption.NOFOLLOW_LINKS));
+        JsonArray remaining = JsonParser.parseString(
+                Files.readString(state.resolve("migration-backups.json"), StandardCharsets.UTF_8))
+                .getAsJsonArray();
+        assertEquals(1, remaining.size());
+        assertEquals("invalid", remaining.get(0).getAsJsonObject().get("id").getAsString());
+        assertFalse(Files.exists(sentinel, LinkOption.NOFOLLOW_LINKS));
     }
 
     @Test
@@ -555,7 +562,7 @@ public class AiDataDirectoryManagerTest {
         Path targetRoot = Files.createDirectory(root.resolve("junction & target"));
         createSource(home, "codex", "config.toml", "safe");
         AiDataDirectoryManager manager = new AiDataDirectoryManager(
-                home, state, PlatformUtils.PlatformType.WINDOWS, false, null);
+                home, state, PlatformUtils.PlatformType.WINDOWS, false, null, new AiDataProcessGate());
 
         manager.migrate(targetRoot.toString());
 

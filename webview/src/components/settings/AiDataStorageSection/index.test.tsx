@@ -110,6 +110,32 @@ describe('AiDataStorageSection', () => {
     expect(mocks.getStatus).toHaveBeenCalledOnce();
   });
 
+  it('does not show an error toast for a failed status refresh', () => {
+    const addToast = vi.fn();
+    render(<AiDataStorageSection addToast={addToast} />);
+
+    act(() => mocks.operationListeners[0]!({
+      operation: 'status',
+      success: false,
+      error: 'TARGET_ROOT_UNAVAILABLE',
+    }));
+
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it('maps backend error codes to localized messages', () => {
+    const addToast = vi.fn();
+    render(<AiDataStorageSection addToast={addToast} />);
+
+    act(() => mocks.operationListeners[0]!({
+      operation: 'migrate',
+      success: false,
+      error: 'TARGET_ROOT_REQUIRED',
+    }));
+
+    expect(addToast).toHaveBeenCalledWith('settings.storage.errors.targetRootRequired', 'error');
+  });
+
   it('prevents repeating migration when the current storage root is selected', () => {
     render(<AiDataStorageSection addToast={vi.fn()} />);
     act(() => mocks.statusListeners[0]!({
@@ -119,6 +145,22 @@ describe('AiDataStorageSection', () => {
         ...entry,
         physicalPath: `D:/AI Data/.${entry.id}`,
         state: 'linked',
+      })),
+    }));
+
+    const migrateButton = screen.getByRole('button', { name: 'settings.storage.alreadyMigrated' });
+    expect((migrateButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('prevents repeating migration for a partially linked current storage root', () => {
+    render(<AiDataStorageSection addToast={vi.fn()} />);
+    act(() => mocks.statusListeners[0]!({
+      ...status,
+      storageRoot: 'D:/AI Data',
+      directories: status.directories.map((entry, index) => ({
+        ...entry,
+        physicalPath: index === 0 ? `D:/AI Data/.${entry.id}` : undefined,
+        state: index === 0 ? 'linked' : 'local',
       })),
     }));
 

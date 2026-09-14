@@ -24,7 +24,6 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.DosFileAttributeView;
-import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -51,6 +50,7 @@ public final class AiDataDirectoryManager {
     private static final String BACKUP_MARKER = ".cc-gui-backup-";
     private static final String STORAGE_MARKER = ".cc-gui-storage";
     private static final int LINK_COMMAND_TIMEOUT_SECONDS = 30;
+    private static final CancellationChecker NO_CANCELLATION = () -> { };
 
     private final Path userHome;
     private final Path stateDirectory;
@@ -164,7 +164,7 @@ public final class AiDataDirectoryManager {
                 try {
                     for (MigrationEntry entry : entries) {
                         checkMigrationCancellation(migrationPermit);
-                        prepareTarget(entry);
+                        prepareTarget(entry, migrationPermit);
                         checkMigrationCancellation(migrationPermit);
                         entry.phase = Phase.TARGET_READY.name();
                         writeJournal(journal);
@@ -177,7 +177,7 @@ public final class AiDataDirectoryManager {
                         writeJournal(journal);
                         linkCreator.create(entry.canonicalPath(), entry.targetPath());
                         validateLink(entry.canonicalPath(), entry.targetPath());
-                        validateDetachedSource(entry);
+                        validateDetachedSource(entry, () -> checkMigrationCancellation(migrationPermit));
                         checkMigrationCancellation(migrationPermit);
                         entry.phase = Phase.LINKED.name();
                         writeJournal(journal);
@@ -220,9 +220,20 @@ public final class AiDataDirectoryManager {
             try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
                 recoverInterruptedMigration();
             }
-            List<BackupRecord> records = validateBackupRecords(readBackupRecords());
-            List<BackupRecord> retained = new ArrayList<>(records);
+            JsonArray metadata = readBackupRecords();
+            List<BackupRecord> records = new ArrayList<>();
+            List<JsonElement> retained = new ArrayList<>();
             IOException cleanupFailure = null;
+            for (JsonElement element : metadata) {
+                try {
+                    BackupRecord record = validateBackupRecord(element);
+                    records.add(record);
+                    retained.add(record.metadata);
+                } catch (IOException error) {
+                    retained.add(element);
+                    cleanupFailure = appendFailure(cleanupFailure, error);
+                }
+            }
             for (BackupRecord record : records) {
                 if (record.existedAtValidation) {
                     try {
@@ -233,7 +244,7 @@ public final class AiDataDirectoryManager {
                     }
                 }
 
-                retained.remove(record);
+                removeMetadata(retained, record.metadata);
                 try {
                     persistBackupRecords(retained);
                 } catch (IOException error) {
@@ -248,44 +259,47 @@ public final class AiDataDirectoryManager {
         }
     }
 
-    private List<BackupRecord> validateBackupRecords(JsonArray metadata) throws IOException {
-        List<BackupRecord> records = new ArrayList<>();
-        for (JsonElement element : metadata) {
-            if (!element.isJsonObject()) {
-                throw new AiDataDirectoryException("BACKUP_METADATA_INVALID");
-            }
-            JsonObject record = element.getAsJsonObject();
-            String id = requiredString(record, "id");
-            String operationId = requiredString(record, "operationId");
-            Path path;
-            try {
-                path = Path.of(requiredString(record, "path")).toAbsolutePath().normalize();
-            } catch (RuntimeException error) {
-                throw new AiDataDirectoryException("BACKUP_METADATA_INVALID", error);
-            }
-            validateBackupPath(id, path, operationId);
-            Path canonical = canonicalPath(id);
-            boolean backupExists = Files.exists(path, LinkOption.NOFOLLOW_LINKS);
-            if (Files.exists(canonical, LinkOption.NOFOLLOW_LINKS)
-                    && backupExists
-                    && Files.isSameFile(canonical, path)) {
-                throw new AiDataDirectoryException("BACKUP_STILL_ACTIVE");
-            }
-            records.add(new BackupRecord(record, path, backupExists));
+    private BackupRecord validateBackupRecord(JsonElement element) throws IOException {
+        if (!element.isJsonObject()) {
+            throw new AiDataDirectoryException("BACKUP_METADATA_INVALID");
         }
-        return records;
+        JsonObject record = element.getAsJsonObject();
+        String id = requiredString(record, "id");
+        String operationId = requiredString(record, "operationId");
+        Path path;
+        try {
+            path = Path.of(requiredString(record, "path")).toAbsolutePath().normalize();
+        } catch (RuntimeException error) {
+            throw new AiDataDirectoryException("BACKUP_METADATA_INVALID", error);
+        }
+        validateBackupPath(id, path, operationId);
+        Path canonical = canonicalPath(id);
+        boolean backupExists = Files.exists(path, LinkOption.NOFOLLOW_LINKS);
+        if (Files.exists(canonical, LinkOption.NOFOLLOW_LINKS)
+                && backupExists
+                && Files.isSameFile(canonical, path)) {
+            throw new AiDataDirectoryException("BACKUP_STILL_ACTIVE");
+        }
+        return new BackupRecord(record, path, backupExists);
     }
 
-    private void persistBackupRecords(List<BackupRecord> records) throws IOException {
+    private void persistBackupRecords(List<JsonElement> records) throws IOException {
         if (records.isEmpty()) {
             Files.deleteIfExists(backupsPath());
             return;
         }
         JsonArray metadata = new JsonArray();
-        for (BackupRecord record : records) {
-            metadata.add(record.metadata);
-        }
+        records.forEach(metadata::add);
         writeJson(backupsPath(), metadata);
+    }
+
+    private static void removeMetadata(List<JsonElement> records, JsonObject metadata) {
+        for (int index = 0; index < records.size(); index++) {
+            if (records.get(index) == metadata) {
+                records.remove(index);
+                return;
+            }
+        }
     }
 
     private static IOException appendFailure(IOException current, IOException next) {
@@ -367,7 +381,9 @@ public final class AiDataDirectoryManager {
         return requested.toRealPath();
     }
 
-    private void prepareTarget(MigrationEntry entry) throws IOException {
+    private void prepareTarget(MigrationEntry entry, AiDataProcessGate.MigrationPermit migrationPermit)
+            throws IOException {
+        CancellationChecker cancellationChecker = () -> checkMigrationCancellation(migrationPermit);
         Path staging = entry.stagingPath();
         if (Files.exists(staging, LinkOption.NOFOLLOW_LINKS)) {
             throw new AiDataDirectoryException("STAGING_PATH_EXISTS");
@@ -377,10 +393,10 @@ public final class AiDataDirectoryManager {
         Path source = entry.sourcePhysicalPath();
         Map<Path, Path> internalDirectoryLinks = Map.of();
         if (source != null) {
-            Map<String, ManifestEntry> before = buildDataManifest(source);
-            internalDirectoryLinks = copyDirectory(source, staging);
-            Map<String, ManifestEntry> copied = buildDataManifest(staging);
-            Map<String, ManifestEntry> after = buildDataManifest(source);
+            Map<String, ManifestEntry> before = buildDataManifest(source, cancellationChecker);
+            internalDirectoryLinks = copyDirectory(source, staging, cancellationChecker);
+            Map<String, ManifestEntry> copied = buildDataManifest(staging, cancellationChecker);
+            Map<String, ManifestEntry> after = buildDataManifest(source, cancellationChecker);
             if (!before.equals(copied) || !before.equals(after)) {
                 throw new AiDataDirectoryException("SOURCE_CHANGED_DURING_MIGRATION");
             }
@@ -398,10 +414,13 @@ public final class AiDataDirectoryManager {
             Files.writeString(marker, entry.id, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
         }
         for (Path relativeLink : internalDirectoryLinks.keySet()) {
+            cancellationChecker.check();
             deleteDirectoryLink(staging.resolve(relativeLink));
         }
+        cancellationChecker.check();
         move(staging, target);
         for (Map.Entry<Path, Path> link : internalDirectoryLinks.entrySet()) {
+            cancellationChecker.check();
             createPlatformLink(target.resolve(link.getKey()), target.resolve(link.getValue()));
         }
     }
@@ -429,12 +448,13 @@ public final class AiDataDirectoryManager {
         }
     }
 
-    private static void validateDetachedSource(MigrationEntry entry) throws IOException {
+    private static void validateDetachedSource(MigrationEntry entry, CancellationChecker cancellationChecker)
+            throws IOException {
         Path detachedSource = entry.sourceKind() == SourceKind.LOCAL
                 ? entry.backupPath() : entry.sourcePhysicalPath();
         if (detachedSource != null
-                && !buildDataManifest(detachedSource, entry.sourcePhysicalPath(), entry.targetPath())
-                        .equals(buildDataManifest(entry.targetPath()))) {
+                && !buildDataManifest(detachedSource, entry.sourcePhysicalPath(), entry.targetPath(), cancellationChecker)
+                        .equals(buildDataManifest(entry.targetPath(), cancellationChecker))) {
             throw new AiDataDirectoryException("SOURCE_CHANGED_DURING_MIGRATION");
         }
     }
@@ -581,12 +601,18 @@ public final class AiDataDirectoryManager {
                     + "$ErrorActionPreference = 'Stop'\n"
                     + "New-Item -ItemType Junction -Path $LinkPath -Target $TargetPath | Out-Null\n",
                     StandardCharsets.UTF_8);
-            Process process = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", script.toString(),
-                    "-LinkPath", canonical.toString(), "-TargetPath", target.toString())
-                    .redirectErrorStream(true)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .start();
+            Process process;
+            try {
+                process = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                        "-ExecutionPolicy", "Bypass", "-File", script.toString(),
+                        "-LinkPath", canonical.toString(), "-TargetPath", target.toString())
+                        .redirectErrorStream(true)
+                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                        .start();
+            } catch (IOException error) {
+                createWindowsJunctionWithMklink(canonical, target);
+                return;
+            }
             try {
                 if (!process.waitFor(LINK_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                     terminateProcess(process);
@@ -598,10 +624,36 @@ public final class AiDataDirectoryManager {
                 throw new AiDataDirectoryException("LINK_CREATION_INTERRUPTED", error);
             }
             if (process.exitValue() != 0) {
-                throw new AiDataDirectoryException("LINK_CREATION_FAILED");
+                createWindowsJunctionWithMklink(canonical, target);
             }
         } finally {
             Files.deleteIfExists(script);
+        }
+    }
+
+    private static void createWindowsJunctionWithMklink(Path canonical, Path target) throws IOException {
+        String command = "mklink /J \"" + canonical + "\" \"" + target + "\"";
+        Process process;
+        try {
+            process = new ProcessBuilder("cmd.exe", "/d", "/c", command)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+        } catch (IOException error) {
+            throw new AiDataDirectoryException("LINK_CREATION_FAILED", error);
+        }
+        try {
+            if (!process.waitFor(LINK_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                terminateProcess(process);
+                throw new AiDataDirectoryException("LINK_CREATION_TIMEOUT");
+            }
+        } catch (InterruptedException error) {
+            terminateProcess(process);
+            Thread.currentThread().interrupt();
+            throw new AiDataDirectoryException("LINK_CREATION_INTERRUPTED", error);
+        }
+        if (process.exitValue() != 0) {
+            throw new AiDataDirectoryException("LINK_CREATION_FAILED");
         }
     }
 
@@ -650,7 +702,8 @@ public final class AiDataDirectoryManager {
         Files.deleteIfExists(path);
     }
 
-    private Map<Path, Path> copyDirectory(Path source, Path target) throws IOException {
+    private Map<Path, Path> copyDirectory(
+            Path source, Path target, CancellationChecker cancellationChecker) throws IOException {
         Map<Path, Path> directoryLinks = new LinkedHashMap<>();
         Map<Path, Path> internalDirectoryLinks = new LinkedHashMap<>();
         Files.walkFileTree(source, EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE,
@@ -658,6 +711,7 @@ public final class AiDataDirectoryManager {
                     @Override
                     public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes)
                             throws IOException {
+                        cancellationChecker.check();
                         if (!directory.equals(source)) {
                             Path destination = target.resolve(source.relativize(directory));
                             if (isDirectDirectoryLink(directory)) {
@@ -677,6 +731,7 @@ public final class AiDataDirectoryManager {
 
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                        cancellationChecker.check();
                         Path destination = target.resolve(source.relativize(file));
                         if (attributes.isSymbolicLink()) {
                             Files.createSymbolicLink(destination,
@@ -691,10 +746,12 @@ public final class AiDataDirectoryManager {
                         } else {
                             throw new AiDataDirectoryException("UNSUPPORTED_SOURCE_ENTRY");
                         }
+                        cancellationChecker.check();
                         return FileVisitResult.CONTINUE;
                     }
                 });
         for (Map.Entry<Path, Path> link : directoryLinks.entrySet()) {
+            cancellationChecker.check();
             createPlatformLink(link.getKey(), link.getValue());
         }
         return internalDirectoryLinks;
@@ -733,17 +790,19 @@ public final class AiDataDirectoryManager {
     }
 
     static Map<String, ManifestEntry> buildManifest(Path root) throws IOException {
-        return buildManifest(root, null, null);
+        return buildManifest(root, null, null, NO_CANCELLATION);
     }
 
     private static Map<String, ManifestEntry> buildManifest(
-            Path root, Path originalRoot, Path relocatedRoot) throws IOException {
+            Path root, Path originalRoot, Path relocatedRoot, CancellationChecker cancellationChecker)
+            throws IOException {
         Map<String, ManifestEntry> result = new LinkedHashMap<>();
         Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE,
                 new SimpleFileVisitor<>() {
                     @Override
                     public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes)
                             throws IOException {
+                        cancellationChecker.check();
                         if (directory.equals(root)) {
                             return FileVisitResult.CONTINUE;
                         }
@@ -765,6 +824,7 @@ public final class AiDataDirectoryManager {
 
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                        cancellationChecker.check();
                         String relative = manifestPath(root, file);
                         if (attributes.isSymbolicLink()) {
                             Path resolved = relocatedManifestTarget(
@@ -778,10 +838,12 @@ public final class AiDataDirectoryManager {
                                     "directory-link", 0L,
                                     linkFingerprint(root, resolved)));
                         } else if (attributes.isRegularFile()) {
-                            result.put(relative, new ManifestEntry("file", attributes.size(), sha256(file)));
+                            result.put(relative, new ManifestEntry(
+                                    "file", attributes.size(), sha256(file, cancellationChecker)));
                         } else {
                             throw new AiDataDirectoryException("UNSUPPORTED_SOURCE_ENTRY");
                         }
+                        cancellationChecker.check();
                         return FileVisitResult.CONTINUE;
                     }
                 });
@@ -789,14 +851,25 @@ public final class AiDataDirectoryManager {
     }
 
     private static Map<String, ManifestEntry> buildDataManifest(Path root) throws IOException {
-        Map<String, ManifestEntry> result = buildManifest(root);
+        return buildDataManifest(root, NO_CANCELLATION);
+    }
+
+    private static Map<String, ManifestEntry> buildDataManifest(
+            Path root, CancellationChecker cancellationChecker) throws IOException {
+        Map<String, ManifestEntry> result = buildManifest(root, null, null, cancellationChecker);
         result.remove(STORAGE_MARKER);
         return result;
     }
 
     private static Map<String, ManifestEntry> buildDataManifest(
             Path root, Path originalRoot, Path relocatedRoot) throws IOException {
-        Map<String, ManifestEntry> result = buildManifest(root, originalRoot, relocatedRoot);
+        return buildDataManifest(root, originalRoot, relocatedRoot, NO_CANCELLATION);
+    }
+
+    private static Map<String, ManifestEntry> buildDataManifest(
+            Path root, Path originalRoot, Path relocatedRoot,
+            CancellationChecker cancellationChecker) throws IOException {
+        Map<String, ManifestEntry> result = buildManifest(root, originalRoot, relocatedRoot, cancellationChecker);
         result.remove(STORAGE_MARKER);
         return result;
     }
@@ -826,12 +899,18 @@ public final class AiDataDirectoryManager {
         return root.relativize(path).toString().replace('\\', '/');
     }
 
-    private static String sha256(Path path) throws IOException {
+    private static String sha256(Path path, CancellationChecker cancellationChecker) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            try (InputStream input = new DigestInputStream(Files.newInputStream(path), digest)) {
-                input.transferTo(java.io.OutputStream.nullOutputStream());
+            try (InputStream input = Files.newInputStream(path)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    cancellationChecker.check();
+                    digest.update(buffer, 0, read);
+                }
             }
+            cancellationChecker.check();
             return java.util.HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException(error);
@@ -1178,6 +1257,11 @@ public final class AiDataDirectoryManager {
 
     interface PathDeleter {
         void delete(Path path) throws IOException;
+    }
+
+    @FunctionalInterface
+    private interface CancellationChecker {
+        void check() throws IOException;
     }
 
     static final class ManifestEntry {
