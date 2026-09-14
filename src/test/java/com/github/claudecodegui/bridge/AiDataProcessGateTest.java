@@ -54,4 +54,34 @@ public class AiDataProcessGateTest {
             executor.shutdownNow();
         }
     }
+
+    @Test
+    public void interruptedProcessWaiterDoesNotLeaveMigrationCancelled() throws Exception {
+        AiDataProcessGate gate = new AiDataProcessGate();
+        AiDataProcessGate.MigrationPermit migration = gate.tryAcquireMigrationPermit();
+        assertNotNull(migration);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        try {
+            Future<AiDataProcessGate.ProcessPermit> processPermit = executor.submit(gate::acquireProcessPermit);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!migration.isCancellationRequested() && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+
+            assertTrue(migration.isCancellationRequested());
+            assertTrue(processPermit.cancel(true));
+
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (migration.isCancellationRequested() && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+
+            assertFalse(migration.isCancellationRequested());
+            assertTrue(migration.beginCommit());
+        } finally {
+            migration.close();
+            executor.shutdownNow();
+        }
+    }
 }

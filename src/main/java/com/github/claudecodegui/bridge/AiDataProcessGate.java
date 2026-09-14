@@ -41,6 +41,9 @@ public final class AiDataProcessGate {
         } finally {
             if (waiting) {
                 waitingProcesses--;
+                if (waitingProcesses == 0 && cancellationAllowed) {
+                    cancellationRequested = false;
+                }
             }
             lock.unlock();
         }

@@ -19,6 +19,36 @@ type Confirmation =
 
 const OPERATION_TIMEOUT_MS = 120000;
 
+const OPERATION_ERROR_KEYS: Record<string, string> = {
+  AI_PROCESSES_ACTIVE: 'settings.storage.errors.aiProcessesActive',
+  TARGET_ROOT_MUST_BE_SELECTED: 'settings.storage.errors.targetRootMustBeSelected',
+  TARGET_ROOT_REQUIRED: 'settings.storage.errors.targetRootRequired',
+  TARGET_ROOT_UNAVAILABLE: 'settings.storage.errors.targetRootUnavailable',
+  TARGET_PATH_INVALID: 'settings.storage.errors.targetPathInvalid',
+  TARGET_NOT_EMPTY: 'settings.storage.errors.targetNotEmpty',
+  TARGET_INSIDE_SOURCE: 'settings.storage.errors.targetInsideSource',
+  TARGET_OVERLAPS_HOME: 'settings.storage.errors.targetOverlapsHome',
+  PLATFORM_NOT_SUPPORTED: 'settings.storage.errors.platformNotSupported',
+  WSL_NOT_SUPPORTED: 'settings.storage.errors.wslNotSupported',
+  MIGRATION_CANCELLED_FOR_AI_START: 'settings.storage.errors.migrationCancelledForAiStart',
+  MIGRATION_ROLLBACK_FAILED: 'settings.storage.errors.migrationRollbackFailed',
+  BACKUP_CLEANUP_PARTIAL: 'settings.storage.errors.backupCleanupPartial',
+  BACKUP_METADATA_INVALID: 'settings.storage.errors.backupMetadataInvalid',
+  BACKUP_PATH_INVALID: 'settings.storage.errors.backupPathInvalid',
+  BACKUP_STILL_ACTIVE: 'settings.storage.errors.backupStillActive',
+  LINK_CREATION_FAILED: 'settings.storage.errors.linkCreationFailed',
+  LINK_VALIDATION_FAILED: 'settings.storage.errors.linkValidationFailed',
+  SOURCE_CHANGED_DURING_MIGRATION: 'settings.storage.errors.sourceChangedDuringMigration',
+  SOURCE_NOT_DIRECTORY: 'settings.storage.errors.sourceNotDirectory',
+};
+
+function operationErrorMessage(
+  translate: (key: string) => string,
+  error?: string,
+): string {
+  return translate(OPERATION_ERROR_KEYS[error?.trim() ?? ''] ?? 'settings.storage.operationFailed');
+}
+
 function comparablePath(path: string, platform?: string): string {
   const normalized = path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
   return platform === 'windows' ? normalized.toLowerCase() : normalized;
@@ -48,13 +78,12 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
         }
       }
       if (operation.status) setStatus(operation.status);
+      if (operation.operation === 'status') return;
       if (operation.success) {
         if (operation.operation === 'migrate') addToast(t('settings.storage.migrateSuccess'), 'success');
         if (operation.operation === 'cleanup') addToast(t('settings.storage.cleanupSuccess'), 'success');
       } else {
-        addToast(t('settings.storage.operationFailed', {
-          error: operation.error ?? 'AI_DATA_DIRECTORY_OPERATION_FAILED',
-        }), 'error');
+        addToast(operationErrorMessage(t, operation.error), 'error');
       }
     });
     aiDataStorageBridge.getStatus();
@@ -99,8 +128,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
   const directoryCount = status?.directories.length ?? 0;
   const linkedCount = status?.directories.filter((entry) => entry.state === 'linked').length ?? 0;
   const allLinked = directoryCount > 0 && linkedCount === directoryCount;
-  const currentStorageSelected = allLinked
-    && Boolean(status?.storageRoot)
+  const currentStorageSelected = Boolean(status?.storageRoot)
     && comparablePath(targetRoot, status?.platform) === comparablePath(status?.storageRoot ?? '', status?.platform);
   const migrationTarget = confirmation?.operation === 'migrate' ? confirmation.targetRoot : null;
   const confirmationIsMigration = migrationTarget !== null;
