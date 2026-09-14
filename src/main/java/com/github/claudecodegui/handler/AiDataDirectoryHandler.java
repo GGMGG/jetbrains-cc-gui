@@ -18,6 +18,7 @@ final class AiDataDirectoryHandler {
     private final HandlerContext context;
     private final AiDataDirectoryManager manager;
     private final Gson gson = new Gson();
+    private volatile String lastChosenTargetRoot;
 
     AiDataDirectoryHandler(HandlerContext context) {
         this(context, new AiDataDirectoryManager());
@@ -45,6 +46,7 @@ final class AiDataDirectoryHandler {
                     false, true, false, false, false, false)
                     .withTitle("Choose AI Data Storage Directory");
             FileChooser.chooseFile(descriptor, context.getProject(), null, selected -> {
+                lastChosenTargetRoot = selected.getPath();
                 JsonObject payload = new JsonObject();
                 payload.addProperty("path", selected.getPath());
                 pushJson("onAiDataDirectoryRootSelected", payload);
@@ -56,7 +58,12 @@ final class AiDataDirectoryHandler {
         runAsync(() -> {
             try {
                 JsonObject request = parseObject(content);
-                JsonObject result = manager.migrate(readString(request, "targetRoot"));
+                String requestedRoot = readString(request, "targetRoot");
+                if (requestedRoot == null || !samePath(requestedRoot, lastChosenTargetRoot)) {
+                    throw new IllegalArgumentException("TARGET_ROOT_MUST_BE_SELECTED");
+                }
+                lastChosenTargetRoot = null;
+                JsonObject result = manager.migrate(requestedRoot);
                 pushOperationResult(result);
             } catch (Exception error) {
                 LOG.warn("Failed to migrate AI data directories: " + error.getMessage(), error);
@@ -123,6 +130,18 @@ final class AiDataDirectoryHandler {
         return object.has(key) && object.get(key).isJsonPrimitive()
                 && object.getAsJsonPrimitive(key).isString()
                 ? object.get(key).getAsString() : null;
+    }
+
+    private static boolean samePath(String first, String second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        try {
+            return java.nio.file.Path.of(first).toAbsolutePath().normalize()
+                    .equals(java.nio.file.Path.of(second).toAbsolutePath().normalize());
+        } catch (RuntimeException error) {
+            return false;
+        }
     }
 
     private static String errorCode(Exception error) {
