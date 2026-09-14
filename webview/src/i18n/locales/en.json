@@ -402,6 +402,7 @@
       "deleteBackups": "Delete backups",
       "cleanupSuccess": "Migration backups deleted",
       "operationFailed": "AI data storage operation failed: {{error}}",
+      "operationTimeout": "The operation timed out. Refresh the status and try again.",
       "recovered": "An interrupted AI data migration was rolled back safely.",
       "wslUnsupported": "WSL uses a separate Linux filesystem namespace and cannot reuse Windows junctions. Configure the directories inside WSL separately."
     },

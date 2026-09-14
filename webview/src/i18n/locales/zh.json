@@ -402,6 +402,7 @@
       "deleteBackups": "删除备份",
       "cleanupSuccess": "迁移备份已删除",
       "operationFailed": "AI 数据存储操作失败：{{error}}",
+      "operationTimeout": "操作响应超时，请刷新状态后重试。",
       "recovered": "检测到中断的 AI 数据迁移，已安全回滚。",
       "wslUnsupported": "WSL 使用独立的 Linux 文件系统命名空间，不能复用 Windows junction，请在 WSL 内单独配置。"
     },

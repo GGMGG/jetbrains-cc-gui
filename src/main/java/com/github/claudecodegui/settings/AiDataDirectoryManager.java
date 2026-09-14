@@ -334,6 +334,9 @@ public final class AiDataDirectoryManager {
             entries.add(new MigrationEntry(id, canonical, target, staging, backup,
                     sourcePhysical, sourceKind, targetExisted));
         }
+        if (!Files.exists(targetRoot, LinkOption.NOFOLLOW_LINKS)) {
+            Files.createDirectories(targetRoot);
+        }
         return entries;
     }
 
@@ -357,7 +360,6 @@ public final class AiDataDirectoryManager {
                 throw new AiDataDirectoryException("TARGET_OVERLAPS_HOME");
             }
         }
-        Files.createDirectories(requested);
         if (!Files.isDirectory(requested, LinkOption.NOFOLLOW_LINKS)
                 || isDirectDirectoryLink(requested) || !Files.isWritable(requested)) {
             throw new AiDataDirectoryException("TARGET_ROOT_UNAVAILABLE");

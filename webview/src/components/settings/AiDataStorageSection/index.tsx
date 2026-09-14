@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ConfirmDialog from '../../ConfirmDialog';
 import {
@@ -17,6 +17,8 @@ type Confirmation =
   | { operation: 'cleanup' }
   | null;
 
+const OPERATION_TIMEOUT_MS = 120000;
+
 function comparablePath(path: string, platform?: string): string {
   const normalized = path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
   return platform === 'windows' ? normalized.toLowerCase() : normalized;
@@ -28,6 +30,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
   const [targetRoot, setTargetRoot] = useState('');
   const [pending, setPending] = useState<AiDataDirectoryOperation['operation'] | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const operationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unsubscribeStatus = aiDataStorageBridge.subscribeStatus((nextStatus) => {
@@ -37,7 +40,13 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
     });
     const unsubscribeRoot = aiDataStorageBridge.subscribeRoot(setTargetRoot);
     const unsubscribeOperation = aiDataStorageBridge.subscribeOperation((operation) => {
-      setPending(null);
+      if (operation.operation !== 'status') {
+        setPending((current) => current === operation.operation ? null : current);
+        if (operation.success) {
+          if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
+          operationTimeoutRef.current = null;
+        }
+      }
       if (operation.status) setStatus(operation.status);
       if (operation.success) {
         if (operation.operation === 'migrate') addToast(t('settings.storage.migrateSuccess'), 'success');
@@ -53,6 +62,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
       unsubscribeStatus();
       unsubscribeRoot();
       unsubscribeOperation();
+      if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
     };
   }, [addToast, t]);
 
@@ -71,6 +81,14 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
     if (!confirmation || pending !== null) return;
     setConfirmation(null);
     setPending(confirmation.operation);
+    if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
+    const operation = confirmation.operation;
+    operationTimeoutRef.current = setTimeout(() => {
+      setPending((current) => current === operation ? null : current);
+      operationTimeoutRef.current = null;
+      addToast(t('settings.storage.operationTimeout'), 'error');
+      aiDataStorageBridge.getStatus();
+    }, OPERATION_TIMEOUT_MS);
     if (confirmation.operation === 'migrate') {
       aiDataStorageBridge.migrate(confirmation.targetRoot);
     } else {
