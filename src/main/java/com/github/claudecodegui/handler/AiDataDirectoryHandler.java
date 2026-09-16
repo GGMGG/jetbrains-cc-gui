@@ -35,7 +35,7 @@ final class AiDataDirectoryHandler {
                 pushStatus(manager.snapshot());
             } catch (Exception error) {
                 LOG.warn("Failed to inspect AI data directories: " + error.getMessage(), error);
-                pushOperation("status", false, errorCode(error), null);
+                pushOperation("status", false, errorCode(error), null, null);
             }
         });
     }
@@ -58,27 +58,30 @@ final class AiDataDirectoryHandler {
         runAsync(() -> {
             try {
                 JsonObject request = parseObject(content);
+                String requestId = readRequestId(request);
                 String requestedRoot = readString(request, "targetRoot");
                 if (requestedRoot == null || !samePath(requestedRoot, lastChosenTargetRoot)) {
                     throw new IllegalArgumentException("TARGET_ROOT_MUST_BE_SELECTED");
                 }
                 lastChosenTargetRoot = null;
                 JsonObject result = manager.migrate(requestedRoot);
-                pushOperationResult(result);
+                pushOperationResult(result, requestId);
             } catch (Exception error) {
                 LOG.warn("Failed to migrate AI data directories: " + error.getMessage(), error);
-                pushOperation("migrate", false, errorCode(error), safeSnapshot());
+                pushOperation("migrate", false, errorCode(error), safeSnapshot(), readRequestIdSafely(content));
             }
         });
     }
 
-    void handleCleanupBackups() {
+    void handleCleanupBackups(String content) {
         runAsync(() -> {
             try {
-                pushOperationResult(manager.cleanupBackups());
+                JsonObject request = parseObject(content);
+                String requestId = readRequestId(request);
+                pushOperationResult(manager.cleanupBackups(), requestId);
             } catch (Exception error) {
                 LOG.warn("Failed to clean AI data directory backups: " + error.getMessage(), error);
-                pushOperation("cleanup", false, errorCode(error), safeSnapshot());
+                pushOperation("cleanup", false, errorCode(error), safeSnapshot(), readRequestIdSafely(content));
             }
         });
     }
@@ -91,14 +94,17 @@ final class AiDataDirectoryHandler {
         }
     }
 
-    private void pushOperationResult(JsonObject result) {
+    private void pushOperationResult(JsonObject result, String requestId) {
+        if (requestId != null) {
+            result.addProperty("requestId", requestId);
+        }
         pushJson("onAiDataDirectoryOperation", result);
         if (result.has("status") && result.get("status").isJsonObject()) {
             pushStatus(result.getAsJsonObject("status"));
         }
     }
 
-    private void pushOperation(String operation, boolean success, String error, JsonObject status) {
+    private void pushOperation(String operation, boolean success, String error, JsonObject status, String requestId) {
         JsonObject result = new JsonObject();
         result.addProperty("operation", operation);
         result.addProperty("success", success);
@@ -108,7 +114,7 @@ final class AiDataDirectoryHandler {
         if (status != null) {
             result.add("status", status);
         }
-        pushOperationResult(result);
+        pushOperationResult(result, requestId);
     }
 
     private void pushStatus(JsonObject status) {
@@ -130,6 +136,22 @@ final class AiDataDirectoryHandler {
         return object.has(key) && object.get(key).isJsonPrimitive()
                 && object.getAsJsonPrimitive(key).isString()
                 ? object.get(key).getAsString() : null;
+    }
+
+    private static String readRequestId(JsonObject object) {
+        String requestId = readString(object, "requestId");
+        if (requestId == null || requestId.isBlank() || requestId.length() > 128) {
+            throw new IllegalArgumentException("REQUEST_ID_REQUIRED");
+        }
+        return requestId;
+    }
+
+    private static String readRequestIdSafely(String content) {
+        try {
+            return readRequestId(parseObject(content));
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private static boolean samePath(String first, String second) {

@@ -47,22 +47,27 @@ describe('aiDataStorageBridge', () => {
 
   it('validates operation payloads with nested status', () => {
     expect(parseAiDataDirectoryOperation(JSON.stringify({
-      operation: 'migrate', success: true, status: validStatus,
-    }))).toMatchObject({ operation: 'migrate', success: true, status: { backupCount: 1 } });
+      operation: 'migrate', requestId: 'request-1', success: true, status: validStatus,
+    }))).toMatchObject({
+      operation: 'migrate', requestId: 'request-1', success: true, status: { backupCount: 1 },
+    });
+    expect(parseAiDataDirectoryOperation('{"operation":"migrate","success":true}')).toBeNull();
     expect(parseAiDataDirectoryOperation('{"operation":"remove","success":true}')).toBeNull();
   });
 
   it('sends migration commands as structured bridge messages', () => {
     aiDataStorageBridge.getStatus();
     aiDataStorageBridge.chooseRoot();
-    aiDataStorageBridge.migrate('D:/AI Data');
-    aiDataStorageBridge.cleanupBackups();
+    aiDataStorageBridge.migrate('D:/AI Data', 'request-1');
+    aiDataStorageBridge.cleanupBackups('request-2');
 
     expect(sendToJava).toHaveBeenNthCalledWith(1, 'get_ai_data_directory_status');
     expect(sendToJava).toHaveBeenNthCalledWith(2, 'choose_ai_data_directory_root');
     expect(sendToJava).toHaveBeenNthCalledWith(
-      3, 'migrate_ai_data_directories', { targetRoot: 'D:/AI Data' },
+      3, 'migrate_ai_data_directories', { targetRoot: 'D:/AI Data', requestId: 'request-1' },
     );
-    expect(sendToJava).toHaveBeenNthCalledWith(4, 'cleanup_ai_data_directory_backups');
+    expect(sendToJava).toHaveBeenNthCalledWith(
+      4, 'cleanup_ai_data_directory_backups', { requestId: 'request-2' },
+    );
   });
 });

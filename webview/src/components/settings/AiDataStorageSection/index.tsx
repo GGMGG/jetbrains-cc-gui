@@ -17,7 +17,18 @@ type Confirmation =
   | { operation: 'cleanup' }
   | null;
 
+interface PendingOperation {
+  operation: Exclude<AiDataDirectoryOperation['operation'], 'status'>;
+  requestId: string;
+}
+
 const OPERATION_TIMEOUT_MS = 120000;
+let nextRequestId = 0;
+
+function createRequestId(): string {
+  nextRequestId += 1;
+  return `ai-data-${Date.now()}-${nextRequestId}`;
+}
 
 const OPERATION_ERROR_KEYS: Record<string, string> = {
   AI_PROCESSES_ACTIVE: 'settings.storage.errors.aiProcessesActive',
@@ -56,34 +67,51 @@ function comparablePath(path: string, platform?: string): string {
 
 export default function AiDataStorageSection({ addToast }: AiDataStorageSectionProps) {
   const { t } = useTranslation();
+  const addToastRef = useRef(addToast);
+  const translateRef = useRef(t);
   const [status, setStatus] = useState<AiDataDirectoryStatus | null>(null);
   const [targetRoot, setTargetRoot] = useState('');
-  const [pending, setPending] = useState<AiDataDirectoryOperation['operation'] | null>(null);
+  const [pending, setPending] = useState<PendingOperation['operation'] | null>(null);
+  const pendingOperationRef = useRef<PendingOperation | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const operationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    addToastRef.current = addToast;
+    translateRef.current = t;
+  }, [addToast, t]);
 
   useEffect(() => {
     const unsubscribeStatus = aiDataStorageBridge.subscribeStatus((nextStatus) => {
       setStatus(nextStatus);
       setTargetRoot((current) => current || nextStatus.storageRoot || '');
-      if (nextStatus.recovered) addToast(t('settings.storage.recovered'), 'warning');
+      if (nextStatus.recovered) {
+        addToastRef.current(translateRef.current('settings.storage.recovered'), 'warning');
+      }
     });
     const unsubscribeRoot = aiDataStorageBridge.subscribeRoot(setTargetRoot);
     const unsubscribeOperation = aiDataStorageBridge.subscribeOperation((operation) => {
-      if (operation.operation !== 'status') {
-        setPending((current) => current === operation.operation ? null : current);
-        if (operation.success) {
-          if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
-          operationTimeoutRef.current = null;
-        }
+      if (operation.operation === 'status') {
+        if (operation.status) setStatus(operation.status);
+        return;
       }
+      const pendingOperation = pendingOperationRef.current;
+      if (!pendingOperation || operation.requestId !== pendingOperation.requestId
+        || operation.operation !== pendingOperation.operation) return;
+      pendingOperationRef.current = null;
+      setPending(null);
+      if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
+      operationTimeoutRef.current = null;
       if (operation.status) setStatus(operation.status);
-      if (operation.operation === 'status') return;
       if (operation.success) {
-        if (operation.operation === 'migrate') addToast(t('settings.storage.migrateSuccess'), 'success');
-        if (operation.operation === 'cleanup') addToast(t('settings.storage.cleanupSuccess'), 'success');
+        if (operation.operation === 'migrate') {
+          addToastRef.current(translateRef.current('settings.storage.migrateSuccess'), 'success');
+        }
+        if (operation.operation === 'cleanup') {
+          addToastRef.current(translateRef.current('settings.storage.cleanupSuccess'), 'success');
+        }
       } else {
-        addToast(operationErrorMessage(t, operation.error), 'error');
+        addToastRef.current(operationErrorMessage(translateRef.current, operation.error), 'error');
       }
     });
     aiDataStorageBridge.getStatus();
@@ -91,9 +119,10 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
       unsubscribeStatus();
       unsubscribeRoot();
       unsubscribeOperation();
+      pendingOperationRef.current = null;
       if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
     };
-  }, [addToast, t]);
+  }, []);
 
   const requestMigration = () => {
     const normalized = targetRoot.trim();
@@ -109,19 +138,43 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
   const confirmOperation = () => {
     if (!confirmation || pending !== null) return;
     setConfirmation(null);
-    setPending(confirmation.operation);
-    if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
     const operation = confirmation.operation;
+    const requestId = createRequestId();
+    pendingOperationRef.current = { operation, requestId };
+    setPending(operation);
+    if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
     operationTimeoutRef.current = setTimeout(() => {
-      setPending((current) => current === operation ? null : current);
+      if (pendingOperationRef.current?.requestId !== requestId) return;
+      pendingOperationRef.current = null;
+      setPending(null);
       operationTimeoutRef.current = null;
-      addToast(t('settings.storage.operationTimeout'), 'error');
+      addToastRef.current(translateRef.current('settings.storage.operationTimeout'), 'error');
       aiDataStorageBridge.getStatus();
     }, OPERATION_TIMEOUT_MS);
     if (confirmation.operation === 'migrate') {
-      aiDataStorageBridge.migrate(confirmation.targetRoot);
+      const sent = aiDataStorageBridge.migrate(confirmation.targetRoot, requestId);
+      if (sent === false) {
+        if (pendingOperationRef.current?.requestId === requestId) {
+          pendingOperationRef.current = null;
+          setPending(null);
+        }
+        if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
+        operationTimeoutRef.current = null;
+        addToastRef.current(translateRef.current('settings.storage.operationFailed'), 'error');
+        aiDataStorageBridge.getStatus();
+      }
     } else {
-      aiDataStorageBridge.cleanupBackups();
+      const sent = aiDataStorageBridge.cleanupBackups(requestId);
+      if (sent === false) {
+        if (pendingOperationRef.current?.requestId === requestId) {
+          pendingOperationRef.current = null;
+          setPending(null);
+        }
+        if (operationTimeoutRef.current) clearTimeout(operationTimeoutRef.current);
+        operationTimeoutRef.current = null;
+        addToastRef.current(translateRef.current('settings.storage.operationFailed'), 'error');
+        aiDataStorageBridge.getStatus();
+      }
     }
   };
 

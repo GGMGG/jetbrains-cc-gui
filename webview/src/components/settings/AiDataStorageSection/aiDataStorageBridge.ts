@@ -25,6 +25,7 @@ export interface AiDataDirectoryStatus {
 export interface AiDataDirectoryOperation {
   operation: 'status' | 'migrate' | 'cleanup';
   success: boolean;
+  requestId?: string;
   error?: string;
   status?: AiDataDirectoryStatus;
 }
@@ -105,7 +106,8 @@ export function parseAiDataDirectoryOperation(json: string): AiDataDirectoryOper
   const value = parseObject(json);
   if (!value || typeof value.operation !== 'string'
     || !OPERATIONS.includes(value.operation as AiDataDirectoryOperation['operation'])
-    || typeof value.success !== 'boolean') return null;
+    || typeof value.success !== 'boolean'
+    || (value.operation !== 'status' && typeof value.requestId !== 'string')) return null;
   let status: AiDataDirectoryStatus | undefined;
   if (value.status !== undefined) {
     status = parseAiDataDirectoryStatus(JSON.stringify(value.status)) ?? undefined;
@@ -113,6 +115,7 @@ export function parseAiDataDirectoryOperation(json: string): AiDataDirectoryOper
   return {
     operation: value.operation as AiDataDirectoryOperation['operation'],
     success: value.success,
+    requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
     error: typeof value.error === 'string' ? value.error : undefined,
     status,
   };
@@ -148,6 +151,8 @@ export const aiDataStorageBridge = {
     subscribe(operationListeners, listener),
   getStatus: () => sendToJava('get_ai_data_directory_status'),
   chooseRoot: () => sendToJava('choose_ai_data_directory_root'),
-  migrate: (targetRoot: string) => sendToJava('migrate_ai_data_directories', { targetRoot }),
-  cleanupBackups: () => sendToJava('cleanup_ai_data_directory_backups'),
+  migrate: (targetRoot: string, requestId: string) =>
+    sendToJava('migrate_ai_data_directories', { targetRoot, requestId }),
+  cleanupBackups: (requestId: string) =>
+    sendToJava('cleanup_ai_data_directory_backups', { requestId }),
 };

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AiDataStorageSection from './index';
 
 const mocks = vi.hoisted(() => ({
@@ -55,6 +55,7 @@ const status = {
 
 describe('AiDataStorageSection', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     mocks.statusListeners.length = 0;
     mocks.rootListeners.length = 0;
     mocks.operationListeners.length = 0;
@@ -62,7 +63,14 @@ describe('AiDataStorageSection', () => {
     mocks.chooseRoot.mockClear();
     mocks.migrate.mockClear();
     mocks.cleanupBackups.mockClear();
-    vi.restoreAllMocks();
+    mocks.getStatus.mockReturnValue(true);
+    mocks.chooseRoot.mockReturnValue(true);
+    mocks.migrate.mockReturnValue(true);
+    mocks.cleanupBackups.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('shows all canonical directories and requests status on mount', () => {
@@ -86,7 +94,7 @@ describe('AiDataStorageSection', () => {
     expect(screen.getByText('D:/AI Data')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
 
-    expect(mocks.migrate).toHaveBeenCalledWith('D:/AI Data');
+    expect(mocks.migrate).toHaveBeenCalledWith('D:/AI Data', expect.any(String));
   });
 
   it('requires confirmation before deleting migration backups', () => {
@@ -98,7 +106,149 @@ describe('AiDataStorageSection', () => {
     expect(screen.getByText('settings.storage.cleanupConfirmTitle')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'settings.storage.deleteBackups' }));
 
-    expect(mocks.cleanupBackups).toHaveBeenCalledOnce();
+    expect(mocks.cleanupBackups).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('clears migration pending state when the bridge is unavailable', () => {
+    const addToast = vi.fn();
+    vi.useFakeTimers();
+    mocks.migrate.mockReturnValue(false);
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+
+    expect(addToast).toHaveBeenCalledWith('settings.storage.operationFailed', 'error');
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(addToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears cleanup pending state when the bridge is unavailable', () => {
+    const addToast = vi.fn();
+    mocks.cleanupBackups.mockReturnValue(false);
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.cleanupBackups' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.deleteBackups' }));
+
+    expect(addToast).toHaveBeenCalledWith('settings.storage.operationFailed', 'error');
+    expect((screen.getByRole('button', { name: 'settings.storage.cleanupBackups' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the operation timeout when a matching failure callback arrives', () => {
+    const addToast = vi.fn();
+    vi.useFakeTimers();
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const requestId = mocks.migrate.mock.calls[0]![1] as string;
+    act(() => mocks.operationListeners[0]!({
+      operation: 'migrate',
+      requestId,
+      success: false,
+      error: 'TARGET_ROOT_REQUIRED',
+    }));
+
+    expect(addToast).toHaveBeenCalledWith('settings.storage.errors.targetRootRequired', 'error');
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(addToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the active operation timeout when an unrelated callback arrives', () => {
+    const addToast = vi.fn();
+    vi.useFakeTimers();
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const requestId = mocks.migrate.mock.calls[0]![1] as string;
+    act(() => mocks.operationListeners[0]!({ operation: 'cleanup', requestId, success: true }));
+
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(addToast).toHaveBeenCalledWith('settings.storage.operationTimeout', 'error');
+  });
+
+  it('ignores a delayed callback from an earlier request of the same operation', () => {
+    const addToast = vi.fn();
+    vi.useFakeTimers();
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const firstRequestId = mocks.migrate.mock.calls[0]![1] as string;
+    act(() => vi.advanceTimersByTime(120_000));
+    addToast.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const secondRequestId = mocks.migrate.mock.calls[1]![1] as string;
+    act(() => mocks.operationListeners[0]!({
+      operation: 'migrate', requestId: firstRequestId, success: true,
+    }));
+
+    expect(addToast).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'settings.storage.migrating' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+
+    act(() => mocks.operationListeners[0]!({
+      operation: 'migrate', requestId: secondRequestId, success: true,
+    }));
+    expect(addToast).toHaveBeenCalledWith('settings.storage.migrateSuccess', 'success');
+  });
+
+  it('keeps an active operation tracked when the toast callback changes', () => {
+    const firstAddToast = vi.fn();
+    const secondAddToast = vi.fn();
+    const view = render(<AiDataStorageSection addToast={firstAddToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const requestId = mocks.migrate.mock.calls[0]![1] as string;
+    view.rerender(<AiDataStorageSection addToast={secondAddToast} />);
+    act(() => mocks.operationListeners[0]!({
+      operation: 'migrate', requestId, success: true,
+    }));
+
+    expect(firstAddToast).not.toHaveBeenCalled();
+    expect(secondAddToast).toHaveBeenCalledWith('settings.storage.migrateSuccess', 'success');
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
+  it('keeps the active timeout when the toast callback changes', () => {
+    const firstAddToast = vi.fn();
+    const secondAddToast = vi.fn();
+    vi.useFakeTimers();
+    const view = render(<AiDataStorageSection addToast={firstAddToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    view.rerender(<AiDataStorageSection addToast={secondAddToast} />);
+    act(() => vi.advanceTimersByTime(120_000));
+
+    expect(firstAddToast).not.toHaveBeenCalled();
+    expect(secondAddToast).toHaveBeenCalledWith('settings.storage.operationTimeout', 'error');
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled)
+      .toBe(false);
   });
 
   it('refreshes status from the directory list header', () => {
@@ -126,9 +276,15 @@ describe('AiDataStorageSection', () => {
   it('maps backend error codes to localized messages', () => {
     const addToast = vi.fn();
     render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const requestId = mocks.migrate.mock.calls[0]![1] as string;
 
     act(() => mocks.operationListeners[0]!({
       operation: 'migrate',
+      requestId,
       success: false,
       error: 'TARGET_ROOT_REQUIRED',
     }));

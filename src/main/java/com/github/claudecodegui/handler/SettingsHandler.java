@@ -216,7 +216,7 @@ public class SettingsHandler extends BaseMessageHandler {
                 aiDataDirectoryHandler.handleMigrate(content);
                 return true;
             case "cleanup_ai_data_directory_backups":
-                aiDataDirectoryHandler.handleCleanupBackups();
+                aiDataDirectoryHandler.handleCleanupBackups(content);
                 return true;
             // TokenTracker local usage dashboard
             case "tt_detect_cli":

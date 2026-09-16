@@ -149,11 +149,137 @@ public class AiDataDirectoryManagerTest {
         assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
         assertFalse(Files.exists(validBackup, LinkOption.NOFOLLOW_LINKS));
         JsonArray remaining = JsonParser.parseString(
+                Files.readString(state.resolve("migration-backups-quarantine.json"), StandardCharsets.UTF_8))
+                .getAsJsonArray();
+        assertEquals(1, remaining.size());
+        assertEquals("invalid", remaining.get(0).getAsJsonObject()
+                .getAsJsonObject("record").get("id").getAsString());
+        assertFalse(Files.exists(state.resolve("migration-backups.json"), LinkOption.NOFOLLOW_LINKS));
+        assertFalse(Files.exists(sentinel, LinkOption.NOFOLLOW_LINKS));
+
+        JsonObject retryResult = manager(home, state, null).cleanupBackups();
+        assertTrue(retryResult.get("success").getAsBoolean());
+        JsonArray quarantinedAfterRetry = JsonParser.parseString(
+                Files.readString(state.resolve("migration-backups-quarantine.json"), StandardCharsets.UTF_8))
+                .getAsJsonArray();
+        assertEquals(1, quarantinedAfterRetry.size());
+    }
+
+    @Test
+    public void retainsInvalidBackupRecordWhenQuarantineCannotBePersisted() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("quarantine-failure-home"));
+        Path state = Files.createDirectory(root.resolve("quarantine-failure-state"));
+        String operationId = UUID.randomUUID().toString();
+        Path validBackup = Files.createDirectory(home.resolve(
+                ".claude.cc-gui-backup-1-" + operationId));
+        Files.writeString(validBackup.resolve("keep.txt"), "keep", StandardCharsets.UTF_8);
+        JsonArray metadata = new JsonArray();
+        metadata.add(backupRecord("claude", validBackup, operationId));
+        metadata.add(backupRecord("invalid", home.resolve("invalid-backup"), operationId));
+        Files.writeString(state.resolve("migration-backups.json"), metadata.toString(), StandardCharsets.UTF_8);
+        Files.createDirectory(state.resolve("migration-backups-quarantine.json"));
+
+        IOException error = assertThrows(IOException.class,
+                () -> manager(home, state, null).cleanupBackups());
+
+        assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
+        assertFalse(Files.exists(validBackup, LinkOption.NOFOLLOW_LINKS));
+        JsonArray remaining = JsonParser.parseString(
                 Files.readString(state.resolve("migration-backups.json"), StandardCharsets.UTF_8))
                 .getAsJsonArray();
         assertEquals(1, remaining.size());
         assertEquals("invalid", remaining.get(0).getAsJsonObject().get("id").getAsString());
-        assertFalse(Files.exists(sentinel, LinkOption.NOFOLLOW_LINKS));
+    }
+
+    @Test
+    public void retainsInvalidBackupRecordWhenQuarantineMetadataIsCorrupt() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("corrupt-quarantine-home"));
+        Path state = Files.createDirectory(root.resolve("corrupt-quarantine-state"));
+        String operationId = UUID.randomUUID().toString();
+        Path validBackup = Files.createDirectory(home.resolve(
+                ".claude.cc-gui-backup-1-" + operationId));
+        Files.writeString(validBackup.resolve("keep.txt"), "keep", StandardCharsets.UTF_8);
+        JsonArray metadata = new JsonArray();
+        metadata.add(backupRecord("claude", validBackup, operationId));
+        metadata.add(backupRecord("invalid", home.resolve("invalid-backup"), operationId));
+        Files.writeString(state.resolve("migration-backups.json"), metadata.toString(), StandardCharsets.UTF_8);
+        Files.writeString(state.resolve("migration-backups-quarantine.json"), "not-json", StandardCharsets.UTF_8);
+
+        IOException error = assertThrows(IOException.class,
+                () -> manager(home, state, null).cleanupBackups());
+
+        assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
+        assertFalse(Files.exists(validBackup, LinkOption.NOFOLLOW_LINKS));
+        JsonArray remaining = JsonParser.parseString(
+                Files.readString(state.resolve("migration-backups.json"), StandardCharsets.UTF_8))
+                .getAsJsonArray();
+        assertEquals(1, remaining.size());
+        assertEquals("invalid", remaining.get(0).getAsJsonObject().get("id").getAsString());
+        assertEquals("not-json", Files.readString(
+                state.resolve("migration-backups-quarantine.json"), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void quarantinesCorruptBackupMetadataFile() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("corrupt-metadata-home"));
+        Path state = Files.createDirectory(root.resolve("corrupt-metadata-state"));
+        Path metadataPath = state.resolve("migration-backups.json");
+        Files.writeString(metadataPath, "not-json", StandardCharsets.UTF_8);
+
+        IOException error = assertThrows(IOException.class,
+                () -> manager(home, state, null).cleanupBackups());
+
+        assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
+        assertFalse(Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS));
+        JsonArray quarantined = JsonParser.parseString(Files.readString(
+                state.resolve("migration-backups-quarantine.json"), StandardCharsets.UTF_8)).getAsJsonArray();
+        assertEquals(1, quarantined.size());
+        assertEquals("not-json", quarantined.get(0).getAsJsonObject().get("rawMetadata").getAsString());
+
+        JsonObject retryResult = manager(home, state, null).cleanupBackups();
+        assertTrue(retryResult.get("success").getAsBoolean());
+        JsonArray quarantinedAfterRetry = JsonParser.parseString(Files.readString(
+                state.resolve("migration-backups-quarantine.json"), StandardCharsets.UTF_8)).getAsJsonArray();
+        assertEquals(1, quarantinedAfterRetry.size());
+    }
+
+    @Test
+    public void quarantinesNonArrayBackupMetadataFile() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("non-array-metadata-home"));
+        Path state = Files.createDirectory(root.resolve("non-array-metadata-state"));
+        Path metadataPath = state.resolve("migration-backups.json");
+        Files.writeString(metadataPath, "{\"record\":true}", StandardCharsets.UTF_8);
+
+        IOException error = assertThrows(IOException.class,
+                () -> manager(home, state, null).cleanupBackups());
+
+        assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
+        assertFalse(Files.exists(metadataPath, LinkOption.NOFOLLOW_LINKS));
+        JsonArray quarantined = JsonParser.parseString(Files.readString(
+                state.resolve("migration-backups-quarantine.json"), StandardCharsets.UTF_8)).getAsJsonArray();
+        assertEquals(1, quarantined.size());
+        assertEquals("{\"record\":true}",
+                quarantined.get(0).getAsJsonObject().get("rawMetadata").getAsString());
+    }
+
+    @Test
+    public void retainsCorruptBackupMetadataWhenQuarantineCannotBePersisted() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("corrupt-metadata-failure-home"));
+        Path state = Files.createDirectory(root.resolve("corrupt-metadata-failure-state"));
+        Path metadataPath = state.resolve("migration-backups.json");
+        Files.writeString(metadataPath, "not-json", StandardCharsets.UTF_8);
+        Files.createDirectory(state.resolve("migration-backups-quarantine.json"));
+
+        IOException error = assertThrows(IOException.class,
+                () -> manager(home, state, null).cleanupBackups());
+
+        assertEquals("BACKUP_CLEANUP_PARTIAL", error.getMessage());
+        assertEquals("not-json", Files.readString(metadataPath, StandardCharsets.UTF_8));
     }
 
     @Test
