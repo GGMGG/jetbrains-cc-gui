@@ -10,9 +10,57 @@ import {
   buildWebviewControlledSettingsOverride,
   isDangerousEnvVar,
   isWebviewControlledEnvVar,
+  WEBVIEW_CONTROLLED_ENV_VARS,
 } from './api-config.js';
 
 const API_CONFIG_MODULE = pathToFileURL(path.resolve('ai-bridge/config/api-config.js')).href;
+
+// buildWebviewControlledSettingsOverride() mirrors the per-request model routing snapshot it
+// finds in process.env, so these tests must not depend on whatever the surrounding shell
+// exports (relay users commonly export ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_*_MODEL globally).
+// Clear the webview-controlled vars for the whole file; each test sets the ones it needs.
+const FILE_SAVED_ENV = new Map(
+  WEBVIEW_CONTROLLED_ENV_VARS.map((name) => [name, process.env[name]])
+);
+for (const name of WEBVIEW_CONTROLLED_ENV_VARS) {
+  delete process.env[name];
+}
+
+test.after(() => {
+  for (const [name, value] of FILE_SAVED_ENV) {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+});
+
+/**
+ * Run `body` with the given per-request routing values placed in process.env, restoring the
+ * previous state of every webview-controlled var afterwards.
+ *
+ * @param {Object} values - env var name to value pairs to set for the duration of the body
+ * @param {Function} body - test body to run
+ */
+function withPerRequestRoutingEnv(values, body) {
+  const saved = new Map(WEBVIEW_CONTROLLED_ENV_VARS.map((name) => [name, process.env[name]]));
+  for (const name of WEBVIEW_CONTROLLED_ENV_VARS) {
+    delete process.env[name];
+  }
+  Object.assign(process.env, values);
+  try {
+    body();
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
 
 test('Codex native access requires an active managed provider or explicitly authorized CLI Login', () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-access-'));
@@ -194,6 +242,53 @@ function writeClaudeSettingsEnv(homeDir, env) {
   );
 }
 
+/**
+ * Build both routing layers the SDK receives in an isolated child process whose
+ * HOME is {@code tempHome}: the CLI child env (options.env) and the inline
+ * settings override (options.settings.env).
+ *
+ * The provider-management decision behind them reads ~/.codemoss/config.json and
+ * ~/.claude/settings.json, so it has to run in a child with a temp HOME instead
+ * of the developer's real files.
+ *
+ * @param {string} tempHome - isolated HOME for the child process
+ * @param {string} requestModel - per-request model written to process.env first
+ * @returns {{childEnv: Object, settingsEnv: Object}} both layers, reduced to the routing vars
+ */
+function runRoutingLayers(tempHome, requestModel = 'relay-sonnet-model') {
+  const script = `
+    import { buildCliEnv, buildWebviewControlledSettingsOverride } from ${JSON.stringify(API_CONFIG_MODULE)};
+    process.env.ANTHROPIC_MODEL = ${JSON.stringify(requestModel)};
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = ${JSON.stringify(requestModel)};
+    const childEnv = buildCliEnv();
+    const override = buildWebviewControlledSettingsOverride('claude-sonnet-4-6');
+    console.log(JSON.stringify({
+      childEnv: {
+        HOST_MANAGED: childEnv.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,
+        ANTHROPIC_MODEL: childEnv.ANTHROPIC_MODEL,
+        SONNET: childEnv.ANTHROPIC_DEFAULT_SONNET_MODEL,
+      },
+      settingsEnv: {
+        ANTHROPIC_MODEL: override.env.ANTHROPIC_MODEL,
+        SONNET: override.env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+      },
+    }));
+  `;
+
+  const output = execFileSync(
+    process.execPath,
+    ['--input-type=module', '--eval', script],
+    {
+      cwd: path.resolve('.'),
+      env: buildChildEnv(tempHome),
+      encoding: 'utf8',
+    }
+  );
+
+  const lastLine = output.trim().split('\n').filter(Boolean).pop();
+  return JSON.parse(lastLine);
+}
+
 // Run buildCliEnv() in an isolated child process whose HOME points at tempHome,
 // so the provider-management decision is driven solely by the temp settings.json
 // — never by the developer's real ~/.claude/settings.json.
@@ -372,6 +467,48 @@ test('buildWebviewControlledSettingsOverride leaves unconfigured tiers blank', (
     '',
     'ANTHROPIC_MODEL must stay blank: blocking the stale settings.json copy is exactly the issue #1509 fix'
   );
+});
+
+test('buildWebviewControlledSettingsOverride mirrors per-request routing values over settings.json', () => {
+  // The override must state what the current request actually routes to: the values
+  // setModelEnvironmentVariables() has just written into process.env win over the user's
+  // settings.json mapping for the tier they own. Blanking that entry - or letting a stale
+  // settings.json copy through - is what made third-party relays request the official
+  // claude-* models instead of the selected one (issue #1741). Tiers the request did not
+  // touch keep echoing settings.json.
+  withPerRequestRoutingEnv(
+    {
+      ANTHROPIC_MODEL: 'relay-sonnet-model',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'relay-sonnet-model',
+    },
+    () => {
+      const result = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
+        ANTHROPIC_MODEL: 'stale-global-model',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'stale-sonnet-model',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3-flash',
+      });
+
+      assert.equal(result.env.ANTHROPIC_MODEL, 'relay-sonnet-model',
+        'the per-request selection must win over the settings.json copy');
+      assert.equal(result.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'relay-sonnet-model',
+        'the tier owned by the current request must mirror the request-resolved value');
+      assert.equal(result.env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'glm-5.3-flash',
+        'tiers the request did not touch keep echoing settings.json');
+      assert.equal(result.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, '');
+      assert.equal(result.env.CLAUDE_CODE_SUBAGENT_MODEL, '');
+    },
+  );
+
+  // Without a per-request value the stale settings.json copy must stay blocked (#1509):
+  // neutralization by empty string is still the fallback for ANTHROPIC_MODEL.
+  withPerRequestRoutingEnv({}, () => {
+    const result = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
+      ANTHROPIC_MODEL: 'stale-global-model',
+    });
+
+    assert.equal(result.env.ANTHROPIC_MODEL, '');
+    assert.equal(result.env.ANTHROPIC_DEFAULT_SONNET_MODEL, '');
+  });
 });
 
 test('buildCliEnv leaves CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST unset for cloud providers', () => {
@@ -692,4 +829,53 @@ test('injectStartupEnvVars clears previously injected AWS credential vars after 
   assert.equal(result.AWS_PROFILE, null);
   assert.equal(result.AWS_REGION, null);
   assert.equal(result.AWS_SECRET_ACCESS_KEY, null);
+});
+
+test('provider-management contract: each mode routes through a different layer', () => {
+  // The managed flag decides WHICH layer is authoritative, so the contract has
+  // to pin both modes at once (options.env vs options.settings.env).
+  //
+  // Managed (plugin-owned provider, i.e. relay users): the CLI strips
+  // provider/model routing vars from settings sources, so the child env decides
+  // and this override is not the mechanism that keeps routing correct there -
+  // the exact resolved model id is (2633282d).
+  const managedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-routing-managed-'));
+  try {
+    writeCodemossClaudeConfig(managedHome, 'provider-a', {
+      'provider-a': { name: 'Provider A', settingsConfig: { env: {} } },
+    });
+    writeClaudeSettingsEnv(managedHome, {});
+
+    const managed = runRoutingLayers(managedHome);
+    assert.equal(managed.childEnv.HOST_MANAGED, '1',
+      'a plugin-owned provider must advertise provider management');
+    assert.equal(managed.settingsEnv.ANTHROPIC_MODEL, 'relay-sonnet-model',
+      'the override mirrors the request value regardless of the mode');
+    assert.equal(managed.settingsEnv.SONNET, 'relay-sonnet-model');
+
+    // The [1m] suffix must survive into the settings layer: that value is what
+    // a blank entry used to shadow on the non-managed path.
+    const suffix = runRoutingLayers(managedHome, 'claude-sonnet-4-6[1m]');
+    assert.equal(suffix.settingsEnv.SONNET, 'claude-sonnet-4-6[1m]',
+      'the tier resolved for the request must keep its [1m] suffix');
+    assert.equal(suffix.settingsEnv.ANTHROPIC_MODEL, 'claude-sonnet-4-6[1m]');
+  } finally {
+    fs.rmSync(managedHome, { recursive: true, force: true });
+  }
+
+  // CLI login: no managed flag, so the inline settings layer IS honored and has
+  // to carry the request values (this is the path the mirroring protects).
+  const loginHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-routing-login-'));
+  try {
+    writeCodemossClaudeConfig(loginHome, '__cli_login__');
+
+    const login = runRoutingLayers(loginHome);
+    assert.equal(login.childEnv.HOST_MANAGED, undefined,
+      'CLI login must not advertise provider management');
+    assert.equal(login.settingsEnv.ANTHROPIC_MODEL, 'relay-sonnet-model',
+      'without the managed flag the honored layer must agree with the request');
+    assert.equal(login.settingsEnv.SONNET, 'relay-sonnet-model');
+  } finally {
+    fs.rmSync(loginHome, { recursive: true, force: true });
+  }
 });

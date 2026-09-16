@@ -157,7 +157,11 @@ const WEBVIEW_CONTROLLED_ENV_VAR_SET = new Set(
 
 // Subset stripped from the SDK child env: the reasoning/context controls must
 // reach the CLI only via SDK options + the inline settings override, never
-// inherited from process.env.
+// inherited from process.env. Model routing vars are intentionally NOT
+// stripped: the CLI child env is the frozen per-request snapshot written by
+// setModelEnvironmentVariables() right before buildQueryOptions(), and the
+// [1m] context-window suffix must survive into the spawned runtime (see
+// runtime-lifecycle.1m-toggle.child.mjs).
 const CLI_ENV_OVERRIDE_VAR_SET = new Set(
   REASONING_CONTROL_ENV_VARS.map((varName) => varName.toUpperCase())
 );
@@ -202,6 +206,26 @@ export function isDangerousEnvVar(varName) {
 }
 
 /**
+ * Read the per-request value a model routing var currently holds in process.env.
+ *
+ * setModelEnvironmentVariables() writes the request-resolved routing values right before
+ * buildQueryOptions(), so at this point process.env is the authoritative snapshot for the
+ * current request. Unset and blank are treated alike ("no per-request value"), which lets
+ * callers fall back to settings.json or to neutralization.
+ *
+ * @param {string} varName - model routing env var name
+ * @returns {string|null} the trimmed per-request value, or null when the request set none
+ */
+function perRequestModelRoutingValue(varName) {
+  const value = process.env[varName];
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
  * Build the inline settings override handed to the Claude CLI (the `--settings` argument).
  *
  * @param {string} [modelId] - the raw model ID selected in the webview
@@ -216,31 +240,42 @@ export function buildWebviewControlledSettingsOverride(modelId, settingsEnv) {
     MAX_THINKING_TOKENS: '',
   };
 
-  // ANTHROPIC_MODEL stays blank: it belongs to the current request, written exclusively
-  // through process.env by setModelEnvironmentVariables(). A stale copy in settings.json
-  // must be blocked, otherwise it overrides the webview-selected model and every model
-  // family resolves to the same value (issue #1509).
-  env.ANTHROPIC_MODEL = '';
+  // Model routing vars: the per-request snapshot wins over settings.json.
+  //
+  // setModelEnvironmentVariables() writes the request-resolved values into process.env
+  // immediately before this function is called, so process.env is the authoritative
+  // per-request snapshot here - the tier owned by the current request included, which may
+  // deliberately differ from the (possibly stale) settings.json mapping.
+  //
+  // Where this layer sits in the precedence chain (Claude Code applies the `--settings` env
+  // block on top of the CLI child env, so a value here wins over the same var in options.env;
+  // an empty string means "suppress": it clears a settings.json copy instead of letting the
+  // child env value fall through):
+  //
+  //   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1 makes the CLI strip provider/model routing
+  //     vars from every settings source. That is the plugin-owned-provider case (relay
+  //     users): this layer is dropped there and the child env decides;
+  //   - without that flag (CLI login, cloud providers) this layer IS honored, so it has to
+  //     agree with the request. A blank entry would shadow the tier the request resolved
+  //     (custom, non-Claude tier names) and would drop the `[1m]` suffix the CLI must see.
+  //
+  // The mirroring below therefore keeps the non-managed path consistent with the request
+  // snapshot; it is not what makes relays work - 2633282d already sends the exact resolved
+  // model id to the SDK, and the managed path never relied on this layer. Vars the request
+  // did not set fall back to the user's settings.json tier mapping - and ANTHROPIC_MODEL to
+  // blank - so a stale settings.json copy still cannot override the webview selection
+  // (issue #1509).
+  //
+  // To observe both modes: run a local fake server that logs the request body `model` and
+  // `anthropic-beta`, point ANTHROPIC_BASE_URL at it, set ANTHROPIC_MODEL /
+  // ANTHROPIC_DEFAULT_*_MODEL both in the child env and in the inline settings env, and run
+  // once with and once without CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1: with the flag the
+  // request follows the child-env value, without it the settings-layer value.
+  env.ANTHROPIC_MODEL = perRequestModelRoutingValue('ANTHROPIC_MODEL') ?? '';
 
-  // The remaining tier vars echo the real model names the user configured in settings.json
-  // instead of being blanked across the board.
-  //
-  // Measured conclusion (Claude Agent SDK 0.3.290 / bundled CLI 2.1.290): the `--settings`
-  // env block does not become environment variables of the CLI child process. Pointing
-  // ANTHROPIC_BASE_URL at another port inside the inline settings still sends requests to
-  // the address given by process.env; assigning the opus tier only inside the inline settings
-  // still leaves an agent declaring `model: opus` falling back to the CLI's built-in model
-  // name. So this layer has no practical effect on tier resolution.
-  //
-  // The real guarantee for subagent tiers is setModelEnvironmentVariables() spreading every
-  // tier into process.env. The pass-through is kept because it truthfully expresses the intent
-  // that configured tiers reach the CLI, and it would start taking effect by itself should the
-  // CLI begin honoring settings.env. Note its values are settings.json verbatim, so for the tier
-  // owned by the current request they can differ from the request-resolved value written to
-  // process.env (see the tier sync in model-utils.js). Tiers the user never configured stay blank.
   const configuredTiers = readConfiguredModelTiers(settingsEnv);
   for (const key of MODEL_TIER_ENV_KEYS) {
-    env[key] = configuredTiers[key] ?? '';
+    env[key] = perRequestModelRoutingValue(key) ?? configuredTiers[key] ?? '';
   }
 
   const normalizedModel = typeof modelId === 'string' ? modelId.trim() : '';
