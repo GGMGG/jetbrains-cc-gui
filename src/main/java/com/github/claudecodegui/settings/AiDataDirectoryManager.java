@@ -47,6 +47,7 @@ public final class AiDataDirectoryManager {
     private static final String[] DATA_HOME_IDS = {"claude", "codemoss", "codex"};
     private static final String JOURNAL_FILE = "migration-journal.json";
     private static final String BACKUPS_FILE = "migration-backups.json";
+    private static final String BACKUPS_QUARANTINE_FILE = "migration-backups-quarantine.json";
     private static final String BACKUP_MARKER = ".cc-gui-backup-";
     private static final String STORAGE_MARKER = ".cc-gui-storage";
     private static final int LINK_COMMAND_TIMEOUT_SECONDS = 30;
@@ -220,7 +221,7 @@ public final class AiDataDirectoryManager {
             try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
                 recoverInterruptedMigration();
             }
-            JsonArray metadata = readBackupRecords();
+            JsonArray metadata = readBackupRecordsForCleanup();
             List<BackupRecord> records = new ArrayList<>();
             List<JsonElement> retained = new ArrayList<>();
             IOException cleanupFailure = null;
@@ -230,7 +231,19 @@ public final class AiDataDirectoryManager {
                     records.add(record);
                     retained.add(record.metadata);
                 } catch (IOException error) {
-                    retained.add(element);
+                    cleanupFailure = appendFailure(cleanupFailure, error);
+                    try {
+                        quarantineBackupRecord(element, error);
+                    } catch (IOException quarantineError) {
+                        retained.add(element);
+                        cleanupFailure = appendFailure(cleanupFailure, quarantineError);
+                    }
+                }
+            }
+            if (retained.size() < metadata.size()) {
+                try {
+                    persistBackupRecords(retained);
+                } catch (IOException error) {
                     cleanupFailure = appendFailure(cleanupFailure, error);
                 }
             }
@@ -291,6 +304,43 @@ public final class AiDataDirectoryManager {
         JsonArray metadata = new JsonArray();
         records.forEach(metadata::add);
         writeJson(backupsPath(), metadata);
+    }
+
+    private void quarantineBackupRecord(JsonElement record, IOException reason) throws IOException {
+        JsonArray quarantined = readQuarantinedBackupRecords();
+        for (JsonElement element : quarantined) {
+            if (element.isJsonObject()
+                    && element.getAsJsonObject().has("record")
+                    && element.getAsJsonObject().get("record").equals(record)) {
+                return;
+            }
+        }
+        JsonObject entry = new JsonObject();
+        entry.add("record", JsonParser.parseString(record.toString()));
+        entry.addProperty("reason", reason.getMessage() == null
+                ? reason.getClass().getSimpleName() : reason.getMessage());
+        entry.addProperty("quarantinedAt", Instant.now().toString());
+        quarantined.add(entry);
+        writeJson(quarantinePath(), quarantined);
+    }
+
+    private void quarantineBackupMetadata(String rawMetadata, IOException reason) throws IOException {
+        JsonArray quarantined = readQuarantinedBackupRecords();
+        for (JsonElement element : quarantined) {
+            if (element.isJsonObject()
+                    && element.getAsJsonObject().has("rawMetadata")
+                    && element.getAsJsonObject().get("rawMetadata").isJsonPrimitive()
+                    && rawMetadata.equals(element.getAsJsonObject().get("rawMetadata").getAsString())) {
+                return;
+            }
+        }
+        JsonObject entry = new JsonObject();
+        entry.addProperty("rawMetadata", rawMetadata);
+        entry.addProperty("reason", reason.getMessage() == null
+                ? reason.getClass().getSimpleName() : reason.getMessage());
+        entry.addProperty("quarantinedAt", Instant.now().toString());
+        quarantined.add(entry);
+        writeJson(quarantinePath(), quarantined);
     }
 
     private static void removeMetadata(List<JsonElement> records, JsonObject metadata) {
@@ -1059,6 +1109,52 @@ public final class AiDataDirectoryManager {
         return value.getAsJsonArray();
     }
 
+    private JsonArray readBackupRecordsForCleanup() throws IOException {
+        if (!Files.isRegularFile(backupsPath(), LinkOption.NOFOLLOW_LINKS)) {
+            return new JsonArray();
+        }
+        String rawMetadata = Files.readString(backupsPath(), StandardCharsets.UTF_8);
+        JsonElement value;
+        try {
+            value = JsonParser.parseString(rawMetadata);
+        } catch (RuntimeException error) {
+            return quarantineCorruptBackupMetadata(
+                    rawMetadata, new AiDataDirectoryException("BACKUP_METADATA_INVALID", error));
+        }
+        if (!value.isJsonArray()) {
+            return quarantineCorruptBackupMetadata(
+                    rawMetadata, new AiDataDirectoryException("BACKUP_METADATA_INVALID"));
+        }
+        return value.getAsJsonArray();
+    }
+
+    private JsonArray quarantineCorruptBackupMetadata(String rawMetadata, IOException reason) throws IOException {
+        IOException failure = reason;
+        try {
+            quarantineBackupMetadata(rawMetadata, reason);
+            Files.deleteIfExists(backupsPath());
+        } catch (IOException quarantineError) {
+            failure = appendFailure(failure, quarantineError);
+        }
+        throw new AiDataDirectoryException("BACKUP_CLEANUP_PARTIAL", failure);
+    }
+
+    private JsonArray readQuarantinedBackupRecords() throws IOException {
+        if (!Files.isRegularFile(quarantinePath(), LinkOption.NOFOLLOW_LINKS)) {
+            return new JsonArray();
+        }
+        try {
+            JsonElement value = JsonParser.parseString(
+                    Files.readString(quarantinePath(), StandardCharsets.UTF_8));
+            if (!value.isJsonArray()) {
+                throw new AiDataDirectoryException("BACKUP_METADATA_INVALID");
+            }
+            return value.getAsJsonArray();
+        } catch (RuntimeException error) {
+            throw new AiDataDirectoryException("BACKUP_METADATA_INVALID", error);
+        }
+    }
+
     private Journal readJournal() throws IOException {
         try {
             Journal journal = GSON.fromJson(
@@ -1206,6 +1302,10 @@ public final class AiDataDirectoryManager {
 
     private Path backupsPath() {
         return stateDirectory.resolve(BACKUPS_FILE);
+    }
+
+    private Path quarantinePath() {
+        return stateDirectory.resolve(BACKUPS_QUARANTINE_FILE);
     }
 
     private static JsonObject operationResult(String operation, boolean success, String error, JsonObject status) {
