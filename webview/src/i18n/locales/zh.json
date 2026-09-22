@@ -371,6 +371,7 @@
       "operationFailed": "宠物操作失败：{{error}}"
     },
     "storage": {
+      "windowsOnly": "AI 数据存储迁移目前仅支持 Windows。",
       "title": "AI 数据存储",
       "description": "将 Claude Code、Codemoss 和 Codex 数据迁移到其他磁盘，同时保留 ~/.claude、~/.codemoss、~/.codex 作为稳定访问路径。",
       "canonicalPath": "访问路径",

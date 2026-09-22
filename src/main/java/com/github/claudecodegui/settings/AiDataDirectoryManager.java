@@ -97,58 +97,24 @@ public final class AiDataDirectoryManager {
 
     public JsonObject snapshot() throws IOException {
         synchronized (OPERATION_LOCK) {
+            if (!isSupported()) {
+                return buildSnapshot(false);
+            }
             try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
                 boolean recovered = recoverInterruptedMigration();
-                JsonObject result = new JsonObject();
-                result.addProperty("supported", isSupported());
-                result.addProperty("platform", platform.name().toLowerCase());
-                result.addProperty("wsl", wsl);
-                result.addProperty("homeDirectory", userHome.toString());
-                result.addProperty("recovered", recovered);
-                if (wsl) {
-                    result.addProperty("error", "WSL_NOT_SUPPORTED");
-                } else if (platform == PlatformUtils.PlatformType.UNKNOWN) {
-                    result.addProperty("error", "PLATFORM_NOT_SUPPORTED");
-                }
-
-                JsonArray entries = new JsonArray();
-                Path commonRoot = null;
-                boolean commonRootAvailable = true;
-                for (String id : DATA_HOME_IDS) {
-                    JsonObject entry = inspectEntry(id);
-                    entries.add(entry);
-                    if (!"linked".equals(entry.get("state").getAsString())) {
-                        commonRootAvailable = false;
-                        continue;
-                    }
-                    Path physical = Path.of(entry.get("physicalPath").getAsString());
-                    Path parent = physical.getParent();
-                    if (parent == null || (commonRoot != null && !commonRoot.equals(parent))) {
-                        commonRootAvailable = false;
-                    } else if (commonRoot == null) {
-                        commonRoot = parent;
-                    }
-                }
-                result.add("directories", entries);
-                if (commonRootAvailable && commonRoot != null) {
-                    result.addProperty("storageRoot", commonRoot.toString());
-                }
-                JsonArray backups = readBackupRecords();
-                result.add("backups", backups);
-                result.addProperty("backupCount", backups.size());
-                return result;
+                return buildSnapshot(recovered);
             }
         }
     }
 
     public JsonObject migrate(String requestedRoot) throws IOException {
         synchronized (OPERATION_LOCK) {
+            requireSupported();
             AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireMigrationPermit();
             if (migrationPermit == null) {
                 throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
             }
             try (migrationPermit) {
-                requireSupported();
                 recoverInterruptedMigration();
                 checkMigrationCancellation(migrationPermit);
                 Path targetRoot = validateTargetRoot(requestedRoot);
@@ -218,6 +184,7 @@ public final class AiDataDirectoryManager {
 
     public JsonObject cleanupBackups() throws IOException {
         synchronized (OPERATION_LOCK) {
+            requireSupported();
             try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
                 recoverInterruptedMigration();
             }
@@ -619,17 +586,66 @@ public final class AiDataDirectoryManager {
         return entry;
     }
 
+    public boolean isSupportedPlatform() {
+        return isSupported();
+    }
+
+    public boolean isWslPlatform() {
+        return wsl;
+    }
+
     private boolean isSupported() {
-        return !wsl && platform != PlatformUtils.PlatformType.UNKNOWN;
+        return !wsl && platform == PlatformUtils.PlatformType.WINDOWS;
     }
 
     private void requireSupported() throws AiDataDirectoryException {
         if (wsl) {
             throw new AiDataDirectoryException("WSL_NOT_SUPPORTED");
         }
-        if (platform == PlatformUtils.PlatformType.UNKNOWN) {
+        if (platform != PlatformUtils.PlatformType.WINDOWS) {
             throw new AiDataDirectoryException("PLATFORM_NOT_SUPPORTED");
         }
+    }
+
+    private JsonObject buildSnapshot(boolean recovered) throws IOException {
+        JsonObject result = new JsonObject();
+        result.addProperty("supported", isSupported());
+        result.addProperty("platform", platform.name().toLowerCase());
+        result.addProperty("wsl", wsl);
+        result.addProperty("homeDirectory", userHome.toString());
+        result.addProperty("recovered", recovered);
+        if (wsl) {
+            result.addProperty("error", "WSL_NOT_SUPPORTED");
+        } else if (!isSupported()) {
+            result.addProperty("error", "PLATFORM_NOT_SUPPORTED");
+        }
+
+        JsonArray entries = new JsonArray();
+        Path commonRoot = null;
+        boolean commonRootAvailable = true;
+        for (String id : DATA_HOME_IDS) {
+            JsonObject entry = inspectEntry(id);
+            entries.add(entry);
+            if (!"linked".equals(entry.get("state").getAsString())) {
+                commonRootAvailable = false;
+                continue;
+            }
+            Path physical = Path.of(entry.get("physicalPath").getAsString());
+            Path parent = physical.getParent();
+            if (parent == null || (commonRoot != null && !commonRoot.equals(parent))) {
+                commonRootAvailable = false;
+            } else if (commonRoot == null) {
+                commonRoot = parent;
+            }
+        }
+        result.add("directories", entries);
+        if (commonRootAvailable && commonRoot != null) {
+            result.addProperty("storageRoot", commonRoot.toString());
+        }
+        JsonArray backups = readBackupRecords();
+        result.add("backups", backups);
+        result.addProperty("backupCount", backups.size());
+        return result;
     }
 
     private Path canonicalPath(String id) {

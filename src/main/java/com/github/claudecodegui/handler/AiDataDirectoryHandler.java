@@ -41,6 +41,10 @@ final class AiDataDirectoryHandler {
     }
 
     void handleChooseTargetRoot() {
+        if (!manager.isSupportedPlatform()) {
+            pushOperation("status", false, unsupportedPlatformError(), safeSnapshot(), null);
+            return;
+        }
         ApplicationManager.getApplication().invokeLater(() -> {
             FileChooserDescriptor descriptor = new FileChooserDescriptor(
                     false, true, false, false, false, false)
@@ -170,6 +174,13 @@ final class AiDataDirectoryHandler {
         String message = error.getMessage();
         return message != null && message.matches("^[A-Z0-9_]+$")
                 ? message : "AI_DATA_DIRECTORY_OPERATION_FAILED";
+    }
+
+    private String unsupportedPlatformError() {
+        if (manager.isWslPlatform()) {
+            return "WSL_NOT_SUPPORTED";
+        }
+        return "PLATFORM_NOT_SUPPORTED";
     }
 
     private static void runAsync(Runnable task) {

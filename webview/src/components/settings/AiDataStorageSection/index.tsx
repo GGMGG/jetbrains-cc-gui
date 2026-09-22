@@ -126,12 +126,12 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
 
   const requestMigration = () => {
     const normalized = targetRoot.trim();
-    if (!normalized || pending !== null) return;
+    if (!normalized || pending !== null || status?.supported === false) return;
     setConfirmation({ operation: 'migrate', targetRoot: normalized });
   };
 
   const requestCleanup = () => {
-    if (pending !== null) return;
+    if (pending !== null || status?.supported === false) return;
     setConfirmation({ operation: 'cleanup' });
   };
 
@@ -195,6 +195,12 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
         <div className={styles.warning}>
           <span className="codicon codicon-warning" aria-hidden="true" />
           <span>{t('settings.storage.wslUnsupported')}</span>
+        </div>
+      )}
+      {status && !status.supported && !status.wsl && (
+        <div className={styles.warning}>
+          <span className="codicon codicon-warning" aria-hidden="true" />
+          <span>{t('settings.storage.windowsOnly')}</span>
         </div>
       )}
       <div className={styles.directoryListHeader}>
@@ -283,7 +289,12 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
               : t('settings.storage.migrate')}
         </button>
         {(status?.backupCount ?? 0) > 0 && (
-          <button type="button" className={styles.dangerButton} onClick={requestCleanup} disabled={pending !== null}>
+          <button
+            type="button"
+            className={styles.dangerButton}
+            onClick={requestCleanup}
+            disabled={pending !== null || status?.supported === false}
+          >
             <span className="codicon codicon-trash" aria-hidden="true" />
             {pending === 'cleanup'
               ? t('settings.storage.cleaning')

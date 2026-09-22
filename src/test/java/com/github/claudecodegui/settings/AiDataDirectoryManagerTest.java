@@ -73,6 +73,30 @@ public class AiDataDirectoryManagerTest {
     }
 
     @Test
+    public void restrictsStorageRelocationToWindows() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("mac-home"));
+        Path state = root.resolve("mac-state");
+        Path targetRoot = Files.createDirectory(root.resolve("mac-target"));
+        AiDataDirectoryManager manager = new AiDataDirectoryManager(
+                home, state, PlatformUtils.PlatformType.MACOS, false, null, new AiDataProcessGate());
+
+        JsonObject status = manager.snapshot();
+
+        assertFalse(status.get("supported").getAsBoolean());
+        assertEquals("PLATFORM_NOT_SUPPORTED", status.get("error").getAsString());
+        AiDataDirectoryManager.AiDataDirectoryException migrationError = assertThrows(
+                AiDataDirectoryManager.AiDataDirectoryException.class,
+                () -> manager.migrate(targetRoot.toString()));
+        assertEquals("PLATFORM_NOT_SUPPORTED", migrationError.getMessage());
+        AiDataDirectoryManager.AiDataDirectoryException cleanupError = assertThrows(
+                AiDataDirectoryManager.AiDataDirectoryException.class,
+                manager::cleanupBackups);
+        assertEquals("PLATFORM_NOT_SUPPORTED", cleanupError.getMessage());
+        assertFalse(Files.exists(state.resolve("migration-journal.json")));
+    }
+
+    @Test
     public void deletesWindowsReadOnlyFilesFromBackups() throws Exception {
         Path root = temporaryFolder.newFolder("readonly-backup").toPath();
         Path readOnlyFile = Files.writeString(root.resolve("git-pack.idx"), "pack", StandardCharsets.UTF_8);

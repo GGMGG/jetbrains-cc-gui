@@ -83,6 +83,27 @@ describe('AiDataStorageSection', () => {
     expect(screen.getByText('.codex')).toBeTruthy();
   });
 
+  it('disables relocation controls on unsupported platforms', () => {
+    render(<AiDataStorageSection addToast={vi.fn()} />);
+    act(() => mocks.statusListeners[0]!({
+      ...status,
+      platform: 'macos',
+      supported: false,
+    }));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    expect(screen.getByText('settings.storage.windowsOnly')).toBeTruthy();
+    expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'settings.storage.chooseRoot' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect((screen.getByRole('button', { name: 'settings.storage.cleanupBackups' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.cleanupBackups' }));
+    expect(mocks.cleanupBackups).not.toHaveBeenCalled();
+  });
+
   it('requires confirmation before migration', () => {
     render(<AiDataStorageSection addToast={vi.fn()} />);
     act(() => mocks.statusListeners[0]!(status));
