@@ -832,8 +832,14 @@ public class AiDataDirectoryManagerTest {
     private static AiDataDirectoryManager manager(
             Path home, Path state, AiDataDirectoryManager.DirectoryLinkCreator creator,
             AiDataProcessGate processGate, AiDataDirectoryManager.PathDeleter backupPathDeleter) {
+        // Relocation behavior is Windows-only in production. Keep the migration
+        // algorithm tests platform-independent by simulating Windows and injecting
+        // a link creator that uses the host OS primitive for the test filesystem.
+        AiDataDirectoryManager.DirectoryLinkCreator effectiveCreator = creator == null
+                ? AiDataDirectoryManagerTest::createDirectoryLink : creator;
         return new AiDataDirectoryManager(
-                home, state, PlatformUtils.getPlatformType(), false, creator, processGate, backupPathDeleter);
+                home, state, PlatformUtils.PlatformType.WINDOWS, false,
+                effectiveCreator, processGate, backupPathDeleter);
     }
 
     private static void createSource(Path home, String id, String fileName, String content) throws IOException {
@@ -841,12 +847,17 @@ public class AiDataDirectoryManagerTest {
         Files.writeString(directory.resolve(fileName), content, StandardCharsets.UTF_8);
     }
 
-    private static void createDirectoryLink(Path link, Path target) throws Exception {
+    private static void createDirectoryLink(Path link, Path target) throws IOException {
         if (PlatformUtils.getPlatformType() == PlatformUtils.PlatformType.WINDOWS) {
-            Process process = new ProcessBuilder("cmd.exe", "/d", "/c", "mklink", "/J",
-                    link.toString(), target.toString()).redirectErrorStream(true).start();
-            process.getInputStream().readAllBytes();
-            assertEquals(0, process.waitFor());
+            try {
+                Process process = new ProcessBuilder("cmd.exe", "/d", "/c", "mklink", "/J",
+                        link.toString(), target.toString()).redirectErrorStream(true).start();
+                process.getInputStream().readAllBytes();
+                assertEquals(0, process.waitFor());
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while creating directory junction", error);
+            }
         } else {
             Files.createSymbolicLink(link, target);
         }
