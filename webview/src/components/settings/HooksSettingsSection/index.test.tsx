@@ -108,7 +108,7 @@ describe('HooksSettingsSection', () => {
     render(<HooksSettingsSection management={management} />);
 
     expect(screen.getByText('PreToolUse')).toBeTruthy();
-    fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.editSource: PreToolUse' }));
     expect(management.loadHookSource).toHaveBeenCalledWith(claudeItem);
     expect(screen.getByRole('dialog')).toBeTruthy();
 
@@ -147,9 +147,13 @@ describe('HooksSettingsSection', () => {
     });
 
     render(<HooksSettingsSection management={management} />);
-    fireEvent.click(screen.getByLabelText('settings.hooks.disable'));
+    const toggleButton = screen.getByRole('button', { name: 'settings.hooks.disable' });
+    expect(toggleButton.querySelector('.codicon-check')).toBeTruthy();
+    fireEvent.click(toggleButton);
 
     expect(toggleHook).toHaveBeenCalledWith(nativeItem, false);
+    expect(management.loadHookSource).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('keeps save disabled when review shows no source changes', () => {

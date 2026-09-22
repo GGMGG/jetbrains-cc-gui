@@ -21,6 +21,18 @@ interface HookToolbarProps {
 
 const PROVIDER_FILTERS: ProviderFilter[] = ['all', 'codex', 'claude', 'codemoss'];
 
+const PROVIDER_ICON_CLASSES: Record<HookProvider, string> = {
+  codex: 'codicon-terminal',
+  claude: 'codicon-symbol-event',
+  codemoss: 'codicon-file-code',
+};
+
+const PROVIDER_ICON_STYLES: Record<HookProvider, string> = {
+  codex: styles.providerIconCodex,
+  claude: styles.providerIconClaude,
+  codemoss: styles.providerIconCodemoss,
+};
+
 export function HookToolbar({
   provider,
   scope,
@@ -136,53 +148,63 @@ const HookRow = memo(function HookRow({ item, toggleLoading, onEdit, onToggle }:
   const { t } = useTranslation();
   const validationSummary = item.validationIssues.map((issue) => issueLabel(issue, t)).join('; ');
   const toggleSupported = item.toggleSupported || item.managedToggleSupported;
+  const editSupported = item.editSupported !== false;
+  const summary = [item.command || t('settings.hooks.noCommand'), item.matcher].filter(Boolean).join(' · ');
 
   return (
-    <article className={styles.hookRow}>
-      <div className={styles.rowIdentity}>
-        <div className={styles.rowTitleLine}>
-          <strong>{item.event}</strong>
-          <span className={styles.scopeBadge}>{scopeLabel(item.scope, t)}</span>
-          {item.validationIssues.length > 0 && (
-            <span className={styles.warningStatus} title={validationSummary}>
-              <span className="codicon codicon-warning" aria-hidden="true" />
-              {t('settings.hooks.validationWarning')}
-            </span>
-          )}
-        </div>
-        <div className={styles.rowSummary} title={[item.command, item.matcher].filter(Boolean).join(' · ')}>
-          <code>{item.command || t('settings.hooks.noCommand')}</code>
-          {item.matcher && <><span aria-hidden="true">·</span><span>{item.matcher}</span></>}
-        </div>
-      </div>
-      <div className={styles.rowActions}>
-        {item.editSupported === false && <span className={styles.readOnlyBadge}>{t('settings.hooks.readOnly')}</span>}
-        {toggleSupported && (
-          <label
-            className={styles.switchControl}
-            title={t(item.toggleMode === 'native' ? 'settings.hooks.nativeToggleHint' : 'settings.hooks.managedToggleHint')}
-          >
-            <input
-              type="checkbox"
-              checked={item.enabled}
-              disabled={toggleLoading}
-              aria-label={item.enabled ? t('settings.hooks.disable') : t('settings.hooks.enable')}
-              onChange={(event) => onToggle(item, event.target.checked)}
-            />
-            <span className={styles.switchTrack} aria-hidden="true"><span /></span>
-          </label>
-        )}
+    <article className={`${styles.hookCard} ${!item.enabled ? styles.hookCardDisabled : ''}`}>
+      {toggleSupported && (
         <button
           type="button"
-          className={styles.iconButton}
-          onClick={() => onEdit(item)}
-          disabled={item.editSupported === false}
-          title={t('settings.hooks.editSource')}
-          aria-label={`${t('settings.hooks.editSource')}: ${item.event}`}
+          className={`${styles.toggleButton} ${item.enabled ? styles.toggleButtonEnabled : styles.toggleButtonDisabled}`}
+          onClick={() => onToggle(item, !item.enabled)}
+          disabled={toggleLoading}
+          aria-busy={toggleLoading}
+          aria-pressed={item.enabled}
+          aria-label={item.enabled ? t('settings.hooks.disable') : t('settings.hooks.enable')}
+          title={item.enabled ? t('settings.hooks.disable') : t('settings.hooks.enable')}
         >
-          <span className="codicon codicon-edit" aria-hidden="true" />
+          <span
+            className={`codicon ${toggleLoading
+              ? 'codicon-loading codicon-modifier-spin'
+              : item.enabled ? 'codicon-check' : 'codicon-circle-slash'}`}
+            aria-hidden="true"
+          />
         </button>
-      </div>
+      )}
+      <button
+        type="button"
+        className={`${styles.hookCardMain} ${toggleSupported ? styles.hookCardMainWithToggle : ''}`}
+        onClick={() => onEdit(item)}
+        disabled={!editSupported}
+        title={editSupported ? t('settings.hooks.editSource') : t('settings.hooks.readOnly')}
+        aria-label={`${editSupported ? t('settings.hooks.editSource') : t('settings.hooks.readOnly')}: ${item.event}`}
+      >
+        <span className={`${styles.providerIcon} ${PROVIDER_ICON_STYLES[item.provider]}`} aria-hidden="true">
+          <span className={`codicon ${PROVIDER_ICON_CLASSES[item.provider]}`} />
+        </span>
+        <span className={styles.rowIdentity}>
+          <span className={styles.rowTitleLine}>
+            <strong>{item.event}</strong>
+            <span className={styles.scopeBadge}>{scopeLabel(item.scope, t)}</span>
+            {item.validationIssues.length > 0 && (
+              <span className={styles.warningStatus} title={validationSummary}>
+                <span className="codicon codicon-warning" aria-hidden="true" />
+                {t('settings.hooks.validationWarning')}
+              </span>
+            )}
+            {!editSupported && <span className={styles.readOnlyBadge}>{t('settings.hooks.readOnly')}</span>}
+          </span>
+          <span className={styles.rowSummary} title={summary}>
+            <code>{item.command || t('settings.hooks.noCommand')}</code>
+            {item.matcher && <><span aria-hidden="true">·</span><span>{item.matcher}</span></>}
+          </span>
+        </span>
+        <span
+          className={`codicon ${editSupported ? 'codicon-chevron-right' : 'codicon-lock'} ${styles.rowIndicator}`}
+          aria-hidden="true"
+        />
+      </button>
     </article>
   );
 });
