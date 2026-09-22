@@ -181,9 +181,10 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
   // Setters are stable; deps left empty to ensure single execution.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
+    // Tracked so the boot sync retry loop cannot outlive the component: it used
+    // to fire after teardown and touch `window` on a disposed page.
     let syncTimer: number | undefined;
-    let cancelled = false;
-
+    let syncCancelled = false;
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       // Per-tab restore (issue #1353): when the Java backend has loaded a saved
@@ -482,10 +483,12 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
       const MAX_SYNC_RETRIES = 30;
 
       const syncToBackend = () => {
-        if (cancelled) {
+        // The retry loop used to outlive the component: a pending timer fired
+        // after teardown/unmount and touched `window` on a disposed page
+        // (vitest reports it as an unhandled "window is not defined" error).
+        if (syncCancelled) {
           return;
         }
-
         if (window.sendToJava) {
           // Native watchdog reload reuses the original HTML snapshot. Java
           // pushes the current Session state after frontend_ready; echoing the
@@ -538,9 +541,8 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
       // Failed to load model selection state — fall back to defaults already
       // set by individual slice hooks.
     }
-
     return () => {
-      cancelled = true;
+      syncCancelled = true;
       if (syncTimer !== undefined) {
         window.clearTimeout(syncTimer);
       }
