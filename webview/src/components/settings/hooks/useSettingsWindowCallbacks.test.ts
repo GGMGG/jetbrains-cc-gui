@@ -35,6 +35,7 @@ describe('useSettingsWindowCallbacks', () => {
     setCodeFontConfig: vi.fn(),
     setIdeTheme: vi.fn(),
     setLocalStreamingEnabled: vi.fn(),
+    setLoadHistoryOnStartup: vi.fn(),
     setCodexSandboxMode: vi.fn(),
     setLocalSendShortcut: vi.fn(),
     setLoading: vi.fn(),
@@ -145,6 +146,16 @@ describe('useSettingsWindowCallbacks', () => {
     window.updatePromptEnhancerConfig?.(JSON.stringify(payload));
 
     expect(deps.setPromptEnhancerConfig).toHaveBeenCalledWith(payload);
+  });
+
+  it('updates the startup history loading preference from the Java callback', () => {
+    const deps = createDeps();
+
+    renderHook(() => useSettingsWindowCallbacks(deps));
+
+    window.updateLoadHistoryOnStartup?.(JSON.stringify({ loadHistoryOnStartup: true }));
+
+    expect(deps.setLoadHistoryOnStartup).toHaveBeenCalledWith(true);
   });
 
   it('registers commit AI callback and updates only commit AI state from backend payload', () => {

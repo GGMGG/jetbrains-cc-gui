@@ -1072,4 +1072,22 @@ public class GrokSDKBridge extends BaseSDKBridge {
             return java.util.Collections.emptyList();
         }
     }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd,
+                                               java.util.function.BooleanSupplier cancellation) {
+        try {
+            if (cancellation.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException("History loading was cancelled");
+            }
+            List<JsonObject> messages = new GrokHistoryReader().getSessionMessages(sessionId, cwd, cancellation);
+            if (cancellation.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException("History loading was cancelled");
+            }
+            return messages;
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load Grok session history", e);
+        }
+    }
 }

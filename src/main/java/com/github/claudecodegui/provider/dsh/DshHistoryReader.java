@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Reads DSH session history through the Node bridge ({@code channel-manager.js
@@ -68,13 +70,25 @@ public class DshHistoryReader {
      * SessionMessageOrchestrator.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
+        return getSessionMessagesInternal(sessionId, () -> false, false);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
+        return getSessionMessagesInternal(sessionId, cancellation, true);
+    }
+
+    private List<JsonObject> getSessionMessagesInternal(String sessionId, BooleanSupplier cancellation,
+                                                        boolean propagateFailure) {
         if (sessionId == null || sessionId.isBlank()) {
             return Collections.emptyList();
         }
         JsonObject stdin = new JsonObject();
         stdin.addProperty("sessionId", sessionId.trim());
-        JsonObject payload = runDshCommand("loadSession", stdin);
+        JsonObject payload = runDshCommand("loadSession", stdin, cancellation);
         if (payload == null || !payload.has("success") || !payload.get("success").getAsBoolean()) {
+            if (propagateFailure) {
+                throw new IllegalStateException("DSH history request failed");
+            }
             LOG.warn("[DSH] loadSession failed for " + sessionId + ": "
                     + (payload != null && payload.has("error") ? payload.get("error").getAsString() : "no payload"));
             return Collections.emptyList();
@@ -82,6 +96,7 @@ public class DshHistoryReader {
         List<JsonObject> messages = new ArrayList<>();
         if (payload.has("messages") && payload.get("messages").isJsonArray()) {
             for (var element : payload.getAsJsonArray("messages")) {
+                checkCancellation(cancellation);
                 if (element.isJsonObject()) {
                     messages.add(element.getAsJsonObject());
                 }
@@ -116,8 +131,14 @@ public class DshHistoryReader {
      * object, or null on process/parse failure.
      */
     private JsonObject runDshCommand(String command, JsonObject stdinPayload) {
+        return runDshCommand(command, stdinPayload, () -> false);
+    }
+
+    private JsonObject runDshCommand(String command, JsonObject stdinPayload,
+                                     BooleanSupplier cancellation) {
         Process process = null;
         try {
+            checkCancellation(cancellation);
             String node = nodeDetector.findNodeExecutable();
             BridgeDirectoryResolver resolver = BridgePreloader.getSharedResolver();
             File bridgeDir = resolver != null ? resolver.findSdkDir() : null;
@@ -174,11 +195,14 @@ public class DshHistoryReader {
             readerThread.start();
             Thread stderrDrainer = startStderrDrainer(process, stderrTail);
 
-            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                LOG.warn("[DSH] " + command + " timed out" + stderrSuffix(stderrTail));
-                return null;
+            long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+            boolean finished;
+            while (!(finished = process.waitFor(100L, TimeUnit.MILLISECONDS))) {
+                checkCancellation(cancellation);
+                if (System.nanoTime() >= deadlineNanos) {
+                    LOG.warn("[DSH] " + command + " timed out" + stderrSuffix(stderrTail));
+                    return null;
+                }
             }
             readerThread.join(2000L);
             stderrDrainer.join(2000L);
@@ -188,6 +212,8 @@ public class DshHistoryReader {
                 LOG.warn("[DSH] no JSON output from " + command + stderrSuffix(stderrTail));
             }
             return payload;
+        } catch (CancellationException e) {
+            throw e;
         } catch (Exception e) {
             LOG.warn("[DSH] " + command + " failed: " + e.getMessage());
             return null;
@@ -195,6 +221,12 @@ public class DshHistoryReader {
             if (process != null && process.isAlive()) {
                 process.destroyForcibly();
             }
+        }
+    }
+
+    private static void checkCancellation(BooleanSupplier cancellation) {
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
         }
     }
 
