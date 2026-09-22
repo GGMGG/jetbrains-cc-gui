@@ -344,7 +344,10 @@ public class OpenCodeHistoryReader {
         return null;
     }
 
-    private List<JsonObject> getSessionMessagesFromDatabase(String sessionId) {
+    private List<JsonObject> getSessionMessagesFromDatabase(
+            String sessionId,
+            java.util.function.BooleanSupplier cancellation
+    ) {
         List<JsonObject> out = new ArrayList<>();
         if (databasePath == null || !Files.isRegularFile(databasePath) || !isSafeSessionId(sessionId)) {
             return out;
@@ -364,13 +367,14 @@ public class OpenCodeHistoryReader {
                 try (ResultSet rs = ps.executeQuery()) {
                     int counter = 0;
                     while (rs.next()) {
+                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                         String messageId = rs.getString("id");
                         JsonObject msg = parseObject(rs.getString("data"));
                         if (msg == null) {
                             continue;
                         }
                         String role = text(msg, "role");
-                        List<JsonObject> parts = loadPartsFromDb(conn, messageId);
+                        List<JsonObject> parts = loadPartsFromDb(conn, messageId, cancellation);
                         if ("user".equals(role)) {
                             String body = extractMessageTextFromParts(parts);
                             if (body == null || body.isBlank()) {
@@ -395,6 +399,8 @@ public class OpenCodeHistoryReader {
                     }
                 }
             }
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
         } catch (Exception e) {
             LOG.warn("[OpenCodeHistoryReader] SQLite messages failed for " + sessionId + ": " + e.getMessage());
         }
@@ -402,6 +408,11 @@ public class OpenCodeHistoryReader {
     }
 
     private List<JsonObject> loadPartsFromDb(Connection conn, String messageId) throws SQLException {
+        return loadPartsFromDb(conn, messageId, () -> false);
+    }
+
+    private List<JsonObject> loadPartsFromDb(Connection conn, String messageId,
+                                             java.util.function.BooleanSupplier cancellation) throws SQLException {
         List<JsonObject> parts = new ArrayList<>();
         if (messageId == null || messageId.isBlank() || !tableExists(conn, "part")) {
             return parts;
@@ -416,6 +427,7 @@ public class OpenCodeHistoryReader {
             ps.setString(1, messageId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
+                    com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                     JsonObject part = parseObject(rs.getString("data"));
                     if (part != null) {
                         parts.add(part);
@@ -625,18 +637,27 @@ public class OpenCodeHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) throws IOException {
+        return getSessionMessages(sessionId, cwd, () -> false);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd,
+                                               java.util.function.BooleanSupplier cancellation) throws IOException {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return List.of();
         }
         // Prefer SQLite rows (OpenCode 1.x). Fall back to legacy JSON tree.
-        List<JsonObject> fromDb = getSessionMessagesFromDatabase(sessionId);
+        List<JsonObject> fromDb = getSessionMessagesFromDatabase(sessionId, cancellation);
         if (!fromDb.isEmpty()) {
             return fromDb;
         }
-        return getSessionMessagesFromJsonStorage(sessionId);
+        return getSessionMessagesFromJsonStorage(sessionId, cancellation);
     }
 
-    private List<JsonObject> getSessionMessagesFromJsonStorage(String sessionId) throws IOException {
+    private List<JsonObject> getSessionMessagesFromJsonStorage(
+            String sessionId,
+            java.util.function.BooleanSupplier cancellation
+    ) throws IOException {
         Path msgDir = storageRoot.resolve("message").resolve(sessionId.trim());
         if (!Files.isDirectory(msgDir)) {
             LOG.warn("[OpenCodeHistoryReader] Message dir missing for " + sessionId);
@@ -646,6 +667,7 @@ public class OpenCodeHistoryReader {
         List<Path> files = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(msgDir, "*.json")) {
             for (Path p : stream) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 files.add(p);
             }
         }
@@ -656,6 +678,7 @@ public class OpenCodeHistoryReader {
         List<JsonObject> out = new ArrayList<>();
         int counter = 0;
         for (Path file : files) {
+            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
             JsonObject msg;
             try {
                 msg = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();

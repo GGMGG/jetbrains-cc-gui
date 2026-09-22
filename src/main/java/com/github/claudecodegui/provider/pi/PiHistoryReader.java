@@ -264,12 +264,18 @@ public class PiHistoryReader {
      * Load session transcript as Claude-compatible message envelopes for MessageParser.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) throws IOException {
-        Path file = resolveSessionFile(sessionId, cwd);
+        return getSessionMessages(sessionId, cwd, () -> false);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd,
+                                               java.util.function.BooleanSupplier cancellation) throws IOException {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+        Path file = resolveSessionFile(sessionId, cwd, cancellation);
         if (file == null || !Files.isRegularFile(file)) {
             LOG.warn("[PiHistoryReader] Session file not found for id=" + sessionId + " cwd=" + cwd);
             return List.of();
         }
-        return parseMessages(file);
+        return parseMessages(file, cancellation);
     }
 
     public boolean deleteSession(String sessionId, String projectPath) throws IOException {
@@ -295,6 +301,12 @@ public class PiHistoryReader {
     }
 
     private Path resolveSessionFile(String sessionId, String cwd) throws IOException {
+        return resolveSessionFile(sessionId, cwd, () -> false);
+    }
+
+    private Path resolveSessionFile(String sessionId, String cwd,
+                                    java.util.function.BooleanSupplier cancellation) throws IOException {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return null;
         }
@@ -306,22 +318,27 @@ public class PiHistoryReader {
         }
         try (DirectoryStream<Path> cwdDirs = Files.newDirectoryStream(sessionsRoot)) {
             for (Path cwdDir : cwdDirs) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 if (!Files.isDirectory(cwdDir)) {
                     continue;
                 }
                 try (DirectoryStream<Path> files = Files.newDirectoryStream(cwdDir, "*.jsonl")) {
                     for (Path file : files) {
+                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                         String fileName = file.getFileName().toString();
                         boolean nameHint = fileName.endsWith("_" + id + ".jsonl") || fileName.contains(id);
                         SessionHeader header = null;
                         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                             String line = reader.readLine();
+                            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                             if (line != null) {
                                 JsonObject obj = JsonParser.parseString(line.trim()).getAsJsonObject();
                                 if ("session".equals(text(obj, "type"))) {
                                     header = parseHeader(obj, file);
                                 }
                             }
+                        } catch (java.util.concurrent.CancellationException e) {
+                            throw e;
                         } catch (Exception ignored) {
                         }
                         if (header == null) {
@@ -350,11 +367,17 @@ public class PiHistoryReader {
     }
 
     List<JsonObject> parseMessages(Path file) throws IOException {
+        return parseMessages(file, () -> false);
+    }
+
+    private List<JsonObject> parseMessages(Path file,
+                                           java.util.function.BooleanSupplier cancellation) throws IOException {
         List<JsonObject> messages = new ArrayList<>();
         int counter = 0;
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 line = line.trim();
                 if (line.isEmpty()) {
                     continue;

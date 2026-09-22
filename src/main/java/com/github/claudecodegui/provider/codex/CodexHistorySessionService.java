@@ -48,7 +48,13 @@ class CodexHistorySessionService {
 
     int forEachSessionMessage(String sessionId,
                               Consumer<CodexHistoryReader.CodexMessage> consumer) throws IOException {
-        Path sessionFile = findSessionFile(sessionId);
+        return forEachSessionMessage(sessionId, () -> false, consumer);
+    }
+
+    int forEachSessionMessage(String sessionId, BooleanSupplier cancellation,
+                              Consumer<CodexHistoryReader.CodexMessage> consumer) throws IOException {
+        checkCancellation(cancellation);
+        Path sessionFile = findSessionFile(sessionId, cancellation);
         if (sessionFile == null) {
             throw new IOException("Codex session file not found: " + sessionId);
         }
@@ -57,6 +63,7 @@ class CodexHistorySessionService {
         try (BufferedReader reader = Files.newBufferedReader(sessionFile, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
+                checkCancellation(cancellation);
                 if (line.trim().isEmpty()) {
                     continue;
                 }
@@ -64,6 +71,7 @@ class CodexHistorySessionService {
                 try {
                     JsonStreamParser lineParser = new JsonStreamParser(line);
                     while (lineParser.hasNext()) {
+                        checkCancellation(cancellation);
                         JsonElement element = lineParser.next();
                         CodexHistoryReader.CodexMessage message = gson.fromJson(
                                 element, CodexHistoryReader.CodexMessage.class);
@@ -143,6 +151,10 @@ class CodexHistorySessionService {
     }
 
     Path findSessionFile(String sessionId) throws IOException {
+        return findSessionFile(sessionId, () -> false);
+    }
+
+    private Path findSessionFile(String sessionId, BooleanSupplier cancellation) throws IOException {
         if (!Files.exists(sessionsDir)) {
             return null;
         }
@@ -152,11 +164,18 @@ class CodexHistorySessionService {
             // and full filename-based IDs. The Codex SDK thread ID (UUID) is embedded
             // in the filename (e.g., rollout-2026-04-01T14-57-29-<UUID>.jsonl).
             return paths
+                    .peek(path -> checkCancellation(cancellation))
                     .filter(Files::isRegularFile)
                     .filter(path -> path.toString().endsWith(".jsonl"))
                     .filter(path -> path.getFileName().toString().contains(sessionId))
                     .findFirst()
                     .orElse(null);
+        }
+    }
+
+    private static void checkCancellation(BooleanSupplier cancellation) {
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
         }
     }
 

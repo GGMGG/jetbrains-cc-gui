@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -139,6 +141,18 @@ public abstract class MarkerCliBridge extends BaseSDKBridge {
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
         return Collections.emptyList();
+    }
+
+    /** Bounded history-read contract used by restored-session loading. */
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
+        }
+        List<JsonObject> messages = getSessionMessages(sessionId, cwd);
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
+        }
+        return messages;
     }
 
     /**

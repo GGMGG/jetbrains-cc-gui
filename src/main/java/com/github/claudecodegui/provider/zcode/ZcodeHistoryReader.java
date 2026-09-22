@@ -19,6 +19,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Reads ZCode session history by querying the app-server through one-shot
@@ -71,29 +73,45 @@ public class ZcodeHistoryReader {
      * ({@code {type, uuid?, timestamp?, message: {role, content: [...]}}}).
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
-        List<JsonObject> messages = new ArrayList<>();
         try {
-            JsonObject stdin = new JsonObject();
-            stdin.addProperty("sessionId", sessionId != null ? sessionId : "");
-            stdin.addProperty("cwd", cwd != null ? cwd : "");
-            JsonObject result = runCommand("getSessionMessages", stdin);
-            if (result == null) {
-                return messages;
-            }
-            if (result.has("success") && !result.get("success").getAsBoolean()) {
-                LOG.warn("[ZcodeHistoryReader] getSessionMessages failed: " + result);
-                return messages;
-            }
-            if (result.has("messages") && result.get("messages").isJsonArray()) {
-                JsonArray arr = result.getAsJsonArray("messages");
-                for (int i = 0; i < arr.size(); i++) {
-                    if (arr.get(i).isJsonObject()) {
-                        messages.add(arr.get(i).getAsJsonObject());
-                    }
-                }
-            }
+            return getSessionMessagesInternal(sessionId, cwd, () -> false);
         } catch (Exception e) {
             LOG.warn("[ZcodeHistoryReader] Failed to load session messages: " + e.getMessage(), e);
+            return new ArrayList<>();
+        }
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
+        try {
+            return getSessionMessagesInternal(sessionId, cwd, cancellation);
+        } catch (CancellationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load ZCode session history", e);
+        }
+    }
+
+    private List<JsonObject> getSessionMessagesInternal(String sessionId, String cwd,
+                                                        BooleanSupplier cancellation) throws Exception {
+        List<JsonObject> messages = new ArrayList<>();
+        JsonObject stdin = new JsonObject();
+        stdin.addProperty("sessionId", sessionId != null ? sessionId : "");
+        stdin.addProperty("cwd", cwd != null ? cwd : "");
+        JsonObject result = runCommand("getSessionMessages", stdin, cancellation);
+        if (result == null) {
+            return messages;
+        }
+        if (result.has("success") && !result.get("success").getAsBoolean()) {
+            throw new IllegalStateException("ZCode history request failed");
+        }
+        if (result.has("messages") && result.get("messages").isJsonArray()) {
+            JsonArray arr = result.getAsJsonArray("messages");
+            for (int i = 0; i < arr.size(); i++) {
+                checkCancellation(cancellation);
+                if (arr.get(i).isJsonObject()) {
+                    messages.add(arr.get(i).getAsJsonObject());
+                }
+            }
         }
         return messages;
     }
@@ -123,6 +141,12 @@ public class ZcodeHistoryReader {
     // ============================================================================
 
     private JsonObject runCommand(String command, JsonObject stdinPayload) throws Exception {
+        return runCommand(command, stdinPayload, () -> false);
+    }
+
+    private JsonObject runCommand(String command, JsonObject stdinPayload,
+                                  BooleanSupplier cancellation) throws Exception {
+        checkCancellation(cancellation);
         String node = nodeDetector.findNodeExecutable();
         BridgeDirectoryResolver resolver = BridgePreloader.getSharedResolver();
         File bridgeDir = resolver != null ? resolver.findSdkDir() : null;
@@ -183,16 +207,31 @@ public class ZcodeHistoryReader {
         readerThread.setDaemon(true);
         readerThread.start();
 
-        boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            LOG.warn("[ZcodeHistoryReader] Timed out running zcode " + command);
-            return null;
+        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+        boolean finished = false;
+        try {
+            while (!(finished = process.waitFor(100L, TimeUnit.MILLISECONDS))) {
+                checkCancellation(cancellation);
+                if (System.nanoTime() >= deadlineNanos) {
+                    LOG.warn("[ZcodeHistoryReader] Timed out running zcode " + command);
+                    return null;
+                }
+            }
+        } finally {
+            if (!finished && process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
         // Process exited; the reader hits EOF promptly — join for the final lines.
         readerThread.join(2000L);
 
         return extractJsonObject(output.toString());
+    }
+
+    private static void checkCancellation(BooleanSupplier cancellation) {
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
+        }
     }
 
     /** Last parseable JSON object line (channel-manager may print diagnostics first). */

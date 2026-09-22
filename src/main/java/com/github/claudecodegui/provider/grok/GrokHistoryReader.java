@@ -266,7 +266,13 @@ public class GrokHistoryReader {
      * {@link com.github.claudecodegui.session.MessageParser}.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) throws IOException {
-        Path sessionDir = resolveSessionDir(sessionId, cwd);
+        return getSessionMessages(sessionId, cwd, () -> false);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd,
+                                               java.util.function.BooleanSupplier cancellation) throws IOException {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+        Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
             LOG.warn("[GrokHistoryReader] Session dir not found for id=" + sessionId + " cwd=" + cwd);
             return List.of();
@@ -275,7 +281,7 @@ public class GrokHistoryReader {
         if (!Files.isRegularFile(chatPath)) {
             return List.of();
         }
-        return parseChatHistoryToMessages(chatPath);
+        return parseChatHistoryToMessages(chatPath, cancellation);
     }
 
     public boolean deleteSession(String sessionId, String projectPath) throws IOException {
@@ -307,6 +313,12 @@ public class GrokHistoryReader {
     }
 
     private Path resolveSessionDir(String sessionId, String cwd) {
+        return resolveSessionDir(sessionId, cwd, () -> false);
+    }
+
+    private Path resolveSessionDir(String sessionId, String cwd,
+                                   java.util.function.BooleanSupplier cancellation) {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
         if (sessionId == null || sessionId.trim().isEmpty()) {
             return null;
         }
@@ -318,6 +330,7 @@ public class GrokHistoryReader {
             String encoded = encodeCwd(cwd);
             String encodedCanon = encodeCwd(canonicalizePath(cwd));
             for (Path sessionsRoot : sessionsRoots) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 Path direct = sessionsRoot.resolve(encoded).resolve(id);
                 if (Files.isDirectory(direct)) {
                     return direct;
@@ -329,16 +342,23 @@ public class GrokHistoryReader {
                 }
             }
         }
-        return findSessionDirById(id);
+        return findSessionDirById(id, cancellation);
     }
 
     private Path findSessionDirById(String sessionId) {
+        return findSessionDirById(sessionId, () -> false);
+    }
+
+    private Path findSessionDirById(String sessionId,
+                                    java.util.function.BooleanSupplier cancellation) {
         for (Path sessionsRoot : sessionsRoots) {
+            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
             if (!Files.isDirectory(sessionsRoot)) {
                 continue;
             }
             try (DirectoryStream<Path> cwdDirs = Files.newDirectoryStream(sessionsRoot)) {
                 for (Path cwdDir : cwdDirs) {
+                    com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                     if (!Files.isDirectory(cwdDir)) {
                         continue;
                     }
@@ -356,11 +376,19 @@ public class GrokHistoryReader {
     }
 
     List<JsonObject> parseChatHistoryToMessages(Path chatPath) throws IOException {
+        return parseChatHistoryToMessages(chatPath, () -> false);
+    }
+
+    private List<JsonObject> parseChatHistoryToMessages(
+            Path chatPath,
+            java.util.function.BooleanSupplier cancellation
+    ) throws IOException {
         List<JsonObject> messages = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(chatPath, StandardCharsets.UTF_8)) {
             String line;
             int counter = 0;
             while ((line = reader.readLine()) != null) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 line = line.trim();
                 if (line.isEmpty() || !line.contains("\"type\"")) {
                     continue;

@@ -258,7 +258,13 @@ public class KimiHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) throws IOException {
-        Path sessionDir = resolveSessionDir(sessionId, cwd);
+        return getSessionMessages(sessionId, cwd, () -> false);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd,
+                                               java.util.function.BooleanSupplier cancellation) throws IOException {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+        Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
             LOG.warn("[KimiHistoryReader] Session dir not found for id=" + sessionId + " cwd=" + cwd);
             return List.of();
@@ -267,7 +273,7 @@ public class KimiHistoryReader {
         if (!Files.isRegularFile(wire)) {
             return List.of();
         }
-        return parseWireToMessages(wire);
+        return parseWireToMessages(wire, cancellation);
     }
 
     public boolean deleteSession(String sessionId, String projectPath) throws IOException {
@@ -293,6 +299,12 @@ public class KimiHistoryReader {
     }
 
     private Path resolveSessionDir(String sessionId, String cwd) throws IOException {
+        return resolveSessionDir(sessionId, cwd, () -> false);
+    }
+
+    private Path resolveSessionDir(String sessionId, String cwd,
+                                   java.util.function.BooleanSupplier cancellation) throws IOException {
+        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return null;
         }
@@ -303,6 +315,7 @@ public class KimiHistoryReader {
         }
         try (DirectoryStream<Path> workDirs = Files.newDirectoryStream(sessionsRoot)) {
             for (Path workDir : workDirs) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 if (!Files.isDirectory(workDir)) {
                     continue;
                 }
@@ -314,12 +327,15 @@ public class KimiHistoryReader {
                     Path statePath = candidate.resolve("state.json");
                     if (Files.isRegularFile(statePath)) {
                         try {
+                            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                             JsonObject state = JsonParser.parseString(
                                     Files.readString(statePath, StandardCharsets.UTF_8)).getAsJsonObject();
                             String workDirPath = text(state, "workDir");
                             if (workDirPath != null && pathsMatch(workDirPath, cwd)) {
                                 return candidate;
                             }
+                        } catch (java.util.concurrent.CancellationException e) {
+                            throw e;
                         } catch (Exception ignored) {
                         }
                     }
@@ -333,11 +349,17 @@ public class KimiHistoryReader {
     }
 
     List<JsonObject> parseWireToMessages(Path wire) throws IOException {
+        return parseWireToMessages(wire, () -> false);
+    }
+
+    private List<JsonObject> parseWireToMessages(Path wire,
+                                                 java.util.function.BooleanSupplier cancellation) throws IOException {
         List<JsonObject> messages = new ArrayList<>();
         int counter = 0;
         try (BufferedReader reader = Files.newBufferedReader(wire, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
+                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
                 line = line.trim();
                 if (line.isEmpty()) {
                     continue;
