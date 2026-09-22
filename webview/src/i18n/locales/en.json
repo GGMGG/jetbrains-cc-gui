@@ -371,6 +371,7 @@
       "operationFailed": "Pet operation failed: {{error}}"
     },
     "storage": {
+      "windowsOnly": "AI data storage relocation is currently available on Windows only.",
       "title": "AI Data Storage",
       "description": "Move Claude Code, Codemoss, and Codex data to another disk while keeping ~/.claude, ~/.codemoss, and ~/.codex as stable access paths.",
       "canonicalPath": "Access path",
