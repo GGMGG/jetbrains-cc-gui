@@ -26,7 +26,7 @@ export function StartupHistoryLoadBanner({ state, currentSessionId }: StartupHis
 
   return (
     <div
-      className={`${styles.banner} ${styles[state.status]}`}
+      className={`${styles.banner} ${styles[state.status] ?? ''}`}
       role={state.status === 'failed' || state.status === 'timeout' ? 'alert' : 'status'}
       title={state.message}
     >

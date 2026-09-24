@@ -1613,13 +1613,13 @@ public class ClaudeChatWindow {
         }
     }
 
-    private void startRestoredHistoryLoad() {
+    private synchronized void startRestoredHistoryLoad() {
         ClaudeSession restoringSession = session;
         if (restoringSession == null || !isRestoredHistorySessionCurrent()) {
             return;
         }
         String restoringSessionId = restoringSession.getSessionId();
-        long generation = restoredHistoryLoadGeneration.incrementAndGet();
+        long generation = restoredHistoryLoadGeneration.get() + 1;
         RestoredHistoryLoadRequest request = new RestoredHistoryLoadRequest(generation,
                 () -> isRestoredHistoryRequestCurrent(generation, restoringSession, restoringSessionId));
         if (!activeRestoredHistoryLoad.compareAndSet(null, request)) {
@@ -1629,60 +1629,84 @@ public class ClaudeChatWindow {
             }
             return;
         }
+        restoredHistoryLoadGeneration.set(generation);
 
         publishRestoredHistoryState("loading", request, null, null, 0, false);
         long loadStartedNanos = System.nanoTime();
-        CompletableFuture<Void> loadFuture = restoringSession.loadFromServer(request);
+        CompletableFuture<Void> loadFuture;
+        try {
+            loadFuture = restoringSession.loadFromServer(request);
+        } catch (RuntimeException error) {
+            completeRestoredHistoryLoad(request, restoringSession, restoringSessionId, error, loadStartedNanos);
+            return;
+        }
         request.bind(loadFuture);
         int timeoutSeconds = settingsService.getHistoryLoadTimeoutSeconds();
-        ScheduledFuture<?> timeoutFuture = AppExecutorUtil.getAppScheduledExecutorService().schedule(() -> {
+        ScheduledFuture<?> timeoutFuture = scheduleTimeout(request, loadFuture, timeoutSeconds);
+        loadFuture.whenComplete((ignored, error) -> {
+            timeoutFuture.cancel(false);
+            completeRestoredHistoryLoad(request, restoringSession, restoringSessionId, error, loadStartedNanos);
+        });
+    }
+
+    private ScheduledFuture<?> scheduleTimeout(RestoredHistoryLoadRequest request,
+                                               CompletableFuture<Void> loadFuture, int timeoutSeconds) {
+        return AppExecutorUtil.getAppScheduledExecutorService().schedule(() -> {
             if (request.cancel(RestoredHistoryLoadRequest.TIMEOUT)) {
                 loadFuture.completeExceptionally(new java.util.concurrent.TimeoutException(
                         "History loading timed out after " + timeoutSeconds + " seconds"));
             }
         }, timeoutSeconds, TimeUnit.SECONDS);
-        loadFuture.whenComplete((ignored, error) -> {
-            timeoutFuture.cancel(false);
-            boolean currentRequest = activeRestoredHistoryLoad.compareAndSet(request, null);
-            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - loadStartedNanos);
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (disposed || !currentRequest || session != restoringSession) {
-                    return;
-                }
-                if (error == null && !isNonEmpty(restoringSession.getSessionId())) {
-                    sessionId = resolveExposedSessionId(null, permissionServiceKey);
-                    persistTabSessionState();
-                    callJavaScript("historyLoadComplete", "0");
-                    publishRestoredHistoryState("loaded", request, null, null, 0, false);
-                    restoredHistorySession = null;
-                    restoredHistorySessionId = null;
-                    return;
-                }
-                if (!restoringSessionId.equals(restoringSession.getSessionId())) {
-                    return;
-                }
-                if (error == null && !request.wasCancelled()) {
-                    LOG.info("[TabRestore] Restored history load completed: provider="
-                            + restoringSession.getProvider() + ", status=loaded, elapsedMs=" + elapsedMillis);
-                    callJavaScript("historyLoadComplete", String.valueOf(restoringSession.getMessages().size()));
-                    publishRestoredHistoryState("loaded", request, null, null,
-                            restoringSession.getMessages().size(), false);
-                    return;
-                }
-                String errorCode = request.cancellationCode();
-                if (errorCode == null) {
-                    errorCode = historyLoadErrorCode(error);
-                }
-                String message = error != null ? errorMessage(error) : "History loading was cancelled";
-                String status = RestoredHistoryLoadRequest.TIMEOUT.equals(errorCode) ? "timeout"
-                        : RestoredHistoryLoadRequest.CANCELLED.equals(errorCode) ? "cancelled" : "failed";
-                LOG.warn("[TabRestore] Restored history load ended: provider="
-                        + restoringSession.getProvider() + ", status=" + status
-                        + ", errorCode=" + errorCode + ", elapsedMs=" + elapsedMillis, error);
-                callJavaScript("historyLoadComplete");
-                publishRestoredHistoryState(status, request, errorCode, message, 0, true);
-            });
-        });
+    }
+
+    private void completeRestoredHistoryLoad(RestoredHistoryLoadRequest request, ClaudeSession restoringSession,
+                                             String restoringSessionId, Throwable error, long loadStartedNanos) {
+        if (!activeRestoredHistoryLoad.compareAndSet(request, null)) {
+            return;
+        }
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - loadStartedNanos);
+        ApplicationManager.getApplication().invokeLater(() -> onRestoredHistoryLoadFinished(
+                request, restoringSession, restoringSessionId, error, elapsedMillis));
+    }
+
+    private void onRestoredHistoryLoadFinished(RestoredHistoryLoadRequest request, ClaudeSession restoringSession,
+                                              String restoringSessionId, Throwable error, long elapsedMillis) {
+        if (disposed || session != restoringSession || activeRestoredHistoryLoad.get() != null
+                || restoredHistoryLoadGeneration.get() != request.generation()) {
+            return;
+        }
+        if ((error == null || request.wasCommitted()) && !isNonEmpty(restoringSession.getSessionId())) {
+            sessionId = resolveExposedSessionId(null, permissionServiceKey);
+            persistTabSessionState();
+            callJavaScript("historyLoadComplete", "0");
+            publishRestoredHistoryState("loaded", request, null, null, 0, false);
+            restoredHistorySession = null;
+            restoredHistorySessionId = null;
+            return;
+        }
+        if (!restoringSessionId.equals(restoringSession.getSessionId())) {
+            return;
+        }
+        if ((error == null && !request.wasCancelled()) || request.wasCommitted()) {
+            int messageCount = restoringSession.getMessages().size();
+            LOG.info("[TabRestore] Restored history load completed: provider="
+                    + restoringSession.getProvider() + ", status=loaded, elapsedMs=" + elapsedMillis);
+            callJavaScript("historyLoadComplete", String.valueOf(messageCount));
+            publishRestoredHistoryState("loaded", request, null, null, messageCount, false);
+            return;
+        }
+        String errorCode = request.cancellationCode();
+        if (errorCode == null) {
+            errorCode = historyLoadErrorCode(error);
+        }
+        String message = error != null ? errorMessage(error) : "History loading was cancelled";
+        String status = RestoredHistoryLoadRequest.TIMEOUT.equals(errorCode) ? "timeout"
+                : RestoredHistoryLoadRequest.CANCELLED.equals(errorCode) ? "cancelled" : "failed";
+        LOG.warn("[TabRestore] Restored history load ended: provider="
+                + restoringSession.getProvider() + ", status=" + status
+                + ", errorCode=" + errorCode + ", elapsedMs=" + elapsedMillis, error);
+        callJavaScript("historyLoadComplete");
+        publishRestoredHistoryState(status, request, errorCode, message, 0, true);
     }
 
     private boolean isRestoredHistoryRequestCurrent(long generation, ClaudeSession expectedSession,

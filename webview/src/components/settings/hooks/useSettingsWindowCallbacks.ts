@@ -18,6 +18,7 @@ import {
   subscribeProviderList,
 } from '../../../utils/runtimeProviderCapabilities';
 import { scheduleBatchedBridgeRequests } from './scheduleBatchedBridgeRequests';
+import { clampHistoryLoadTimeoutSeconds } from '../../../utils/historyLoadTimeout';
 
 const sendToJava = (message: string) => {
   if (window.sendToJava) {
@@ -305,7 +306,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
       try {
         const data = JSON.parse(jsonStr);
         if (typeof data.historyLoadTimeoutSeconds === 'number') {
-          d().setHistoryLoadTimeoutSeconds?.(data.historyLoadTimeoutSeconds);
+          d().setHistoryLoadTimeoutSeconds?.(clampHistoryLoadTimeoutSeconds(data.historyLoadTimeoutSeconds));
         }
       } catch (error) {
         console.error('[SettingsView] Failed to parse history load timeout:', error);

@@ -2,6 +2,7 @@ package com.github.claudecodegui.provider.pi;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.provider.common.HistoryPathMatcher;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -22,6 +23,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Reads PI CLI session history from {@code ~/.pi/agent/sessions/}.
@@ -268,8 +271,8 @@ public class PiHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
-                                               java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                               BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         Path file = resolveSessionFile(sessionId, cwd, cancellation);
         if (file == null || !Files.isRegularFile(file)) {
             LOG.warn("[PiHistoryReader] Session file not found for id=" + sessionId + " cwd=" + cwd);
@@ -305,8 +308,8 @@ public class PiHistoryReader {
     }
 
     private Path resolveSessionFile(String sessionId, String cwd,
-                                    java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                    BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return null;
         }
@@ -318,26 +321,26 @@ public class PiHistoryReader {
         }
         try (DirectoryStream<Path> cwdDirs = Files.newDirectoryStream(sessionsRoot)) {
             for (Path cwdDir : cwdDirs) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 if (!Files.isDirectory(cwdDir)) {
                     continue;
                 }
                 try (DirectoryStream<Path> files = Files.newDirectoryStream(cwdDir, "*.jsonl")) {
                     for (Path file : files) {
-                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                        HistoryCancellation.check(cancellation);
                         String fileName = file.getFileName().toString();
                         boolean nameHint = fileName.endsWith("_" + id + ".jsonl") || fileName.contains(id);
                         SessionHeader header = null;
                         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                             String line = reader.readLine();
-                            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                            HistoryCancellation.check(cancellation);
                             if (line != null) {
                                 JsonObject obj = JsonParser.parseString(line.trim()).getAsJsonObject();
                                 if ("session".equals(text(obj, "type"))) {
                                     header = parseHeader(obj, file);
                                 }
                             }
-                        } catch (java.util.concurrent.CancellationException e) {
+                        } catch (CancellationException e) {
                             throw e;
                         } catch (Exception ignored) {
                         }
@@ -371,13 +374,13 @@ public class PiHistoryReader {
     }
 
     private List<JsonObject> parseMessages(Path file,
-                                           java.util.function.BooleanSupplier cancellation) throws IOException {
+                                           BooleanSupplier cancellation) throws IOException {
         List<JsonObject> messages = new ArrayList<>();
         int counter = 0;
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 line = line.trim();
                 if (line.isEmpty()) {
                     continue;

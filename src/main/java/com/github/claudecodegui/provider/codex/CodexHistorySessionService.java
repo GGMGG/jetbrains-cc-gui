@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonStreamParser;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.intellij.openapi.diagnostic.Logger;
 
 import java.io.BufferedReader;
@@ -79,6 +80,8 @@ class CodexHistorySessionService {
                             messageCount++;
                         }
                     }
+                } catch (CancellationException e) {
+                    throw e;
                 } catch (Exception e) {
                     LOG.debug("[CodexHistoryReader] Failed to parse message: " + e.getMessage());
                 }
@@ -107,9 +110,7 @@ class CodexHistorySessionService {
     }
 
     private static void checkCancellation(BooleanSupplier cancellation) {
-        if (cancellation.getAsBoolean()) {
-            throw new CancellationException("History loading was cancelled");
-        }
+        HistoryCancellation.check(cancellation);
     }
 
     private CodexHistoryReader.CodexMessage transformFunctionCall(CodexHistoryReader.CodexMessage msg) {

@@ -226,9 +226,12 @@ public class SessionMessageOrchestrator {
         Object loadingToken = new Object();
         List<ClaudeSession.Message> messagesBeforeLoad;
         synchronized (state.getMessageStateLock()) {
+            if (!updateSharedLoadingState && state.isLoading()) {
+                return CompletableFuture.completedFuture(null);
+            }
             messagesBeforeLoad = state.getMessages();
-            state.claimLoading(loadingToken);
             if (updateSharedLoadingState) {
+                state.claimLoading(loadingToken);
                 callbackFacade.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
             }
         }
@@ -267,7 +270,8 @@ public class SessionMessageOrchestrator {
                 Set<String> loadedStructure = MessageStructure.structuralBlockKeys(loadedMessages);
                 checkHistoryLoadCancellation(cancellation);
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
                         LOG.info("Ignoring history result for a session that changed while loading");
                         return;
                     }
@@ -306,7 +310,8 @@ public class SessionMessageOrchestrator {
                 // A missing history file is an explicit stale-session signal, so unlike
                 // the stale-result guards above it clears the live transcript.
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
                         return;
                     }
                     boolean committed = cancellation.commitIfActive(() -> {
@@ -323,7 +328,8 @@ public class SessionMessageOrchestrator {
             } catch (SessionHistoryIncompleteException e) {
                 checkHistoryLoadCancellation(cancellation);
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
                         return;
                     }
                     // An initial history open has no live transcript to keep. Let
@@ -338,7 +344,8 @@ public class SessionMessageOrchestrator {
                 throw new CompletionException(e);
             } catch (Exception e) {
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
                         return;
                     }
                     if (updateSharedLoadingState) {
@@ -515,8 +522,9 @@ public class SessionMessageOrchestrator {
                 : null;
     }
 
-    private boolean ownsHistoryLoad(Object token, String sessionId, String cwd, String provider) {
-        return state.ownsLoading(token)
+    private boolean ownsHistoryLoad(Object token, String sessionId, String cwd, String provider,
+                                    boolean updateSharedLoadingState) {
+        return (updateSharedLoadingState ? state.ownsLoading(token) : !state.isLoading())
                 && Objects.equals(sessionId, state.getSessionId())
                 && Objects.equals(cwd, state.getCwd())
                 && Objects.equals(provider, state.getProvider());

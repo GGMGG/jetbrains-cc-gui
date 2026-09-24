@@ -16,6 +16,7 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
     private final long generation;
     private final BooleanSupplier currentOwner;
     private boolean cancelled;
+    private boolean committed;
     private String cancellationCode;
     private CompletableFuture<Void> future;
 
@@ -49,6 +50,10 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
         return cancelled;
     }
 
+    synchronized boolean wasCommitted() {
+        return committed;
+    }
+
     synchronized void bind(CompletableFuture<Void> loadFuture) {
         future = loadFuture;
         if (cancelled) {
@@ -74,6 +79,7 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
             return false;
         }
         mutation.run();
+        committed = true;
         return true;
     }
 }

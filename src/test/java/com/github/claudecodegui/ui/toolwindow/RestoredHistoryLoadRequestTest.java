@@ -39,6 +39,15 @@ public class RestoredHistoryLoadRequestTest {
     }
 
     @Test
+    public void remembersCommitWhenTimeoutWinsFutureCompletionRace() {
+        RestoredHistoryLoadRequest request = new RestoredHistoryLoadRequest(9L, () -> true);
+
+        assertTrue(request.commitIfActive(() -> { }));
+        assertTrue(request.cancel(RestoredHistoryLoadRequest.TIMEOUT));
+        assertTrue(request.wasCommitted());
+    }
+
+    @Test
     public void classifiesHistoryLoadFailuresAcrossWrappedCauses() {
         assertEquals("HISTORY_LOAD_PROVIDER_TIMEOUT",
                 ClaudeChatWindow.historyLoadErrorCode(new CompletionException(new TimeoutException())));

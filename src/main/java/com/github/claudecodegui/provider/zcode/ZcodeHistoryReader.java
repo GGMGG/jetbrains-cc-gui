@@ -3,6 +3,7 @@ package com.github.claudecodegui.provider.zcode;
 import com.github.claudecodegui.bridge.BridgeDirectoryResolver;
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.github.claudecodegui.startup.BridgePreloader;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -86,6 +87,12 @@ public class ZcodeHistoryReader {
             return getSessionMessagesInternal(sessionId, cwd, cancellation);
         } catch (CancellationException e) {
             throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            CancellationException cancellationException = new CancellationException(
+                    "History loading was interrupted");
+            cancellationException.initCause(e);
+            throw cancellationException;
         } catch (Exception e) {
             throw new IllegalStateException("Failed to load ZCode session history", e);
         }
@@ -225,13 +232,15 @@ public class ZcodeHistoryReader {
         // Process exited; the reader hits EOF promptly — join for the final lines.
         readerThread.join(2000L);
 
-        return extractJsonObject(output.toString());
+        String outputText;
+        synchronized (output) {
+            outputText = output.toString();
+        }
+        return extractJsonObject(outputText);
     }
 
     private static void checkCancellation(BooleanSupplier cancellation) {
-        if (cancellation.getAsBoolean()) {
-            throw new CancellationException("History loading was cancelled");
-        }
+        HistoryCancellation.check(cancellation);
     }
 
     /** Last parseable JSON object line (channel-manager may print diagnostics first). */
