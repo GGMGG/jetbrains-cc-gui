@@ -48,6 +48,7 @@ public final class AiDataDirectoryManager {
     private static final String JOURNAL_FILE = "migration-journal.json";
     private static final String BACKUPS_FILE = "migration-backups.json";
     private static final String BACKUPS_QUARANTINE_FILE = "migration-backups-quarantine.json";
+    private static final String LEGACY_IMPORT_FILE = "legacy-import.json";
     private static final String BACKUP_MARKER = ".cc-gui-backup-";
     private static final String STORAGE_MARKER = ".cc-gui-storage";
     private static final int LINK_COMMAND_TIMEOUT_SECONDS = 30;
@@ -60,13 +61,19 @@ public final class AiDataDirectoryManager {
     private final DirectoryLinkCreator linkCreator;
     private final AiDataProcessGate processGate;
     private final PathDeleter backupPathDeleter;
+    private final AiDataMigrationCoordinator migrationCoordinator;
+    private final Path legacyStateDirectory;
+    private final Path coordinationStateDirectory;
+    private final AiDataExternalProcessDetector externalProcessDetector = new AiDataExternalProcessDetector();
+    private final boolean scanExternalProcesses;
 
     public AiDataDirectoryManager() {
         this(Path.of(PlatformUtils.getHomeDirectory()),
-                Path.of(PathManager.getSystemPath(), "cc-gui", "ai-data-storage"),
+                defaultCoordinationDirectory().resolve("state"),
                 PlatformUtils.getPlatformType(),
                 PlatformUtils.isLinux() && notBlank(PlatformUtils.getEnvIgnoreCase("WSL_DISTRO_NAME")),
-                null);
+                null, AiDataProcessGate.getInstance(), AiDataDirectoryManager::deleteWritablePath,
+                defaultCoordinationDirectory());
     }
 
     AiDataDirectoryManager(Path userHome, Path stateDirectory,
@@ -86,6 +93,22 @@ public final class AiDataDirectoryManager {
                            PlatformUtils.PlatformType platform, boolean wsl,
                            DirectoryLinkCreator linkCreator, AiDataProcessGate processGate,
                            PathDeleter backupPathDeleter) {
+        this(userHome, stateDirectory, platform, wsl, linkCreator, processGate, backupPathDeleter,
+                defaultCoordinationDirectory());
+    }
+
+    AiDataDirectoryManager(Path userHome, Path stateDirectory,
+                           PlatformUtils.PlatformType platform, boolean wsl,
+                           DirectoryLinkCreator linkCreator, AiDataProcessGate processGate,
+                           PathDeleter backupPathDeleter, Path coordinationDirectory) {
+        this(userHome, stateDirectory, platform, wsl, linkCreator, processGate, backupPathDeleter,
+                coordinationDirectory, defaultLegacyStateDirectory());
+    }
+
+    AiDataDirectoryManager(Path userHome, Path stateDirectory,
+                           PlatformUtils.PlatformType platform, boolean wsl,
+                           DirectoryLinkCreator linkCreator, AiDataProcessGate processGate,
+                           PathDeleter backupPathDeleter, Path coordinationDirectory, Path legacyStateDirectory) {
         this.userHome = userHome.toAbsolutePath().normalize();
         this.stateDirectory = stateDirectory.toAbsolutePath().normalize();
         this.platform = Objects.requireNonNull(platform, "platform");
@@ -93,6 +116,10 @@ public final class AiDataDirectoryManager {
         this.linkCreator = linkCreator == null ? this::createPlatformLink : linkCreator;
         this.processGate = Objects.requireNonNull(processGate, "processGate");
         this.backupPathDeleter = Objects.requireNonNull(backupPathDeleter, "backupPathDeleter");
+        this.migrationCoordinator = new AiDataMigrationCoordinator(coordinationDirectory);
+        this.coordinationStateDirectory = coordinationDirectory.toAbsolutePath().normalize().resolve("state");
+        this.legacyStateDirectory = legacyStateDirectory.toAbsolutePath().normalize();
+        this.scanExternalProcesses = this.userHome.equals(Path.of(PlatformUtils.getHomeDirectory()).toAbsolutePath().normalize());
     }
 
     public JsonObject snapshot() throws IOException {
@@ -100,11 +127,48 @@ public final class AiDataDirectoryManager {
             if (!isSupported()) {
                 return buildSnapshot(false);
             }
-            try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
-                boolean recovered = recoverInterruptedMigration();
-                return buildSnapshot(recovered);
+            try (AiDataMigrationCoordinator.ProcessLock readLock = migrationCoordinator.tryAcquireProcessLock()) {
+                if (readLock == null) {
+                    return buildBusySnapshot();
+                }
+                if (!needsExclusiveSnapshot()) {
+                    return buildSnapshot(false);
+                }
+            }
+            AiDataMigrationCoordinator.LockHandle migrationLock = migrationCoordinator.tryAcquire("status");
+            if (migrationLock == null) {
+                return buildBusySnapshot();
+            }
+            try (migrationLock) {
+                try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
+                    importLegacyState();
+                    if (Files.isRegularFile(journalPath(), LinkOption.NOFOLLOW_LINKS)
+                            && hasExternalAiProcess()) {
+                        throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
+                    }
+                    boolean recovered = recoverInterruptedMigration();
+                    return buildSnapshot(recovered);
+                }
             }
         }
+    }
+
+    private boolean needsExclusiveSnapshot() {
+        if (Files.exists(journalPath(), LinkOption.NOFOLLOW_LINKS)) {
+            return true;
+        }
+        if (!stateDirectory.equals(coordinationStateDirectory) || stateDirectory.equals(legacyStateDirectory)) {
+            return false;
+        }
+        if (Files.exists(stateDirectory.resolve(LEGACY_IMPORT_FILE), LinkOption.NOFOLLOW_LINKS)) {
+            return true;
+        }
+        for (String filename : new String[]{JOURNAL_FILE, BACKUPS_FILE, BACKUPS_QUARANTINE_FILE}) {
+            if (Files.exists(legacyStateDirectory.resolve(filename), LinkOption.NOFOLLOW_LINKS)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public JsonObject migrate(String requestedRoot) throws IOException {
@@ -114,7 +178,11 @@ public final class AiDataDirectoryManager {
             if (migrationPermit == null) {
                 throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
             }
-            try (migrationPermit) {
+            try (migrationPermit; AiDataMigrationCoordinator.LockHandle migrationLock = acquireMigrationLock("migrate")) {
+                importLegacyState();
+                if (hasExternalAiProcess()) {
+                    throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
+                }
                 recoverInterruptedMigration();
                 checkMigrationCancellation(migrationPermit);
                 Path targetRoot = validateTargetRoot(requestedRoot);
@@ -123,7 +191,7 @@ public final class AiDataDirectoryManager {
                 checkMigrationCancellation(migrationPermit);
                 if (entries.isEmpty()) {
                     beginMigrationCommit(migrationPermit);
-                    return operationResult("migrate", true, null, snapshot());
+                    return operationResult("migrate", true, null, buildSnapshot(false));
                 }
 
                 Journal journal = new Journal(operationId, entries);
@@ -154,7 +222,7 @@ public final class AiDataDirectoryManager {
                     checkMigrationCancellation(migrationPermit);
                     beginMigrationCommit(migrationPermit);
                     Files.deleteIfExists(journalPath());
-                    return operationResult("migrate", true, null, snapshot());
+                    return operationResult("migrate", true, null, buildSnapshot(false));
                 } catch (IOException | RuntimeException error) {
                     try {
                         rollback(journal);
@@ -185,57 +253,70 @@ public final class AiDataDirectoryManager {
     public JsonObject cleanupBackups() throws IOException {
         synchronized (OPERATION_LOCK) {
             requireSupported();
-            try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
+            AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireMigrationPermit();
+            if (migrationPermit == null) {
+                throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
+            }
+            try (migrationPermit; AiDataMigrationCoordinator.LockHandle migrationLock = acquireMigrationLock("cleanup")) {
+                importLegacyState();
+                if (hasExternalAiProcess()) {
+                    throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
+                }
                 recoverInterruptedMigration();
-            }
-            JsonArray metadata = readBackupRecordsForCleanup();
-            List<BackupRecord> records = new ArrayList<>();
-            List<JsonElement> retained = new ArrayList<>();
-            IOException cleanupFailure = null;
-            for (JsonElement element : metadata) {
-                try {
-                    BackupRecord record = validateBackupRecord(element);
-                    records.add(record);
-                    retained.add(record.metadata);
-                } catch (IOException error) {
-                    cleanupFailure = appendFailure(cleanupFailure, error);
-                    try {
-                        quarantineBackupRecord(element, error);
-                    } catch (IOException quarantineError) {
-                        retained.add(element);
-                        cleanupFailure = appendFailure(cleanupFailure, quarantineError);
-                    }
-                }
-            }
-            if (retained.size() < metadata.size()) {
-                try {
-                    persistBackupRecords(retained);
-                } catch (IOException error) {
-                    cleanupFailure = appendFailure(cleanupFailure, error);
-                }
-            }
-            for (BackupRecord record : records) {
-                if (record.existedAtValidation) {
-                    try {
-                        deleteTree(record.path, backupPathDeleter);
-                    } catch (IOException error) {
-                        cleanupFailure = appendFailure(cleanupFailure, error);
-                        continue;
-                    }
+                if (hasExternalAiProcess()
+                        || !migrationPermit.beginCommit()) {
+                    throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
                 }
 
-                removeMetadata(retained, record.metadata);
-                try {
-                    persistBackupRecords(retained);
-                } catch (IOException error) {
-                    cleanupFailure = appendFailure(cleanupFailure, error);
-                    break;
+                JsonArray metadata = readBackupRecordsForCleanup();
+                List<BackupRecord> records = new ArrayList<>();
+                List<JsonElement> retained = new ArrayList<>();
+                IOException cleanupFailure = null;
+                for (JsonElement element : metadata) {
+                    try {
+                        BackupRecord record = validateBackupRecord(element);
+                        records.add(record);
+                        retained.add(record.metadata);
+                    } catch (IOException error) {
+                        cleanupFailure = appendFailure(cleanupFailure, error);
+                        try {
+                            quarantineBackupRecord(element, error);
+                        } catch (IOException quarantineError) {
+                            retained.add(element);
+                            cleanupFailure = appendFailure(cleanupFailure, quarantineError);
+                        }
+                    }
                 }
+                if (retained.size() < metadata.size()) {
+                    try {
+                        persistBackupRecords(retained);
+                    } catch (IOException error) {
+                        cleanupFailure = appendFailure(cleanupFailure, error);
+                    }
+                }
+                for (BackupRecord record : records) {
+                    if (record.existedAtValidation) {
+                        try {
+                            deleteTree(record.path, backupPathDeleter);
+                        } catch (IOException error) {
+                            cleanupFailure = appendFailure(cleanupFailure, error);
+                            continue;
+                        }
+                    }
+
+                    removeMetadata(retained, record.metadata);
+                    try {
+                        persistBackupRecords(retained);
+                    } catch (IOException error) {
+                        cleanupFailure = appendFailure(cleanupFailure, error);
+                        break;
+                    }
+                }
+                if (cleanupFailure != null) {
+                    throw new AiDataDirectoryException("BACKUP_CLEANUP_PARTIAL", cleanupFailure);
+                }
+                return operationResult("cleanup", true, null, buildSnapshot(false));
             }
-            if (cleanupFailure != null) {
-                throw new AiDataDirectoryException("BACKUP_CLEANUP_PARTIAL", cleanupFailure);
-            }
-            return operationResult("cleanup", true, null, snapshot());
         }
     }
 
@@ -485,7 +566,9 @@ public final class AiDataDirectoryManager {
     }
 
     private AiDataProcessGate.MigrationPermit acquireRecoveryPermitIfNeeded() throws IOException {
-        if (!Files.isRegularFile(journalPath(), LinkOption.NOFOLLOW_LINKS)) {
+        if (!Files.isRegularFile(journalPath(), LinkOption.NOFOLLOW_LINKS)
+                && (stateDirectory.equals(legacyStateDirectory)
+                    || !Files.exists(legacyStateDirectory.resolve(JOURNAL_FILE), LinkOption.NOFOLLOW_LINKS))) {
             return null;
         }
         AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireMigrationPermit();
@@ -493,6 +576,116 @@ public final class AiDataDirectoryManager {
             throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
         }
         return migrationPermit;
+    }
+
+    private AiDataMigrationCoordinator.LockHandle acquireMigrationLock(String operation) throws IOException {
+        AiDataMigrationCoordinator.LockHandle migrationLock = migrationCoordinator.tryAcquire(operation);
+        if (migrationLock == null) {
+            JsonObject owner = migrationCoordinator.readActiveOwner();
+            if (owner != null) {
+                throw new AiDataDirectoryException("AI_DATA_MIGRATION_ACTIVE", owner);
+            }
+            throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
+        }
+        return migrationLock;
+    }
+
+    private boolean hasExternalAiProcess() {
+        return DshHostProcessCoordinator.getInstance().hasRunningHost()
+                || scanExternalProcesses && externalProcessDetector.hasRunningProcess();
+    }
+
+    private void importLegacyState() throws IOException {
+        if (!stateDirectory.equals(coordinationStateDirectory) || stateDirectory.equals(legacyStateDirectory)) {
+            return;
+        }
+        if (Files.isSymbolicLink(stateDirectory)) {
+            throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+        }
+        Path intent = stateDirectory.resolve(LEGACY_IMPORT_FILE);
+        if (Files.exists(intent, LinkOption.NOFOLLOW_LINKS)) {
+            resumeLegacyImport(readLegacyImportIntent(intent));
+            return;
+        }
+        List<String> filenames = new ArrayList<>();
+        for (String filename : new String[]{JOURNAL_FILE, BACKUPS_FILE, BACKUPS_QUARANTINE_FILE}) {
+            Path source = legacyStateDirectory.resolve(filename);
+            if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
+                continue;
+            }
+            Path destination = stateDirectory.resolve(filename);
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
+                    || Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
+                throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+            }
+            filenames.add(filename);
+        }
+        if (filenames.isEmpty()) {
+            return;
+        }
+        Files.createDirectories(stateDirectory);
+        JsonArray plannedFiles = new JsonArray();
+        filenames.forEach(plannedFiles::add);
+        writeJson(intent, plannedFiles);
+        resumeLegacyImport(filenames);
+    }
+
+    private List<String> readLegacyImportIntent(Path intent) throws IOException {
+        try {
+            if (!Files.isRegularFile(intent, LinkOption.NOFOLLOW_LINKS)) {
+                throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+            }
+            JsonElement parsed = JsonParser.parseString(Files.readString(intent, StandardCharsets.UTF_8));
+            if (!parsed.isJsonArray() || parsed.getAsJsonArray().isEmpty()
+                    || parsed.getAsJsonArray().size() > 3) {
+                throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+            }
+            List<String> filenames = new ArrayList<>();
+            for (JsonElement item : parsed.getAsJsonArray()) {
+                if (!item.isJsonPrimitive() || !item.getAsJsonPrimitive().isString()) {
+                    throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+                }
+                String filename = item.getAsString();
+                if (!List.of(JOURNAL_FILE, BACKUPS_FILE, BACKUPS_QUARANTINE_FILE).contains(filename)
+                        || filenames.contains(filename)) {
+                    throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+                }
+                filenames.add(filename);
+            }
+            return filenames;
+        } catch (RuntimeException error) {
+            throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT", error);
+        }
+    }
+
+    private void resumeLegacyImport(List<String> filenames) throws IOException {
+        for (String filename : filenames) {
+            Path source = legacyStateDirectory.resolve(filename);
+            Path destination = stateDirectory.resolve(filename);
+            boolean sourcePresent = Files.exists(source, LinkOption.NOFOLLOW_LINKS);
+            boolean destinationPresent = Files.exists(destination, LinkOption.NOFOLLOW_LINKS);
+            if ((sourcePresent && !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS))
+                    || (destinationPresent && !Files.isRegularFile(destination, LinkOption.NOFOLLOW_LINKS))
+                    || (!sourcePresent && !destinationPresent)) {
+                throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+            }
+            if (!destinationPresent) {
+                Path temporary = Files.createTempFile(stateDirectory, ".legacy-import-", ".json");
+                try {
+                    Files.copy(source, temporary, StandardCopyOption.REPLACE_EXISTING, LinkOption.NOFOLLOW_LINKS);
+                    move(temporary, destination);
+                } finally {
+                    Files.deleteIfExists(temporary);
+                }
+            }
+            if (sourcePresent) {
+                if (Files.mismatch(source, destination) != -1L) {
+                    throw new AiDataDirectoryException("LEGACY_MIGRATION_STATE_CONFLICT");
+                }
+                Files.delete(source);
+            }
+        }
+        Files.delete(stateDirectory.resolve(LEGACY_IMPORT_FILE));
     }
 
     private void rollback(Journal journal) throws IOException {
@@ -645,6 +838,21 @@ public final class AiDataDirectoryManager {
         JsonArray backups = readBackupRecords();
         result.add("backups", backups);
         result.addProperty("backupCount", backups.size());
+        return result;
+    }
+
+    private JsonObject buildBusySnapshot() throws IOException {
+        JsonObject result = buildSnapshot(false);
+        result.addProperty("migrationInProgress", true);
+        JsonObject owner = migrationCoordinator.readActiveOwner();
+        if (owner != null) {
+            result.add("migrationOwner", owner);
+        } else {
+            result.addProperty("migrationInProgress", false);
+            result.addProperty("error", "AI_PROCESSES_ACTIVE");
+            return result;
+        }
+        result.addProperty("error", "AI_DATA_MIGRATION_ACTIVE");
         return result;
     }
 
@@ -1355,6 +1563,14 @@ public final class AiDataDirectoryManager {
         return value != null && !value.isBlank();
     }
 
+    private static Path defaultCoordinationDirectory() {
+        return AiDataMigrationCoordinator.defaultCoordinationDirectory();
+    }
+
+    private static Path defaultLegacyStateDirectory() {
+        return Path.of(PathManager.getSystemPath(), "cc-gui", "ai-data-storage").toAbsolutePath().normalize();
+    }
+
     private static boolean hasStorageMarker(Path directory, String id) {
         Path marker = directory.resolve(STORAGE_MARKER);
         try {
@@ -1494,12 +1710,27 @@ public final class AiDataDirectoryManager {
     }
 
     public static final class AiDataDirectoryException extends IOException {
+        private final JsonObject details;
+
         public AiDataDirectoryException(String message) {
-            super(message);
+            this(message, null, null);
+        }
+
+        public AiDataDirectoryException(String message, JsonObject details) {
+            this(message, null, details);
         }
 
         public AiDataDirectoryException(String message, Throwable cause) {
+            this(message, cause, null);
+        }
+
+        private AiDataDirectoryException(String message, Throwable cause, JsonObject details) {
             super(message, cause);
+            this.details = details;
+        }
+
+        public JsonObject getDetails() {
+            return details;
         }
     }
 }

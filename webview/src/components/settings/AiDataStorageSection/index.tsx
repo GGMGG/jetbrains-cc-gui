@@ -39,6 +39,9 @@ const OPERATION_ERROR_KEYS: Record<string, string> = {
   TARGET_NOT_EMPTY: 'settings.storage.errors.targetNotEmpty',
   TARGET_INSIDE_SOURCE: 'settings.storage.errors.targetInsideSource',
   TARGET_OVERLAPS_HOME: 'settings.storage.errors.targetOverlapsHome',
+  AI_DATA_MIGRATION_ACTIVE: 'settings.storage.errors.aiDataMigrationActive',
+  AI_DATA_COORDINATION_UNAVAILABLE: 'settings.storage.errors.coordinationUnavailable',
+  LEGACY_MIGRATION_STATE_CONFLICT: 'settings.storage.errors.legacyStateConflict',
   PLATFORM_NOT_SUPPORTED: 'settings.storage.errors.platformNotSupported',
   WSL_NOT_SUPPORTED: 'settings.storage.errors.wslNotSupported',
   MIGRATION_CANCELLED_FOR_AI_START: 'settings.storage.errors.migrationCancelledForAiStart',
@@ -54,9 +57,16 @@ const OPERATION_ERROR_KEYS: Record<string, string> = {
 };
 
 function operationErrorMessage(
-  translate: (key: string) => string,
+  translate: (key: string, options?: { product: string; pid: number }) => string,
   error?: string,
+  details?: AiDataDirectoryOperation['details'],
 ): string {
+  if (error === 'AI_DATA_MIGRATION_ACTIVE' && details) {
+    return translate('settings.storage.errors.aiDataMigrationOwned', {
+      product: details.ideProduct,
+      pid: details.pid,
+    });
+  }
   return translate(OPERATION_ERROR_KEYS[error?.trim() ?? ''] ?? 'settings.storage.operationFailed');
 }
 
@@ -92,7 +102,14 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
     const unsubscribeRoot = aiDataStorageBridge.subscribeRoot(setTargetRoot);
     const unsubscribeOperation = aiDataStorageBridge.subscribeOperation((operation) => {
       if (operation.operation === 'status') {
-        if (operation.status) setStatus(operation.status);
+        if (operation.status) {
+          setStatus(operation.status);
+        } else if (!operation.success) {
+          setStatus(null);
+          if (operation.error === 'AI_PROCESSES_ACTIVE' || operation.error === 'AI_DATA_MIGRATION_ACTIVE') {
+            addToastRef.current(operationErrorMessage(translateRef.current, operation.error, operation.details), 'error');
+          }
+        }
         return;
       }
       const pendingOperation = pendingOperationRef.current;
@@ -111,7 +128,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
           addToastRef.current(translateRef.current('settings.storage.cleanupSuccess'), 'success');
         }
       } else {
-        addToastRef.current(operationErrorMessage(translateRef.current, operation.error), 'error');
+        addToastRef.current(operationErrorMessage(translateRef.current, operation.error, operation.details), 'error');
       }
     });
     aiDataStorageBridge.getStatus();
@@ -126,17 +143,17 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
 
   const requestMigration = () => {
     const normalized = targetRoot.trim();
-    if (!normalized || pending !== null || status?.supported === false) return;
+    if (!normalized || pending !== null || status?.supported !== true || statusBusy) return;
     setConfirmation({ operation: 'migrate', targetRoot: normalized });
   };
 
   const requestCleanup = () => {
-    if (pending !== null || status?.supported === false) return;
+    if (pending !== null || status?.supported !== true || statusBusy) return;
     setConfirmation({ operation: 'cleanup' });
   };
 
   const confirmOperation = () => {
-    if (!confirmation || pending !== null) return;
+    if (!confirmation || pending !== null || status?.supported !== true || statusBusy) return;
     setConfirmation(null);
     const operation = confirmation.operation;
     const requestId = createRequestId();
@@ -185,6 +202,8 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
     && comparablePath(targetRoot, status?.platform) === comparablePath(status?.storageRoot ?? '', status?.platform);
   const migrationTarget = confirmation?.operation === 'migrate' ? confirmation.targetRoot : null;
   const confirmationIsMigration = migrationTarget !== null;
+  const statusBusy = status?.migrationInProgress === true
+    || status?.error === 'AI_PROCESSES_ACTIVE' || status?.error === 'AI_DATA_MIGRATION_ACTIVE';
 
   return (
     <div className={styles.section}>
@@ -201,6 +220,12 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
         <div className={styles.warning}>
           <span className="codicon codicon-warning" aria-hidden="true" />
           <span>{t('settings.storage.windowsOnly')}</span>
+        </div>
+      )}
+      {statusBusy && (
+        <div className={styles.warning} role="status">
+          <span className="codicon codicon-warning" aria-hidden="true" />
+          <span>{operationErrorMessage(t, status?.error, status?.migrationOwner)}</span>
         </div>
       )}
       <div className={styles.directoryListHeader}>
@@ -253,7 +278,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
             type="text"
             value={targetRoot}
             maxLength={2048}
-            disabled={pending !== null || status?.supported === false}
+            disabled={pending !== null || status?.supported !== true || statusBusy}
             onChange={(event) => setTargetRoot(event.target.value)}
             placeholder={t('settings.storage.targetPlaceholder')}
           />
@@ -261,7 +286,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
             type="button"
             className={styles.iconButton}
             onClick={aiDataStorageBridge.chooseRoot}
-            disabled={pending !== null || status?.supported === false}
+            disabled={pending !== null || status?.supported !== true || statusBusy}
             title={t('settings.storage.chooseRoot')}
             aria-label={t('settings.storage.chooseRoot')}
           >
@@ -279,7 +304,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
           type="button"
           className={styles.primaryButton}
           onClick={requestMigration}
-          disabled={!targetRoot.trim() || pending !== null || status?.supported === false || currentStorageSelected}
+          disabled={!targetRoot.trim() || pending !== null || status?.supported !== true || currentStorageSelected || statusBusy}
         >
           <span className="codicon codicon-move" aria-hidden="true" />
           {pending === 'migrate'
@@ -293,7 +318,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
             type="button"
             className={styles.dangerButton}
             onClick={requestCleanup}
-            disabled={pending !== null || status?.supported === false}
+            disabled={pending !== null || status?.supported !== true || statusBusy}
           >
             <span className="codicon codicon-trash" aria-hidden="true" />
             {pending === 'cleanup'

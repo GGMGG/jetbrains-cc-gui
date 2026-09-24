@@ -55,6 +55,28 @@ describe('aiDataStorageBridge', () => {
     expect(parseAiDataDirectoryOperation('{"operation":"remove","success":true}')).toBeNull();
   });
 
+  it('accepts only bounded owner details from migration conflicts', () => {
+    expect(parseAiDataDirectoryOperation(JSON.stringify({
+      operation: 'migrate', requestId: 'request-1', success: false,
+      error: 'AI_DATA_MIGRATION_ACTIVE', details: { pid: 42, ideProduct: 'Idea', operation: 'migrate' },
+    }))).toMatchObject({ details: { pid: 42, ideProduct: 'Idea', operation: 'migrate' } });
+    expect(parseAiDataDirectoryOperation(JSON.stringify({
+      operation: 'migrate', requestId: 'request-1', success: false,
+      details: { pid: -1, ideProduct: 'Idea', operation: 'migrate' },
+    }))?.details).toBeUndefined();
+  });
+
+  it('preserves busy status and validates the active migration owner', () => {
+    expect(parseAiDataDirectoryStatus(JSON.stringify({
+      ...validStatus, error: 'AI_DATA_MIGRATION_ACTIVE', migrationInProgress: true,
+      migrationOwner: { pid: 42, ideProduct: 'Idea', operation: 'migrate' },
+    }))).toMatchObject({ error: 'AI_DATA_MIGRATION_ACTIVE', migrationInProgress: true,
+      migrationOwner: { pid: 42, ideProduct: 'Idea' } });
+    expect(parseAiDataDirectoryStatus(JSON.stringify({
+      ...validStatus, migrationOwner: { pid: -1, ideProduct: 'Idea', operation: 'migrate' },
+    }))?.migrationOwner).toBeUndefined();
+  });
+
   it('sends migration commands as structured bridge messages', () => {
     aiDataStorageBridge.getStatus();
     aiDataStorageBridge.chooseRoot();

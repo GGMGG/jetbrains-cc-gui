@@ -16,6 +16,9 @@ export interface AiDataDirectoryStatus {
   wsl: boolean;
   homeDirectory: string;
   recovered: boolean;
+  error?: string;
+  migrationInProgress?: boolean;
+  migrationOwner?: AiDataDirectoryOperation['details'];
   storageRoot?: string;
   backupCount: number;
   directories: AiDataDirectoryEntry[];
@@ -27,6 +30,7 @@ export interface AiDataDirectoryOperation {
   success: boolean;
   requestId?: string;
   error?: string;
+  details?: { pid: number; ideProduct: string; operation: string };
   status?: AiDataDirectoryStatus;
 }
 
@@ -48,6 +52,15 @@ function parseObject(json: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function parseOwner(value: unknown): AiDataDirectoryOperation['details'] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const owner = value as Record<string, unknown>;
+  return typeof owner.pid === 'number' && Number.isSafeInteger(owner.pid)
+    && owner.pid > 0 && typeof owner.ideProduct === 'string' && owner.ideProduct.length <= 64
+    && typeof owner.operation === 'string' && owner.operation.length <= 32
+    ? { pid: owner.pid, ideProduct: owner.ideProduct, operation: owner.operation } : undefined;
 }
 
 export function parseAiDataDirectoryStatus(json: string): AiDataDirectoryStatus | null {
@@ -95,6 +108,9 @@ export function parseAiDataDirectoryStatus(json: string): AiDataDirectoryStatus 
     wsl: value.wsl,
     homeDirectory: value.homeDirectory,
     recovered: value.recovered,
+    error: typeof value.error === 'string' ? value.error : undefined,
+    migrationInProgress: value.migrationInProgress === true,
+    migrationOwner: parseOwner(value.migrationOwner),
     storageRoot: typeof value.storageRoot === 'string' ? value.storageRoot : undefined,
     backupCount: Math.max(0, Math.trunc(value.backupCount)),
     directories,
@@ -117,6 +133,7 @@ export function parseAiDataDirectoryOperation(json: string): AiDataDirectoryOper
     success: value.success,
     requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
     error: typeof value.error === 'string' ? value.error : undefined,
+    details: parseOwner(value.details),
     status,
   };
 }

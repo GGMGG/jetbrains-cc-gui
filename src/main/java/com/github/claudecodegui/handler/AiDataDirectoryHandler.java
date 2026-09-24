@@ -70,6 +70,10 @@ final class AiDataDirectoryHandler {
                 lastChosenTargetRoot = null;
                 JsonObject result = manager.migrate(requestedRoot);
                 pushOperationResult(result, requestId);
+            } catch (AiDataDirectoryManager.AiDataDirectoryException error) {
+                LOG.warn("Failed to migrate AI data directories: " + error.getMessage(), error);
+                pushOperation("migrate", false, errorCode(error), safeSnapshot(),
+                        readRequestIdSafely(content), error.getDetails());
             } catch (Exception error) {
                 LOG.warn("Failed to migrate AI data directories: " + error.getMessage(), error);
                 pushOperation("migrate", false, errorCode(error), safeSnapshot(), readRequestIdSafely(content));
@@ -83,6 +87,10 @@ final class AiDataDirectoryHandler {
                 JsonObject request = parseObject(content);
                 String requestId = readRequestId(request);
                 pushOperationResult(manager.cleanupBackups(), requestId);
+            } catch (AiDataDirectoryManager.AiDataDirectoryException error) {
+                LOG.warn("Failed to clean AI data directory backups: " + error.getMessage(), error);
+                pushOperation("cleanup", false, errorCode(error), safeSnapshot(),
+                        readRequestIdSafely(content), error.getDetails());
             } catch (Exception error) {
                 LOG.warn("Failed to clean AI data directory backups: " + error.getMessage(), error);
                 pushOperation("cleanup", false, errorCode(error), safeSnapshot(), readRequestIdSafely(content));
@@ -109,6 +117,11 @@ final class AiDataDirectoryHandler {
     }
 
     private void pushOperation(String operation, boolean success, String error, JsonObject status, String requestId) {
+        pushOperation(operation, success, error, status, requestId, null);
+    }
+
+    private void pushOperation(String operation, boolean success, String error, JsonObject status,
+                               String requestId, JsonObject details) {
         JsonObject result = new JsonObject();
         result.addProperty("operation", operation);
         result.addProperty("success", success);
@@ -117,6 +130,9 @@ final class AiDataDirectoryHandler {
         }
         if (status != null) {
             result.add("status", status);
+        }
+        if (details != null) {
+            result.add("details", details);
         }
         pushOperationResult(result, requestId);
     }

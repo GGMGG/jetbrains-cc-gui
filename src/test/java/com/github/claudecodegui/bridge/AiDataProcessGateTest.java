@@ -1,7 +1,12 @@
 package com.github.claudecodegui.bridge;
 
+import com.github.claudecodegui.settings.AiDataMigrationCoordinator;
+import com.github.claudecodegui.util.PlatformUtils;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
+import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -11,8 +16,48 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertThrows;
 
 public class AiDataProcessGateTest {
+
+    @Rule
+    public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @Test
+    public void unsupportedPlatformsDoNotRequireCoordinationFilesForAiStarts() throws Exception {
+        Path blockedParent = temporaryFolder.newFile("blocked-parent").toPath();
+        Path coordination = blockedParent.resolve("coordination");
+
+        for (PlatformUtils.PlatformType platform : new PlatformUtils.PlatformType[]{
+                PlatformUtils.PlatformType.MACOS, PlatformUtils.PlatformType.LINUX}) {
+            try (AiDataProcessGate.ProcessPermit ignored = AiDataProcessGate.forPlatform(platform, coordination)
+                    .acquireProcessPermit()) {
+                assertNotNull(ignored);
+            }
+        }
+        assertThrows(IllegalStateException.class,
+                () -> AiDataProcessGate.forPlatform(PlatformUtils.PlatformType.WINDOWS, coordination)
+                        .acquireProcessPermit());
+    }
+
+    @Test
+    public void processPermitsFromDifferentGatesBlockMigrationUntilBothClose() throws Exception {
+        Path coordinationDirectory = temporaryFolder.getRoot().toPath().resolve("coordination");
+        AiDataMigrationCoordinator coordinator = new AiDataMigrationCoordinator(coordinationDirectory);
+        AiDataProcessGate first = new AiDataProcessGate(coordinator);
+        AiDataProcessGate second = new AiDataProcessGate(coordinator);
+
+        try (AiDataProcessGate.ProcessPermit firstPermit = first.acquireProcessPermit()) {
+            try (AiDataProcessGate.ProcessPermit secondPermit = second.acquireProcessPermit()) {
+                assertNull(coordinator.tryAcquire("migrate"));
+            }
+            assertNull(coordinator.tryAcquire("migrate"));
+        }
+
+        try (AiDataMigrationCoordinator.LockHandle migration = coordinator.tryAcquire("migrate")) {
+            assertNotNull(migration);
+        }
+    }
 
     @Test
     public void activeProcessPreventsMigrationFromStarting() throws Exception {

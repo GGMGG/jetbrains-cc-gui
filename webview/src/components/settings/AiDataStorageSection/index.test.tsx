@@ -104,6 +104,46 @@ describe('AiDataStorageSection', () => {
     expect(mocks.cleanupBackups).not.toHaveBeenCalled();
   });
 
+  it('shows the blocking IDE and disables relocation while another IDE migrates', () => {
+    render(<AiDataStorageSection addToast={vi.fn()} />);
+    act(() => mocks.statusListeners[0]!({
+      ...status, error: 'AI_DATA_MIGRATION_ACTIVE', migrationInProgress: true,
+      migrationOwner: { pid: 42, ideProduct: 'Idea', operation: 'migrate' },
+    }));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    expect(screen.getByRole('status').textContent).toContain('settings.storage.errors.aiDataMigrationOwned');
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'settings.storage.cleanupBackups' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'common.refresh' }));
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+
+    act(() => mocks.statusListeners[0]!(status));
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('disables relocation on process contention without an exclusive owner', () => {
+    render(<AiDataStorageSection addToast={vi.fn()} />);
+    act(() => mocks.statusListeners[0]!({ ...status, error: 'AI_PROCESSES_ACTIVE' }));
+
+    expect(screen.getByRole('status').textContent).toContain('settings.storage.errors.aiProcessesActive');
+    expect((screen.getByRole('button', { name: 'settings.storage.cleanupBackups' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('clears stale status and reports an unsuccessful status recovery', () => {
+    const addToast = vi.fn();
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.operationListeners[0]!({
+      operation: 'status', success: false, error: 'AI_PROCESSES_ACTIVE',
+    }));
+
+    expect(addToast).toHaveBeenCalledWith('settings.storage.errors.aiProcessesActive', 'error');
+    expect(screen.queryByRole('button', { name: 'settings.storage.cleanupBackups' }))
+      .toBeNull();
+    expect((screen.getByRole('button', { name: 'settings.storage.migrate' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('requires confirmation before migration', () => {
     render(<AiDataStorageSection addToast={vi.fn()} />);
     act(() => mocks.statusListeners[0]!(status));
@@ -184,6 +224,23 @@ describe('AiDataStorageSection', () => {
     expect(addToast).toHaveBeenCalledWith('settings.storage.errors.targetRootRequired', 'error');
     act(() => vi.advanceTimersByTime(120_000));
     expect(addToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the blocking IDE when another instance owns migration', () => {
+    const addToast = vi.fn();
+    render(<AiDataStorageSection addToast={addToast} />);
+    act(() => mocks.statusListeners[0]!(status));
+    act(() => mocks.rootListeners[0]!('D:/AI Data'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.migrate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.storage.confirmMigration' }));
+    const requestId = mocks.migrate.mock.calls[0]![1] as string;
+    act(() => mocks.operationListeners[0]!({
+      operation: 'migrate', requestId, success: false, error: 'AI_DATA_MIGRATION_ACTIVE',
+      details: { pid: 42, ideProduct: 'Idea', operation: 'migrate' },
+    }));
+
+    expect(addToast).toHaveBeenCalledWith('settings.storage.errors.aiDataMigrationOwned', 'error');
   });
 
   it('keeps the active operation timeout when an unrelated callback arrives', () => {

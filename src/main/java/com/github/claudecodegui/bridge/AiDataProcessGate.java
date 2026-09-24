@@ -1,13 +1,19 @@
 package com.github.claudecodegui.bridge;
 
+import com.github.claudecodegui.settings.AiDataMigrationCoordinator;
+import com.github.claudecodegui.util.PlatformUtils;
+
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 /** Coordinates AI process starts with exclusive AI data directory operations. */
 public final class AiDataProcessGate {
 
-    private static final AiDataProcessGate INSTANCE = new AiDataProcessGate();
+    private static final AiDataProcessGate INSTANCE = forPlatform(
+            PlatformUtils.getPlatformType(), AiDataMigrationCoordinator.defaultCoordinationDirectory());
 
     private final ReentrantLock lock = new ReentrantLock(true);
     private final Condition stateChanged = lock.newCondition();
@@ -16,6 +22,20 @@ public final class AiDataProcessGate {
     private boolean migrationActive;
     private boolean cancellationRequested;
     private boolean cancellationAllowed;
+    private final AiDataMigrationCoordinator migrationCoordinator;
+
+    public AiDataProcessGate() {
+        this(null);
+    }
+
+    AiDataProcessGate(AiDataMigrationCoordinator migrationCoordinator) {
+        this.migrationCoordinator = migrationCoordinator;
+    }
+
+    static AiDataProcessGate forPlatform(PlatformUtils.PlatformType platform, Path coordinationDirectory) {
+        return new AiDataProcessGate(platform == PlatformUtils.PlatformType.WINDOWS
+                ? new AiDataMigrationCoordinator(coordinationDirectory) : null);
+    }
 
     public static AiDataProcessGate getInstance() {
         return INSTANCE;
@@ -25,19 +45,34 @@ public final class AiDataProcessGate {
     public ProcessPermit acquireProcessPermit() throws InterruptedException {
         lock.lockInterruptibly();
         boolean waiting = false;
+        AiDataMigrationCoordinator.ProcessLock processLock = null;
         try {
-            while (migrationActive) {
+            while (true) {
+                if (!migrationActive && migrationCoordinator != null) {
+                    try {
+                        processLock = migrationCoordinator.tryAcquireProcessLock();
+                    } catch (java.io.IOException error) {
+                        throw new IllegalStateException("AI_DATA_COORDINATION_UNAVAILABLE", error);
+                    }
+                }
+                if (!migrationActive && (migrationCoordinator == null || processLock != null)) {
+                    break;
+                }
                 if (!waiting) {
                     waiting = true;
                     waitingProcesses++;
-                    if (cancellationAllowed) {
+                    if (migrationActive && cancellationAllowed) {
                         cancellationRequested = true;
                     }
                 }
-                stateChanged.await();
+                if (migrationCoordinator == null) {
+                    stateChanged.await();
+                } else {
+                    stateChanged.await(50L, TimeUnit.MILLISECONDS);
+                }
             }
             activeProcesses++;
-            return new ProcessPermit(this);
+            return new ProcessPermit(this, processLock);
         } finally {
             if (waiting) {
                 waitingProcesses--;
@@ -87,7 +122,10 @@ public final class AiDataProcessGate {
         }
     }
 
-    private void releaseProcessPermit() {
+    private void releaseProcessPermit(AiDataMigrationCoordinator.ProcessLock processLock) {
+        if (processLock != null) {
+            processLock.close();
+        }
         lock.lock();
         try {
             activeProcesses--;
@@ -111,16 +149,18 @@ public final class AiDataProcessGate {
 
     public static final class ProcessPermit implements AutoCloseable {
         private final AiDataProcessGate owner;
+        private final AiDataMigrationCoordinator.ProcessLock processLock;
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private ProcessPermit(AiDataProcessGate owner) {
+        private ProcessPermit(AiDataProcessGate owner, AiDataMigrationCoordinator.ProcessLock processLock) {
             this.owner = owner;
+            this.processLock = processLock;
         }
 
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
-                owner.releaseProcessPermit();
+                owner.releaseProcessPermit(processLock);
             }
         }
     }

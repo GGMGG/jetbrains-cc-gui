@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -70,6 +71,20 @@ public class AiDataDirectoryManagerTest {
         assertEquals(0, manager.snapshot().getAsJsonArray("backups").size());
         assertEquals("claude-data", Files.readString(
                 home.resolve(".claude/settings.json"), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void emptyMigrationReturnsAvailableSnapshot() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("home"));
+        Path targetRoot = Files.createDirectory(root.resolve("target"));
+        AiDataDirectoryManager manager = manager(home, root.resolve("state"), null);
+
+        JsonObject result = manager.migrate(targetRoot.toString());
+
+        assertTrue(result.get("success").getAsBoolean());
+        assertFalse(result.getAsJsonObject("status").has("migrationInProgress"));
+        assertFalse(result.getAsJsonObject("status").has("error"));
     }
 
     @Test
@@ -371,6 +386,139 @@ public class AiDataDirectoryManagerTest {
             assertEquals("AI_PROCESSES_ACTIVE", error.getMessage());
             assertEquals("keep", Files.readString(home.resolve(".codex/config.toml"), StandardCharsets.UTF_8));
             assertFalse(Files.exists(state.resolve("migration-journal.json"), LinkOption.NOFOLLOW_LINKS));
+        }
+    }
+
+    @Test
+    public void rejectsMigrationOwnedByAnotherIdeWithOwnerDetails() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("owner-home"));
+        Path state = root.resolve("owner-state");
+        Path targetRoot = Files.createDirectory(root.resolve("owner-target"));
+        Path coordination = root.resolve("coordination");
+        AiDataMigrationCoordinator coordinator = new AiDataMigrationCoordinator(coordination);
+
+        try (AiDataMigrationCoordinator.LockHandle ignored = coordinator.tryAcquire("migrate")) {
+            AiDataDirectoryManager manager = new AiDataDirectoryManager(
+                    home, state, PlatformUtils.PlatformType.WINDOWS, false,
+                    AiDataDirectoryManagerTest::createDirectoryLink, new AiDataProcessGate(),
+                    AiDataDirectoryManager::deleteWritablePath, coordination);
+
+            AiDataDirectoryManager.AiDataDirectoryException error = assertThrows(
+                    AiDataDirectoryManager.AiDataDirectoryException.class,
+                    () -> manager.migrate(targetRoot.toString()));
+
+            assertEquals("AI_DATA_MIGRATION_ACTIVE", error.getMessage());
+            assertNotNull(error.getDetails());
+            assertEquals("migrate", error.getDetails().get("operation").getAsString());
+        }
+    }
+
+    @Test
+    public void readsStatusWhileAnotherProcessHasSharedAiPermit() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("status-home"));
+        Path coordination = root.resolve("coordination");
+        AiDataDirectoryManager manager = new AiDataDirectoryManager(
+                home, coordination.resolve("state"), PlatformUtils.PlatformType.WINDOWS, false,
+                AiDataDirectoryManagerTest::createDirectoryLink, new AiDataProcessGate(),
+                AiDataDirectoryManager::deleteWritablePath, coordination, root.resolve("legacy"));
+
+        try (AiDataMigrationCoordinator.ProcessLock ignored = new AiDataMigrationCoordinator(coordination)
+                .tryAcquireProcessLock()) {
+            JsonObject status = manager.snapshot();
+            assertFalse(status.has("error"));
+            assertFalse(status.has("migrationInProgress"));
+        }
+    }
+
+    @Test
+    public void doesNotAttributeSharedProcessLockToCrashedOwner() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("stale-home"));
+        Path targetRoot = Files.createDirectory(root.resolve("stale-target"));
+        Path coordination = root.resolve("coordination");
+        AiDataMigrationCoordinator coordinator = new AiDataMigrationCoordinator(coordination);
+        AiDataDirectoryManager manager = new AiDataDirectoryManager(
+                home, coordination.resolve("state"), PlatformUtils.PlatformType.WINDOWS, false,
+                AiDataDirectoryManagerTest::createDirectoryLink, new AiDataProcessGate(),
+                AiDataDirectoryManager::deleteWritablePath, coordination, root.resolve("legacy"));
+
+        try (AiDataMigrationCoordinator.ProcessLock ignored = coordinator.tryAcquireProcessLock()) {
+            Files.writeString(coordination.resolve("migration-owner.json"),
+                    "{\"protocolVersion\":1,\"ownerId\":\"stale\",\"pid\":9223372036854775807,"
+                            + "\"processStartedAt\":\"2000-01-01T00:00:00Z\"}");
+            AiDataDirectoryManager.AiDataDirectoryException error = assertThrows(
+                    AiDataDirectoryManager.AiDataDirectoryException.class,
+                    () -> manager.migrate(targetRoot.toString()));
+            assertEquals("AI_PROCESSES_ACTIVE", error.getMessage());
+            assertNull(error.getDetails());
+            assertFalse(manager.snapshot().has("error"));
+        }
+    }
+
+    @Test
+    public void checksEveryLegacyDestinationBeforeMovingJournal() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("legacy-home"));
+        Path coordination = root.resolve("coordination");
+        Path state = Files.createDirectories(coordination.resolve("state"));
+        Path legacy = Files.createDirectory(root.resolve("legacy"));
+        Files.writeString(legacy.resolve("migration-journal.json"), "{}");
+        Files.writeString(legacy.resolve("migration-backups.json"), "[]");
+        Files.writeString(state.resolve("migration-backups.json"), "[]");
+        AiDataDirectoryManager manager = new AiDataDirectoryManager(
+                home, state, PlatformUtils.PlatformType.WINDOWS, false,
+                AiDataDirectoryManagerTest::createDirectoryLink, new AiDataProcessGate(),
+                AiDataDirectoryManager::deleteWritablePath, coordination, legacy);
+
+        AiDataDirectoryManager.AiDataDirectoryException error = assertThrows(
+                AiDataDirectoryManager.AiDataDirectoryException.class, manager::snapshot);
+
+        assertEquals("LEGACY_MIGRATION_STATE_CONFLICT", error.getMessage());
+        assertTrue(Files.exists(legacy.resolve("migration-journal.json")));
+        assertFalse(Files.exists(state.resolve("migration-journal.json")));
+        assertFalse(Files.exists(state.resolve("legacy-import.json")));
+    }
+
+    @Test
+    public void resumesInterruptedLegacyImportWithoutLosingOriginalMetadata() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("resume-home"));
+        Path coordination = root.resolve("coordination");
+        Path state = Files.createDirectories(coordination.resolve("state"));
+        Path legacy = Files.createDirectory(root.resolve("legacy"));
+        Files.writeString(state.resolve("migration-backups.json"), "[]");
+        Files.writeString(legacy.resolve("migration-backups-quarantine.json"), "[]");
+        Files.writeString(state.resolve("legacy-import.json"),
+                "[\"migration-backups.json\",\"migration-backups-quarantine.json\"]");
+        AiDataDirectoryManager manager = new AiDataDirectoryManager(
+                home, state, PlatformUtils.PlatformType.WINDOWS, false,
+                AiDataDirectoryManagerTest::createDirectoryLink, new AiDataProcessGate(),
+                AiDataDirectoryManager::deleteWritablePath, coordination, legacy);
+
+        assertFalse(manager.snapshot().has("error"));
+        assertFalse(Files.exists(state.resolve("legacy-import.json")));
+        assertFalse(Files.exists(legacy.resolve("migration-backups-quarantine.json")));
+        assertEquals("[]", Files.readString(state.resolve("migration-backups-quarantine.json")));
+    }
+
+    @Test
+    public void rejectsBackupCleanupWhileAiProcessIsActive() throws Exception {
+        Path root = temporaryFolder.getRoot().toPath();
+        Path home = Files.createDirectory(root.resolve("active-cleanup-home"));
+        Path state = root.resolve("active-cleanup-state");
+        Path targetRoot = Files.createDirectory(root.resolve("active-cleanup-target"));
+        createSource(home, "codex", "config.toml", "keep");
+        AiDataProcessGate gate = new AiDataProcessGate();
+        AiDataDirectoryManager manager = manager(home, state, null, gate);
+        manager.migrate(targetRoot.toString());
+
+        try (AiDataProcessGate.ProcessPermit ignored = gate.acquireProcessPermit()) {
+            IOException error = assertThrows(IOException.class, manager::cleanupBackups);
+
+            assertEquals("AI_PROCESSES_ACTIVE", error.getMessage());
+            assertEquals(1, manager.snapshot().get("backupCount").getAsInt());
         }
     }
 
@@ -712,7 +860,8 @@ public class AiDataDirectoryManagerTest {
         Path targetRoot = Files.createDirectory(root.resolve("junction & target"));
         createSource(home, "codex", "config.toml", "safe");
         AiDataDirectoryManager manager = new AiDataDirectoryManager(
-                home, state, PlatformUtils.PlatformType.WINDOWS, false, null, new AiDataProcessGate());
+                home, state, PlatformUtils.PlatformType.WINDOWS, false, null, new AiDataProcessGate(),
+                AiDataDirectoryManager::deleteWritablePath, root.resolve("coordination"));
 
         manager.migrate(targetRoot.toString());
 
@@ -839,7 +988,7 @@ public class AiDataDirectoryManagerTest {
                 ? AiDataDirectoryManagerTest::createDirectoryLink : creator;
         return new AiDataDirectoryManager(
                 home, state, PlatformUtils.PlatformType.WINDOWS, false,
-                effectiveCreator, processGate, backupPathDeleter);
+                effectiveCreator, processGate, backupPathDeleter, home.getParent().resolve("coordination"));
     }
 
     private static void createSource(Path home, String id, String fileName, String content) throws IOException {
