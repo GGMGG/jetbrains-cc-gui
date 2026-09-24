@@ -282,15 +282,14 @@ public class ProjectConfigHandler {
     public void handleSetHistoryLoadTimeout(String content) {
         try {
             JsonObject json = gson.fromJson(content, JsonObject.class);
-            int seconds = CodemossSettingsService.DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS;
-            if (json != null && json.has("historyLoadTimeoutSeconds")) {
-                JsonElement element = json.get("historyLoadTimeoutSeconds");
-                if (element != null && element.isJsonPrimitive()
-                        && element.getAsJsonPrimitive().isNumber()) {
-                    seconds = element.getAsInt();
-                }
+            JsonElement element = json != null ? json.get("historyLoadTimeoutSeconds") : null;
+            if (element == null || !element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
+                LOG.warn("[ProjectConfigHandler] Ignoring invalid history load timeout payload");
+                pushJson("window.updateHistoryLoadTimeout",
+                        jsonOf("historyLoadTimeoutSeconds", settingsService.getHistoryLoadTimeoutSeconds()));
+                return;
             }
-            settingsService.setHistoryLoadTimeoutSeconds(seconds);
+            settingsService.setHistoryLoadTimeoutSeconds(element.getAsInt());
             pushJson("window.updateHistoryLoadTimeout",
                     jsonOf("historyLoadTimeoutSeconds", settingsService.getHistoryLoadTimeoutSeconds()));
         } catch (Exception e) {

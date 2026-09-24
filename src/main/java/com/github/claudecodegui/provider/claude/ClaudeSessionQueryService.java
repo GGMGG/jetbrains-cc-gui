@@ -286,7 +286,10 @@ class ClaudeSessionQueryService {
             }
         }
 
-        String outputStr = output.toString().trim();
+        String outputStr;
+        synchronized (output) {
+            outputStr = output.toString().trim();
+        }
         log.debug("[" + logPrefix + "] Raw output length: " + outputStr.length());
         if (log.isDebugEnabled()) {
             log.debug("[" + logPrefix + "] Raw output (first 300 chars): "

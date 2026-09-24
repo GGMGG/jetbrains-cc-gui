@@ -2,6 +2,7 @@ package com.github.claudecodegui.provider.kimi;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.provider.common.HistoryPathMatcher;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -22,6 +23,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Reads Kimi Code CLI session history from {@code ~/.kimi-code/sessions/}.
@@ -262,8 +265,8 @@ public class KimiHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
-                                               java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                               BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
             LOG.warn("[KimiHistoryReader] Session dir not found for id=" + sessionId + " cwd=" + cwd);
@@ -303,8 +306,8 @@ public class KimiHistoryReader {
     }
 
     private Path resolveSessionDir(String sessionId, String cwd,
-                                   java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                   BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return null;
         }
@@ -315,7 +318,7 @@ public class KimiHistoryReader {
         }
         try (DirectoryStream<Path> workDirs = Files.newDirectoryStream(sessionsRoot)) {
             for (Path workDir : workDirs) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 if (!Files.isDirectory(workDir)) {
                     continue;
                 }
@@ -327,14 +330,14 @@ public class KimiHistoryReader {
                     Path statePath = candidate.resolve("state.json");
                     if (Files.isRegularFile(statePath)) {
                         try {
-                            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                            HistoryCancellation.check(cancellation);
                             JsonObject state = JsonParser.parseString(
                                     Files.readString(statePath, StandardCharsets.UTF_8)).getAsJsonObject();
                             String workDirPath = text(state, "workDir");
                             if (workDirPath != null && pathsMatch(workDirPath, cwd)) {
                                 return candidate;
                             }
-                        } catch (java.util.concurrent.CancellationException e) {
+                        } catch (CancellationException e) {
                             throw e;
                         } catch (Exception ignored) {
                         }
@@ -353,13 +356,13 @@ public class KimiHistoryReader {
     }
 
     private List<JsonObject> parseWireToMessages(Path wire,
-                                                 java.util.function.BooleanSupplier cancellation) throws IOException {
+                                                 BooleanSupplier cancellation) throws IOException {
         List<JsonObject> messages = new ArrayList<>();
         int counter = 0;
         try (BufferedReader reader = Files.newBufferedReader(wire, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 line = line.trim();
                 if (line.isEmpty()) {
                     continue;

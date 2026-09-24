@@ -133,6 +133,31 @@ public class SessionMessageOrchestratorTest {
     }
 
     @Test
+    public void invisibleHistoryRestoreDoesNotTakeOwnershipFromUserLoad() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-restore");
+        state.setCwd("/workspace");
+        Object userLoadOwner = new Object();
+        state.claimLoading(userLoadOwner);
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                new SessionCallbackFacade(null),
+                historyAccess,
+                (usedTokens, maxTokens) -> { },
+                0,
+                0);
+
+        orchestrator.loadFromServer(() -> false).join();
+
+        assertTrue(state.isLoading());
+        assertTrue(state.ownsLoading(userLoadOwner));
+        assertEquals(0, historyAccess.providerHistoryRequests.get());
+    }
+
+    @Test
     public void loadFromServerClearsSessionIdWhenHistoryIsMissing() {
         SessionState state = new SessionState();
         state.setProvider("claude");

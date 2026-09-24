@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 /**
  * PI CLI bridge.
@@ -46,20 +47,8 @@ public class PiCliBridge extends MarkerCliBridge {
 
     @Override
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
-                                               java.util.function.BooleanSupplier cancellation) {
-        try {
-            if (cancellation.getAsBoolean()) {
-                throw new java.util.concurrent.CancellationException("History loading was cancelled");
-            }
-            List<JsonObject> messages = new PiHistoryReader().getSessionMessages(sessionId, cwd, cancellation);
-            if (cancellation.getAsBoolean()) {
-                throw new java.util.concurrent.CancellationException("History loading was cancelled");
-            }
-            return messages;
-        } catch (java.util.concurrent.CancellationException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to load PI session history", e);
-        }
+                                               BooleanSupplier cancellation) {
+        return getSessionMessagesWithCancellation(cancellation,
+                token -> new PiHistoryReader().getSessionMessages(sessionId, cwd, token), "PI");
     }
 }

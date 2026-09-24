@@ -2,6 +2,7 @@ package com.github.claudecodegui.provider.omp;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.provider.common.HistoryPathMatcher;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -22,6 +23,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Reads OMP CLI session history from {@code ~/.omp/agent/sessions/}.
@@ -272,8 +275,8 @@ public class OmpHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
-                                               java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                               BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         Path file = resolveSessionFile(sessionId, cwd, cancellation);
         if (file == null || !Files.isRegularFile(file)) {
             LOG.warn("[OmpHistoryReader] Session file not found for id=" + sessionId + " cwd=" + cwd);
@@ -309,8 +312,8 @@ public class OmpHistoryReader {
     }
 
     private Path resolveSessionFile(String sessionId, String cwd,
-                                    java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                    BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return null;
         }
@@ -322,13 +325,13 @@ public class OmpHistoryReader {
         }
         try (DirectoryStream<Path> cwdDirs = Files.newDirectoryStream(sessionsRoot)) {
             for (Path cwdDir : cwdDirs) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 if (!Files.isDirectory(cwdDir)) {
                     continue;
                 }
                 try (DirectoryStream<Path> files = Files.newDirectoryStream(cwdDir, "*.jsonl")) {
                     for (Path file : files) {
-                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                        HistoryCancellation.check(cancellation);
                         SessionHeader header = readSessionHeader(file, cancellation);
                         if (header == null) {
                             header = headerFromFileName(file);
@@ -361,13 +364,13 @@ public class OmpHistoryReader {
 
     private static SessionHeader readSessionHeader(
             Path file,
-            java.util.function.BooleanSupplier cancellation
+            BooleanSupplier cancellation
     ) {
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             int scanned = 0;
             while (scanned < MAX_HEADER_SCAN_LINES && (line = reader.readLine()) != null) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 scanned++;
                 line = line.trim();
                 if (line.isEmpty()) {
@@ -381,7 +384,7 @@ public class OmpHistoryReader {
                 } catch (Exception ignored) {
                 }
             }
-        } catch (java.util.concurrent.CancellationException e) {
+        } catch (CancellationException e) {
             throw e;
         } catch (Exception ignored) {
         }
@@ -393,13 +396,13 @@ public class OmpHistoryReader {
     }
 
     private List<JsonObject> parseMessages(Path file,
-                                           java.util.function.BooleanSupplier cancellation) throws IOException {
+                                           BooleanSupplier cancellation) throws IOException {
         List<JsonObject> messages = new ArrayList<>();
         int counter = 0;
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 line = line.trim();
                 if (line.isEmpty()) {
                     continue;

@@ -36,6 +36,7 @@ describe('useSettingsWindowCallbacks', () => {
     setIdeTheme: vi.fn(),
     setLocalStreamingEnabled: vi.fn(),
     setLoadHistoryOnStartup: vi.fn(),
+    setHistoryLoadTimeoutSeconds: vi.fn(),
     setCodexSandboxMode: vi.fn(),
     setLocalSendShortcut: vi.fn(),
     setLoading: vi.fn(),
@@ -156,6 +157,16 @@ describe('useSettingsWindowCallbacks', () => {
     window.updateLoadHistoryOnStartup?.(JSON.stringify({ loadHistoryOnStartup: true }));
 
     expect(deps.setLoadHistoryOnStartup).toHaveBeenCalledWith(true);
+  });
+
+  it('clamps the history load timeout received from the Java callback', () => {
+    const deps = createDeps();
+
+    renderHook(() => useSettingsWindowCallbacks(deps));
+
+    window.updateHistoryLoadTimeout?.(JSON.stringify({ historyLoadTimeoutSeconds: 999 }));
+
+    expect(deps.setHistoryLoadTimeoutSeconds).toHaveBeenCalledWith(120);
   });
 
   it('registers commit AI callback and updates only commit AI state from backend payload', () => {

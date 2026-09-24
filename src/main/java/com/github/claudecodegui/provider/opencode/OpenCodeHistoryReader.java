@@ -2,6 +2,7 @@ package com.github.claudecodegui.provider.opencode;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.provider.common.HistoryPathMatcher;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -27,6 +28,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 /**
@@ -346,7 +349,7 @@ public class OpenCodeHistoryReader {
 
     private List<JsonObject> getSessionMessagesFromDatabase(
             String sessionId,
-            java.util.function.BooleanSupplier cancellation
+            BooleanSupplier cancellation
     ) {
         List<JsonObject> out = new ArrayList<>();
         if (databasePath == null || !Files.isRegularFile(databasePath) || !isSafeSessionId(sessionId)) {
@@ -367,7 +370,7 @@ public class OpenCodeHistoryReader {
                 try (ResultSet rs = ps.executeQuery()) {
                     int counter = 0;
                     while (rs.next()) {
-                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                        HistoryCancellation.check(cancellation);
                         String messageId = rs.getString("id");
                         JsonObject msg = parseObject(rs.getString("data"));
                         if (msg == null) {
@@ -399,7 +402,7 @@ public class OpenCodeHistoryReader {
                     }
                 }
             }
-        } catch (java.util.concurrent.CancellationException e) {
+        } catch (CancellationException e) {
             throw e;
         } catch (Exception e) {
             LOG.warn("[OpenCodeHistoryReader] SQLite messages failed for " + sessionId + ": " + e.getMessage());
@@ -412,7 +415,7 @@ public class OpenCodeHistoryReader {
     }
 
     private List<JsonObject> loadPartsFromDb(Connection conn, String messageId,
-                                             java.util.function.BooleanSupplier cancellation) throws SQLException {
+                                             BooleanSupplier cancellation) throws SQLException {
         List<JsonObject> parts = new ArrayList<>();
         if (messageId == null || messageId.isBlank() || !tableExists(conn, "part")) {
             return parts;
@@ -427,7 +430,7 @@ public class OpenCodeHistoryReader {
             ps.setString(1, messageId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                    HistoryCancellation.check(cancellation);
                     JsonObject part = parseObject(rs.getString("data"));
                     if (part != null) {
                         parts.add(part);
@@ -641,8 +644,8 @@ public class OpenCodeHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
-                                               java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                               BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return List.of();
         }
@@ -656,7 +659,7 @@ public class OpenCodeHistoryReader {
 
     private List<JsonObject> getSessionMessagesFromJsonStorage(
             String sessionId,
-            java.util.function.BooleanSupplier cancellation
+            BooleanSupplier cancellation
     ) throws IOException {
         Path msgDir = storageRoot.resolve("message").resolve(sessionId.trim());
         if (!Files.isDirectory(msgDir)) {
@@ -667,7 +670,7 @@ public class OpenCodeHistoryReader {
         List<Path> files = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(msgDir, "*.json")) {
             for (Path p : stream) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 files.add(p);
             }
         }
@@ -678,7 +681,7 @@ public class OpenCodeHistoryReader {
         List<JsonObject> out = new ArrayList<>();
         int counter = 0;
         for (Path file : files) {
-            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+            HistoryCancellation.check(cancellation);
             JsonObject msg;
             try {
                 msg = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();

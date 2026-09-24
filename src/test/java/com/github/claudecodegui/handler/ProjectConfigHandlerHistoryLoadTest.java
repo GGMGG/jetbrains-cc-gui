@@ -52,6 +52,34 @@ public class ProjectConfigHandlerHistoryLoadTest {
         assertTrue(startup.get("loadHistoryOnStartup").getAsBoolean());
     }
 
+    @Test
+    public void invalidHistoryLoadTimeoutDoesNotResetTheStoredValue() {
+        FakeSettingsService settingsService = new FakeSettingsService();
+        settingsService.timeoutSeconds = 45;
+        AtomicReference<String> payload = new AtomicReference<>();
+        CountDownLatch callbackLatch = new CountDownLatch(1);
+        ProjectConfigHandler handler = new ProjectConfigHandler(new HandlerContext(
+                null, null, null, settingsService, new HandlerContext.JsCallback() {
+                    @Override
+                    public void callJavaScript(String functionName, String... args) {
+                        payload.set(args[0]);
+                        callbackLatch.countDown();
+                    }
+
+                    @Override
+                    public String escapeJs(String str) {
+                        return str;
+                    }
+                }));
+
+        handler.handleSetHistoryLoadTimeout("{}");
+        awaitCallback(callbackLatch);
+
+        assertEquals(45, settingsService.timeoutSeconds);
+        assertEquals(45, JsonParser.parseString(payload.get()).getAsJsonObject()
+                .get("historyLoadTimeoutSeconds").getAsInt());
+    }
+
     private void awaitCallback(CountDownLatch callbackLatch) {
         try {
             assertTrue("Expected ProjectConfigHandler callback", callbackLatch.await(2, TimeUnit.SECONDS));

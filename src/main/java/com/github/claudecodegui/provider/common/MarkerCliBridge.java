@@ -145,14 +145,29 @@ public abstract class MarkerCliBridge extends BaseSDKBridge {
 
     /** Bounded history-read contract used by restored-session loading. */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
-        if (cancellation.getAsBoolean()) {
-            throw new CancellationException("History loading was cancelled");
-        }
+        HistoryCancellation.check(cancellation);
         List<JsonObject> messages = getSessionMessages(sessionId, cwd);
-        if (cancellation.getAsBoolean()) {
-            throw new CancellationException("History loading was cancelled");
-        }
+        HistoryCancellation.check(cancellation);
         return messages;
+    }
+
+    protected List<JsonObject> getSessionMessagesWithCancellation(BooleanSupplier cancellation,
+            HistoryMessageLoader loader, String providerName) {
+        try {
+            HistoryCancellation.check(cancellation);
+            List<JsonObject> messages = loader.load(cancellation);
+            HistoryCancellation.check(cancellation);
+            return messages;
+        } catch (CancellationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load " + providerName + " session history", e);
+        }
+    }
+
+    @FunctionalInterface
+    protected interface HistoryMessageLoader {
+        List<JsonObject> load(BooleanSupplier cancellation) throws Exception;
     }
 
     /**

@@ -2,6 +2,7 @@ package com.github.claudecodegui.provider.minimax;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.provider.common.HistoryPathMatcher;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -22,6 +23,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Reads MiniMax Code (mcode) session history from its on-disk v2 layout.
@@ -258,8 +261,8 @@ public class MiniMaxHistoryReader {
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
-                                               java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                               BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
             return new ArrayList<>();
@@ -277,7 +280,7 @@ public class MiniMaxHistoryReader {
                         && snapshot.getAsJsonArray("displayMessages").size() > 0) {
                     return buildMessages(snapshot.getAsJsonArray("displayMessages"), cancellation);
                 }
-            } catch (java.util.concurrent.CancellationException e) {
+            } catch (CancellationException e) {
                 throw e;
             } catch (Exception e) {
                 LOG.warn("[MiniMaxHistoryReader] Failed to parse snapshot.json, falling back to display.jsonl: "
@@ -298,8 +301,8 @@ public class MiniMaxHistoryReader {
     }
 
     private Path resolveSessionDir(String sessionId, String cwd,
-                                   java.util.function.BooleanSupplier cancellation) throws IOException {
-        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                   BooleanSupplier cancellation) throws IOException {
+        HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
             return null;
         }
@@ -312,25 +315,25 @@ public class MiniMaxHistoryReader {
         // inside snapshot.json instead of guessing the dir naming scheme.
         try (DirectoryStream<Path> years = Files.newDirectoryStream(sessionsRoot)) {
             for (Path year : years) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 if (!Files.isDirectory(year)) {
                     continue;
                 }
                 try (DirectoryStream<Path> months = Files.newDirectoryStream(year)) {
                     for (Path month : months) {
-                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                        HistoryCancellation.check(cancellation);
                         if (!Files.isDirectory(month)) {
                             continue;
                         }
                         try (DirectoryStream<Path> days = Files.newDirectoryStream(month)) {
                             for (Path day : days) {
-                                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                HistoryCancellation.check(cancellation);
                                 if (!Files.isDirectory(day)) {
                                     continue;
                                 }
                                 try (DirectoryStream<Path> sessionDirs = Files.newDirectoryStream(day)) {
                                     for (Path sessionDir : sessionDirs) {
-                                        com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                                        HistoryCancellation.check(cancellation);
                                         if (!Files.isDirectory(sessionDir)) {
                                             continue;
                                         }
@@ -371,10 +374,10 @@ public class MiniMaxHistoryReader {
 
     private static JsonObject readSessionRecord(
             Path sessionDir,
-            java.util.function.BooleanSupplier cancellation
+            BooleanSupplier cancellation
     ) {
         try {
-            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+            HistoryCancellation.check(cancellation);
             Path snapshotPath = sessionDir.resolve("snapshot.json");
             if (!Files.isRegularFile(snapshotPath)) {
                 return null;
@@ -384,7 +387,7 @@ public class MiniMaxHistoryReader {
                     .getAsJsonObject();
             return snapshot.has("record") && snapshot.get("record").isJsonObject()
                     ? snapshot.getAsJsonObject("record") : null;
-        } catch (java.util.concurrent.CancellationException e) {
+        } catch (CancellationException e) {
             throw e;
         } catch (Exception e) {
             return null;
@@ -401,12 +404,12 @@ public class MiniMaxHistoryReader {
 
     private static List<JsonObject> buildMessages(
             JsonArray displayMessages,
-            java.util.function.BooleanSupplier cancellation
+            BooleanSupplier cancellation
     ) {
         List<JsonObject> messages = new ArrayList<>();
         int counter = 0;
         for (JsonElement el : displayMessages) {
-            com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+            HistoryCancellation.check(cancellation);
             if (!el.isJsonObject()) {
                 continue;
             }
@@ -473,7 +476,7 @@ public class MiniMaxHistoryReader {
 
     private List<JsonObject> parseDisplayJsonl(
             Path displayPath,
-            java.util.function.BooleanSupplier cancellation
+            BooleanSupplier cancellation
     ) throws IOException {
         // LinkedHashMap: the stable timestamp sort below keeps first-seen
         // (file) order for messages sharing a timestamp.
@@ -482,7 +485,7 @@ public class MiniMaxHistoryReader {
         try (java.io.BufferedReader reader = Files.newBufferedReader(displayPath, StandardCharsets.UTF_8)) {
             String rawLine;
             while ((rawLine = reader.readLine()) != null) {
-                com.github.claudecodegui.provider.common.HistoryCancellation.check(cancellation);
+                HistoryCancellation.check(cancellation);
                 String line = rawLine.trim();
                 if (line.isEmpty()) {
                     continue;

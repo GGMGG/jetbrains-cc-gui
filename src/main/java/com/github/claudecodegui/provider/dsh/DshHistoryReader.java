@@ -3,6 +3,7 @@ package com.github.claudecodegui.provider.dsh;
 import com.github.claudecodegui.bridge.BridgeDirectoryResolver;
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.startup.BridgePreloader;
 import com.google.gson.Gson;
@@ -207,13 +208,23 @@ public class DshHistoryReader {
             readerThread.join(2000L);
             stderrDrainer.join(2000L);
 
-            JsonObject payload = extractJsonObject(output.toString());
+            String outputText;
+            synchronized (output) {
+                outputText = output.toString();
+            }
+            JsonObject payload = extractJsonObject(outputText);
             if (payload == null) {
                 LOG.warn("[DSH] no JSON output from " + command + stderrSuffix(stderrTail));
             }
             return payload;
         } catch (CancellationException e) {
             throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            CancellationException cancellationException = new CancellationException(
+                    "History loading was interrupted");
+            cancellationException.initCause(e);
+            throw cancellationException;
         } catch (Exception e) {
             LOG.warn("[DSH] " + command + " failed: " + e.getMessage());
             return null;
@@ -225,9 +236,7 @@ public class DshHistoryReader {
     }
 
     private static void checkCancellation(BooleanSupplier cancellation) {
-        if (cancellation.getAsBoolean()) {
-            throw new CancellationException("History loading was cancelled");
-        }
+        HistoryCancellation.check(cancellation);
     }
 
     /**
