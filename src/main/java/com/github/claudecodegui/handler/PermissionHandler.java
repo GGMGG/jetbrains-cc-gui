@@ -264,6 +264,17 @@ public class PermissionHandler extends BaseMessageHandler {
         this.askUserQuestionSoundNotifier = askUserQuestionSoundNotifier;
     }
 
+    /** Returns the provider interaction currently waiting for a Webview response, if any. */
+    public String getClawBotPendingInteractionPhase() {
+        if (!pendingAskUserQuestionRequests.isEmpty()) {
+            return "WAITING_USER";
+        }
+        if (!pendingPlanApprovalRequests.isEmpty()) {
+            return "WAITING_PLAN_APPROVAL";
+        }
+        return "";
+    }
+
     long getDialogTimeoutSeconds() {
         CodemossSettingsService settingsService = context.getSettingsService();
         if (settingsService == null) {

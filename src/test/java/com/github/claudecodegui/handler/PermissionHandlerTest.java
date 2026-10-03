@@ -56,6 +56,17 @@ public class PermissionHandlerTest {
     }
 
     @Test
+    public void reportsPendingProviderInteractionForClawBotProgress() throws Exception {
+        assertEquals("", handler.getClawBotPendingInteractionPhase());
+
+        injectPlanApprovalFuture("plan-progress", new CompletableFuture<>());
+        assertEquals("WAITING_PLAN_APPROVAL", handler.getClawBotPendingInteractionPhase());
+
+        injectAskUserFuture("question-progress", new CompletableFuture<>());
+        assertEquals("WAITING_USER", handler.getClawBotPendingInteractionPhase());
+    }
+
+    @Test
     public void handleReturnsFalseForUnknownType() {
         // The IPC bridge fans messages to every registered handler; returning false lets the
         // bridge try the next one. A false return value is therefore part of the contract, not
@@ -496,6 +507,55 @@ public class PermissionHandlerTest {
         assertEquals(com.github.claudecodegui.permission.PermissionRequest.PermissionResult.Behavior.ALLOW,
                 current.getResultFuture().join().getBehavior());
         assertTrue(manager.createRequest("next", "Bash", Map.of(), null, null).getResultFuture().isDone());
+    }
+
+    @Test
+    public void remotePermissionDecisionCannotBeOverwrittenByLateIdeDecision() {
+        com.github.claudecodegui.permission.PermissionManager manager = new com.github.claudecodegui.permission.PermissionManager();
+        com.github.claudecodegui.permission.PermissionRequest request =
+                manager.createRequest("remote-approval", "Bash", Map.of(), null, null);
+
+        assertTrue(manager.tryHandleRemotePermissionDecision(request, true, null));
+        manager.handlePermissionDecision(request, false, false, "Late IDE denial");
+
+        assertEquals(com.github.claudecodegui.permission.PermissionRequest.PermissionResult.Behavior.ALLOW,
+                request.getResultFuture().join().getBehavior());
+    }
+
+    @Test
+    public void concurrentRemoteAndIdePermissionDecisionsResolveExactlyOnce() throws Exception {
+        com.github.claudecodegui.permission.PermissionManager manager = new com.github.claudecodegui.permission.PermissionManager();
+        com.github.claudecodegui.permission.PermissionRequest request =
+                manager.createRequest("remote-race", "Bash", Map.of(), null, null);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.Future<?> ideDecision = executor.submit(() -> {
+                awaitLatch(start);
+                manager.handlePermissionDecision(request, false, false, "IDE denial");
+            });
+            java.util.concurrent.Future<Boolean> remoteDecision = executor.submit(() -> {
+                awaitLatch(start);
+                return manager.tryHandleRemotePermissionDecision(request, true, null);
+            });
+            start.countDown();
+            ideDecision.get(2, TimeUnit.SECONDS);
+            remoteDecision.get(2, TimeUnit.SECONDS);
+
+            assertTrue(request.getResultFuture().isDone());
+            assertTrue(request.isResolved());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private void awaitLatch(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting to start decision race", exception);
+        }
     }
 
     @Test
