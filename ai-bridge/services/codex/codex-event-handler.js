@@ -155,6 +155,15 @@ function handleFunctionCallPayload(payload, state) {
   return true;
 }
 
+async function bridgeAsyncUserInput(payload, state, config) {
+  if (typeof config.onAsyncUserInput !== 'function' || payload?.type !== 'function_call') return;
+  if (!['request_user_input_async', 'functions.request_user_input_async'].includes(payload.name)) return;
+  const callId = getResponseItemCallId(payload);
+  if (!callId || state.bridgedAsyncUserInputIds.has(callId)) return;
+  state.bridgedAsyncUserInputIds.add(callId);
+  await config.onAsyncUserInput(parseFunctionCallArguments(payload), callId);
+}
+
 function handleFunctionCallOutputPayload(payload, state) {
   if (!payload || payload.type !== 'function_call_output') return false;
   let toolUseId = typeof payload.call_id === 'string' ? payload.call_id : '';
@@ -345,6 +354,7 @@ export function createInitialEventState(emitMessage) {
     processedCustomPlanCallIds: new Set(),
     pendingCustomPlanToolUseIds: new Map(),
     processedSessionFunctionCallIds: new Set(),
+    bridgedAsyncUserInputIds: new Set(),
     processedSessionFunctionOutputIds: new Set(),
     processedSessionCustomToolCallIds: new Set(),
     processedSessionCustomToolOutputIds: new Set(),
@@ -652,6 +662,7 @@ async function replayMissingFunctionCallsFromSession(state, config) {
       if (handleFunctionCallPayload(payload, state)) {
         toolUses += 1;
       }
+      await bridgeAsyncUserInput(payload, state, config);
       continue;
     }
 
@@ -816,7 +827,8 @@ function emitDeniedCommandToolResultOnce(state, toolUseId, messageText = 'Comman
  */
 export function shouldBridgeCodexApproval(config) {
   const approvalPolicy = config?.threadOptions?.approvalPolicy;
-  return config?.normalizedPermissionMode !== 'auto'
+  return !config?.appServerTransport
+    && config?.normalizedPermissionMode !== 'auto'
     && typeof approvalPolicy === 'string'
     && approvalPolicy !== 'never';
 }
@@ -950,6 +962,16 @@ function handleAgentMessage(item, state, { emitSnapshot = true } = {}) {
   }
 }
 
+function handleAgentMessageDelta(itemId, delta, state) {
+  if (typeof delta !== 'string' || delta.length === 0) return;
+  const stableId = typeof itemId === 'string' && itemId ? itemId : 'agent_message';
+  const nextText = (state.assistantTextCache.get(stableId) ?? '') + delta;
+  state.assistantTextCache.set(stableId, nextText);
+  state.assistantText += delta;
+  state.finalResponse = nextText;
+  emitContentDelta(delta);
+}
+
 function handleCommandExecution(item, state) {
   const toolUseId = ensureToolUseId(state, 'completed', item);
   const command = extractCommand(item);
@@ -984,7 +1006,7 @@ async function handleFileChange(item, state, config) {
 
   const shouldBridgeApproval = !isError &&
     !isAutoEditPermissionMode(config.normalizedPermissionMode) &&
-    shouldBridgeCodexApproval(config);
+    !config.appServerTransport && shouldBridgeCodexApproval(config);
   if (shouldBridgeApproval && patchBatches.length > 0) {
     deniedCallIds = await requestPatchApprovalsViaBridge(patchBatches);
     if (deniedCallIds.size > 0) {
@@ -1042,8 +1064,13 @@ function handleMcpToolCall(item, state) {
  */
 export async function processCodexEventStream(events, state, config) {
   let rawEventIndex = 0;
+  let streamFailed = false;
   try {
     for await (const event of events) {
+      if (event.type === 'session.poll') {
+        await replayMissingFunctionCallsDuringStream(state, config);
+        continue;
+      }
       rawEventIndex += 1;
       const rawEventJson = stringifyRawEvent(event);
       if (rawEventJson && DEBUG_LEVEL >= 5) console.log(`[RAW_EVENT][${rawEventIndex}]`, rawEventJson);
@@ -1116,6 +1143,11 @@ export async function processCodexEventStream(events, state, config) {
         if (event.item && event.item.type === 'agent_message') {
           handleAgentMessage(event.item, state, { emitSnapshot: false });
         }
+        await replayMissingFunctionCallsDuringStream(state, config);
+        break;
+
+      case 'item.agent_message_delta':
+        handleAgentMessageDelta(event.item_id, event.delta, state);
         await replayMissingFunctionCallsDuringStream(state, config);
         break;
 
@@ -1207,6 +1239,7 @@ export async function processCodexEventStream(events, state, config) {
             ? payload.call_id
             : null;
           if (handleFunctionCallPayload(payload, state)) {
+            await bridgeAsyncUserInput(payload, state, config);
             if (payloadCallId) {
               state.processedSessionFunctionCallIds.add(payloadCallId);
             }
@@ -1239,6 +1272,7 @@ export async function processCodexEventStream(events, state, config) {
       }
     }
   } catch (streamError) {
+    streamFailed = true;
     const streamErrorMessage = streamError?.message || String(streamError);
     if (state.commandApprovalAbortRequested && (
       streamErrorMessage === COMMAND_DENIED_ABORT_ERROR ||
@@ -1252,7 +1286,7 @@ export async function processCodexEventStream(events, state, config) {
     }
   } finally {
     try {
-      await replayMissingFunctionCallsDuringStream(state, config);
+      await replayMissingFunctionCallsDuringStream(state, streamFailed ? { ...config, onAsyncUserInput: undefined } : config);
     } finally {
       if (state.sessionReplayReader) await state.sessionReplayReader.dispose();
       state.sessionReplayReader = null;
