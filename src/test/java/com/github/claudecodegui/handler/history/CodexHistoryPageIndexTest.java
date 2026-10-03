@@ -148,6 +148,23 @@ public class CodexHistoryPageIndexTest {
     }
 
     @Test
+    public void sameSizeTailRewriteWithRestoredMtimeRebuildsIndex() throws Exception {
+        String prefix = user("prefix".repeat(2000));
+        Files.writeString(session, prefix + user("old"));
+        index.read(reader, "fixture", null, 1, () -> true);
+        var modified = Files.getLastModifiedTime(session);
+        Files.writeString(session, prefix + user("new"));
+        Files.setLastModifiedTime(session, modified);
+
+        var page = index.read(reader, "fixture", null, 1, () -> true);
+        assertEquals("new", page.messages.get(0).get("content").getAsString());
+        assertEquals(2, page.rawRecordCount);
+        var repeated = index.read(reader, "fixture", null, 1, () -> true);
+        assertEquals("new", repeated.messages.get(0).get("content").getAsString());
+        assertEquals(0, repeated.rawRecordCount);
+    }
+
+    @Test
     public void incompleteTrailingJsonIsReplayedWhenCompleted() throws Exception {
         String second = assistant("中文😀");
         Files.writeString(session, user("first") + second.substring(0, second.length() - 6));
