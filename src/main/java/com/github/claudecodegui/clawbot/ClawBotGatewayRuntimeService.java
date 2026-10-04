@@ -900,7 +900,6 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     }
                 }
                 markExecutionCompleted(messageId);
-                outboundEventStates.putIfAbsent(eventId, "PENDING");
                 try {
                     sendChannelText(message.fromUserId(), message.contextToken(), text,
                             eventId, true);
@@ -1028,7 +1027,6 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     }
                 }
                 markExecutionCompleted(messageId);
-                outboundEventStates.putIfAbsent(eventId, "PENDING");
                 try {
                     sendChannelText(command.fromUserId(), command.contextToken(), text,
                             eventId, true);
