@@ -270,6 +270,33 @@ test('sendText accepts explicit success and rejects business errors without retr
   });
 });
 
+test('sendText retries explicit rate limits with exponential backoff', async () => {
+  let calls = 0;
+  const instance = client(async () => {
+    calls += 1;
+    return calls < 3 ? jsonResponse({ ret: -2, errcode: -2 }) : jsonResponse({ ret: 0 });
+  }, { rateLimitBackoffBaseMs: 1 });
+
+  const result = await instance.sendText({
+    botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls, 3);
+});
+
+test('sendText does not retry stale-context style unknown errors', async () => {
+  let calls = 0;
+  const instance = client(async () => {
+    calls += 1;
+    return jsonResponse({ ret: -2, errcode: -2, errmsg: 'unknown error' });
+  }, { rateLimitBackoffBaseMs: 1 });
+
+  await assert.rejects(instance.sendText({
+    botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
+  }), { code: 'ILINK_SEND_REJECTED', ret: -2, errorCode: -2 });
+  assert.equal(calls, 1);
+});
+
 test('sendText accepts successful responses with omitted zero-valued status fields', async () => {
   for (const payload of [{}, { message_id: '18446744073709551615' }, { errcode: 0 }, { errmsg: '' }]) {
     let calls = 0;

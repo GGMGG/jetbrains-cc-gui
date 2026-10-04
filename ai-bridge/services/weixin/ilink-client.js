@@ -17,6 +17,10 @@ import {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_GET_UPDATES_TIMEOUT_MS = 35_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const DEFAULT_SEND_RETRIES = 4;
+const DEFAULT_RATE_LIMIT_BACKOFF_BASE_MS = 1_000;
+const MAX_RATE_LIMIT_BACKOFF_MS = 60_000;
+const RATE_LIMIT_ERROR_CODE = -2;
 
 export class IlinkClientError extends Error {
   constructor(code, { httpStatus, ret, errorCode, errorMessage } = {}) {
@@ -40,6 +44,8 @@ export class IlinkClient {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     getUpdatesTimeoutMs = DEFAULT_GET_UPDATES_TIMEOUT_MS,
     maxResponseBytes = MAX_RESPONSE_BYTES,
+    sendRetries = DEFAULT_SEND_RETRIES,
+    rateLimitBackoffBaseMs = DEFAULT_RATE_LIMIT_BACKOFF_BASE_MS,
     fetchImpl = globalThis.fetch,
     wechatUinFactory = () => randomInt(0, 0x1_0000_0000),
   } = {}) {
@@ -51,6 +57,13 @@ export class IlinkClient {
     }
     if (!Number.isInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > MAX_RESPONSE_BYTES) {
       throw new RangeError('iLink response size limit is invalid');
+    }
+    if (!Number.isInteger(sendRetries) || sendRetries < 0 || sendRetries > 8) {
+      throw new RangeError('iLink send retries must be between 0 and 8');
+    }
+    if (!Number.isInteger(rateLimitBackoffBaseMs)
+      || rateLimitBackoffBaseMs < 1 || rateLimitBackoffBaseMs > MAX_RATE_LIMIT_BACKOFF_MS) {
+      throw new RangeError('iLink rate-limit backoff must be between 1 and 60000 milliseconds');
     }
     if (typeof fetchImpl !== 'function') {
       throw new TypeError('Fetch API is required');
@@ -64,8 +77,11 @@ export class IlinkClient {
     this.timeoutMs = timeoutMs;
     this.getUpdatesTimeoutMs = getUpdatesTimeoutMs;
     this.maxResponseBytes = maxResponseBytes;
+    this.sendRetries = sendRetries;
+    this.rateLimitBackoffBaseMs = rateLimitBackoffBaseMs;
     this.fetchImpl = fetchImpl;
     this.wechatUinFactory = wechatUinFactory;
+    this.sendTail = Promise.resolve();
   }
 
   async getQrCode({ localTokenList, signal } = {}) {
@@ -168,39 +184,69 @@ export class IlinkClient {
     runId,
     signal,
   } = {}) {
-    this.ensureEnabled();
-    const request = buildSendTextMessageRequest({
-      baseUrl: this.baseUrl,
+    const send = () => this.#sendTextWithRetry({
       botToken,
-      channelVersion: this.channelVersion,
-      botAgent: this.botAgent,
-      routeTag: this.routeTag,
-      wechatUin: this.wechatUinFactory(),
       toUserId,
       clientId,
       text,
       contextToken,
       fromUserId,
       runId,
+      signal,
     });
-    const response = await this.#requestJson(request, { signal, operation: 'SEND' });
-    let result;
-    try {
-      result = parseBusinessResponse(response);
-    } catch {
-      throw new IlinkClientError('ILINK_SEND_RESULT_UNKNOWN');
-    }
-    if (!result.ok) {
-      // Preserve numeric service diagnostics so the gateway can distinguish a
-      // rate limit, expired context, or another business rejection without
-      // exposing the server's free-form error text.
-      throw new IlinkClientError('ILINK_SEND_REJECTED', {
+    // iLink applies limits to the bot, so concurrent sends from progress and
+    // terminal paths can create an avoidable burst. Keep the wire order stable.
+    const current = this.sendTail.then(send, send);
+    this.sendTail = current.catch(() => undefined);
+    return current;
+  }
+
+  async #sendTextWithRetry({
+    botToken,
+    toUserId,
+    clientId,
+    text,
+    contextToken,
+    fromUserId,
+    runId,
+    signal,
+  }) {
+    this.ensureEnabled();
+    for (let attempt = 0; ; attempt += 1) {
+      const request = buildSendTextMessageRequest({
+        baseUrl: this.baseUrl,
+        botToken,
+        channelVersion: this.channelVersion,
+        botAgent: this.botAgent,
+        routeTag: this.routeTag,
+        wechatUin: this.wechatUinFactory(),
+        toUserId,
+        clientId,
+        text,
+        contextToken,
+        fromUserId,
+        runId,
+      });
+      const response = await this.#requestJson(request, { signal, operation: 'SEND' });
+      let result;
+      try {
+        result = parseBusinessResponse(response);
+      } catch {
+        throw new IlinkClientError('ILINK_SEND_RESULT_UNKNOWN');
+      }
+      if (result.ok) {
+        return result;
+      }
+      const error = new IlinkClientError('ILINK_SEND_REJECTED', {
         ret: result.ret,
         errorCode: result.errorCode,
         errorMessage: result.errorMessage,
       });
+      if (!isRateLimitResult(result) || attempt >= this.sendRetries) {
+        throw error;
+      }
+      await waitForRetry(this.rateLimitBackoffBaseMs, attempt, signal);
     }
-    return result;
   }
 
   ensureEnabled() {
@@ -285,6 +331,32 @@ export class IlinkClient {
       signal?.removeEventListener('abort', abortFromCaller);
     }
   }
+}
+
+function isRateLimitResult(result) {
+  return (result.ret === RATE_LIMIT_ERROR_CODE || result.errorCode === RATE_LIMIT_ERROR_CODE)
+    && !/^unknown error$/i.test(result.errorMessage || '');
+}
+
+function waitForRetry(baseDelayMs, attempt, signal) {
+  const delayMs = Math.min(MAX_RATE_LIMIT_BACKOFF_MS, baseDelayMs * (2 ** attempt));
+  return new Promise((resolve, reject) => {
+    let timer;
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      reject(new IlinkClientError('ILINK_SEND_RESULT_UNKNOWN'));
+    };
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 async function readBoundedResponse(response, maxBytes) {
