@@ -587,19 +587,31 @@ export function buildDynamicUserInputResult(questions, answers) {
 }
 
 export function createAsyncUserInputBridge(client, threadId, pendingInputs, ask = requestAskUserQuestionAnswers) {
+  const questionAnswers = new Map();
   return async (argumentsValue, callId) => {
     const questions = normalizeQuestionsForDialog(argumentsValue.questions);
     if (questions.length === 0) return;
     console.info(`[CODEX_USER_INPUT] Async request received: ${callId}, questions=${questions.length}`);
-    const answers = await ask({ provider: 'codex', toolName: 'request_user_input_async', questions });
+    const questionKey = JSON.stringify(questions);
+    let answerPromise = questionAnswers.get(questionKey);
+    if (!answerPromise) {
+      answerPromise = Promise.resolve().then(() => ask({ provider: 'codex', toolName: 'request_user_input_async', questions }));
+      questionAnswers.set(questionKey, answerPromise);
+    } else {
+      console.info(`[CODEX_USER_INPUT] Reusing identical question response: ${callId}`);
+    }
+    const answers = await answerPromise;
     const result = buildDynamicUserInputResult(questions, answers);
+    const response = JSON.parse(result.contentItems[0].text);
+    const hasAnswers = Object.values(response.answers)
+      .some((answer) => Array.isArray(answer) ? answer.length > 0 : answer !== '');
     const input = [{
       type: 'text',
       text: JSON.stringify({
         type: 'user_input_response',
         call_id: callId,
-        ...JSON.parse(result.contentItems[0].text),
-        ...(answers ? {} : { cancelled: true }),
+        ...response,
+        ...(hasAnswers ? {} : { cancelled: true }),
       }),
     }];
     try {
@@ -776,7 +788,6 @@ async function sendMessageWithAppServer(
       normalizedPermissionMode,
       turnAbortController,
       appServerTransport: true,
-      onAsyncUserInput: createAsyncUserInputBridge(client, activeThreadId, pendingUserInputs),
       onTurnFailed: emitStreamEndOnce,
     };
 
@@ -786,6 +797,7 @@ async function sendMessageWithAppServer(
     streamStarted = true;
     let nextInput = runInput;
     do {
+      config.onAsyncUserInput = createAsyncUserInputBridge(client, activeThreadId, pendingUserInputs);
       const rawNotifications = client.streamTurn(activeThreadId, nextInput, {
         ...(reasoningEffort ? { effort: reasoningEffort } : {}),
         ...(serviceTier ? { serviceTierForTurn: serviceTier } : {}),

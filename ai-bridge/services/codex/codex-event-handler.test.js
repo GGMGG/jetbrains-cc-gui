@@ -40,8 +40,14 @@ test('async questions from a resumed session open during idle polling without re
       yield { type: 'turn.started' };
       await appendFile(sessionPath, JSON.stringify(question('current')) + '\n');
       yield { type: 'session.poll' };
+      assert.equal(opened.length, 0);
+      const accepted = { type: 'response_item', payload: {
+        type: 'function_call_output', call_id: 'current', output: '{"accepted":true}',
+      } };
+      await appendFile(sessionPath, JSON.stringify(accepted) + '\n');
       yield { type: 'session.poll' };
       yield question('current');
+      yield accepted;
       assert.deepEqual(opened.map((entry) => entry.callId), ['current']);
       yield { type: 'turn.completed' };
     }
@@ -69,6 +75,9 @@ test('failed stream cleanup does not open a late async question', async () => {
       await appendFile(sessionPath, JSON.stringify({ type: 'response_item', payload: {
         type: 'function_call', name: 'request_user_input_async', call_id: 'late',
         arguments: '{"questions":[{"title":"Choose","options":["A","B"]}]}',
+      } }) + '\n');
+      await appendFile(sessionPath, JSON.stringify({ type: 'response_item', payload: {
+        type: 'function_call_output', call_id: 'late', output: '{"accepted":true}',
       } }) + '\n');
       throw new Error('connection closed');
     }

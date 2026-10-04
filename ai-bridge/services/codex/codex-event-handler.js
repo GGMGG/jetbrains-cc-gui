@@ -156,12 +156,33 @@ function handleFunctionCallPayload(payload, state) {
 }
 
 async function bridgeAsyncUserInput(payload, state, config) {
-  if (typeof config.onAsyncUserInput !== 'function' || payload?.type !== 'function_call') return;
-  if (!['request_user_input_async', 'functions.request_user_input_async'].includes(payload.name)) return;
+  if (typeof config.onAsyncUserInput !== 'function') return;
   const callId = getResponseItemCallId(payload);
   if (!callId || state.bridgedAsyncUserInputIds.has(callId)) return;
+  if (payload.type === 'function_call') {
+    if (!['request_user_input_async', 'functions.request_user_input_async'].includes(payload.name)) return;
+    if (payload.namespace && payload.namespace !== 'functions') return;
+    state.pendingAsyncUserInputs.set(callId, parseFunctionCallArguments(payload));
+  } else if (payload.type === 'function_call_output') {
+    if (payload.status === 'error' || payload.is_error === true) return;
+    let result = payload.output;
+    if (Array.isArray(result)) {
+      result = result.map((item) => item?.text || '').join('');
+    }
+    if (typeof result === 'string') {
+      try { result = JSON.parse(result); } catch { return; }
+    }
+    if (result?.accepted !== true) return;
+    state.acceptedAsyncUserInputIds.add(callId);
+  } else {
+    return;
+  }
+  if (!state.pendingAsyncUserInputs.has(callId) || !state.acceptedAsyncUserInputIds.has(callId)) return;
+  const argumentsValue = state.pendingAsyncUserInputs.get(callId);
+  state.pendingAsyncUserInputs.delete(callId);
+  state.acceptedAsyncUserInputIds.delete(callId);
   state.bridgedAsyncUserInputIds.add(callId);
-  await config.onAsyncUserInput(parseFunctionCallArguments(payload), callId);
+  await config.onAsyncUserInput(argumentsValue, callId);
 }
 
 function handleFunctionCallOutputPayload(payload, state) {
@@ -355,6 +376,8 @@ export function createInitialEventState(emitMessage) {
     pendingCustomPlanToolUseIds: new Map(),
     processedSessionFunctionCallIds: new Set(),
     bridgedAsyncUserInputIds: new Set(),
+    pendingAsyncUserInputs: new Map(),
+    acceptedAsyncUserInputIds: new Set(),
     processedSessionFunctionOutputIds: new Set(),
     processedSessionCustomToolCallIds: new Set(),
     processedSessionCustomToolOutputIds: new Set(),
@@ -452,6 +475,8 @@ async function readSessionLines(state, sessionPath) {
  * after this cursor, so historical function calls can never become replay candidates.
  */
 export async function prepareSessionReplayBoundary(state, threadId) {
+  state.pendingAsyncUserInputs.clear();
+  state.acceptedAsyncUserInputIds.clear();
   if (state.sessionReplayReader) await state.sessionReplayReader.dispose();
   state.sessionReplayReader = null;
   state.sessionReplayGeneration = null;
@@ -673,6 +698,7 @@ async function replayMissingFunctionCallsFromSession(state, config) {
       if (handleFunctionCallOutputPayload(payload, state)) {
         toolResults += 1;
       }
+      await bridgeAsyncUserInput(payload, state, config);
       continue;
     }
 
@@ -1238,8 +1264,8 @@ export async function processCodexEventStream(events, state, config) {
           const payloadCallId = typeof payload?.call_id === 'string' && payload.call_id
             ? payload.call_id
             : null;
+          await bridgeAsyncUserInput(payload, state, config);
           if (handleFunctionCallPayload(payload, state)) {
-            await bridgeAsyncUserInput(payload, state, config);
             if (payloadCallId) {
               state.processedSessionFunctionCallIds.add(payloadCallId);
             }
