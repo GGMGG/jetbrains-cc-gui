@@ -3,6 +3,7 @@ package com.github.claudecodegui.ui.toolwindow;
 import com.github.claudecodegui.action.SendShortcutSync;
 import com.github.claudecodegui.clawbot.ClawBotGatewayRuntimeService;
 import com.github.claudecodegui.clawbot.ClawBotConversationPreview;
+import com.github.claudecodegui.clawbot.ClawBotProgressTracker;
 import com.github.claudecodegui.clawbot.ClawBotDeliveryRetryPolicy;
 import com.github.claudecodegui.clawbot.ClawBotIdeClient;
 import com.github.claudecodegui.clawbot.ClawBotIdeExecutionJournal;
@@ -86,6 +87,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import com.intellij.util.concurrency.AppExecutorUtil;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -138,7 +140,7 @@ public class ClaudeChatWindow {
     private String clawBotGeneration = UUID.randomUUID().toString();
     private String clawBotActivityId = "";
     private volatile ClaudeSession clawBotRunningSession;
-    private volatile ClawBotActiveTurn clawBotActiveTurn;
+    private final AtomicReference<ClawBotActiveTurn> clawBotActiveTurn = new AtomicReference<>();
     private final Map<String, ClawBotApproval> clawBotApprovals = new ConcurrentHashMap<>();
 
     private volatile JBCefBrowser browser;
@@ -2998,7 +3000,10 @@ public class ClaudeChatWindow {
         clawBotPendingControlReply = null;
         clawBotInFlightControlMessageId = null;
         clawBotRunningSession = null;
-        clawBotActiveTurn = null;
+        ClawBotActiveTurn closingTurn = clawBotActiveTurn.getAndSet(null);
+        if (closingTurn != null) {
+            closingTurn.progress().close();
+        }
         clawBotApprovals.clear();
         ClawBotIdeClient client;
         synchronized (clawBotClientLock) {
@@ -3070,34 +3075,25 @@ public class ClaudeChatWindow {
     }
 
     private void pollClawBotProgress() {
-        ClawBotActiveTurn turn = clawBotActiveTurn;
+        ClawBotActiveTurn turn = clawBotActiveTurn.get();
         ClawBotIdeClient client = clawBotClient;
-        if (turn == null || client == null || disposed || permissionServiceKey == null) {
+        if (turn == null || client == null || disposed || permissionServiceKey == null || session != turn.session()) {
             return;
         }
-        long now = System.nanoTime();
         String phase = clawBotProgressPhase();
-        boolean phaseChanged = !phase.equals(turn.phase());
-        if ((!phaseChanged && now < turn.nextProgressAtNanos()) || turn.progressCount() >= 12) {
+        ClawBotProgressTracker.Notification notification = turn.progress().prepare(
+                phase, formatClawBotProgress(turn, phase), System.nanoTime());
+        if (notification == null) {
             return;
         }
-        ClawBotActiveTurn updated = phaseChanged
-                ? turn.changePhase(phase, now) : turn.nextProgress(now);
-        clawBotActiveTurn = updated;
-        String progressText = formatClawBotProgress(turn, phase);
-        AppExecutorUtil.getAppExecutorService().execute(() -> {
-            try {
-                client.sendProgress(permissionServiceKey, turn.message().messageId(),
-                        turn.message().messageId() + ":progress:" + updated.progressCount(),
-                        progressText);
-            } catch (IOException | RuntimeException error) {
-                LOG.debug("[ClawBot] Progress notification unavailable");
-            }
-        });
+        AppExecutorUtil.getAppExecutorService().execute(() -> turn.progress().dispatch(notification,
+                () -> !disposed && session == turn.session() && clawBotActiveTurn.get() == turn,
+                progress -> client.sendProgress(permissionServiceKey, turn.message().messageId(),
+                        turn.message().messageId() + ":progress:" + progress.sequence(), progress.text())));
     }
 
     private void registerClawBotApproval(PermissionRequest request) {
-        ClawBotActiveTurn turn = clawBotActiveTurn;
+        ClawBotActiveTurn turn = clawBotActiveTurn.get();
         ClaudeSession owner = clawBotRunningSession;
         if (turn == null || owner == null || request == null || request.isResolved()) {
             return;
@@ -3153,7 +3149,7 @@ public class ClaudeChatWindow {
             case "WAITING_APPROVAL" -> formatClawBotApprovalProgress(turn);
             case "WAITING_USER" -> "任务正在等待 IDE 用户回答问题，请在 IDE 中完成回答。";
             case "WAITING_PLAN_APPROVAL" -> "任务正在等待 IDE 计划审批，请在 IDE 中完成处理。";
-            default -> "任务仍在处理中，IDE 会话尚未返回最终结果。";
+            default -> "";
         };
     }
 
@@ -3423,27 +3419,32 @@ public class ClaudeChatWindow {
             return;
         }
         clawBotRunningSession = currentSession;
-        clawBotActiveTurn = ClawBotActiveTurn.started(message);
-        refreshClawBotActivity(client);
         int firstTurnMessageIndex = currentSession.getMessages().size();
+        ClawBotActiveTurn activeTurn = new ClawBotActiveTurn(message, currentSession,
+                new ClawBotProgressTracker(currentSession, firstTurnMessageIndex, System.nanoTime()));
+        clawBotActiveTurn.set(activeTurn);
+        refreshClawBotActivity(client);
         CompletableFuture<Void> completion;
         try {
             completion = currentSession.send(message.text());
+            activeTurn.progress().bind();
             sendClawBotProgress(client, message, "任务已开始处理，IDE 正在生成响应。", "start");
         } catch (RuntimeException error) {
+            activeTurn.progress().close();
             clawBotRunningSession = null;
-            clawBotActiveTurn = null;
+            clawBotActiveTurn.compareAndSet(activeTurn, null);
             refreshClawBotActivity(client);
             sendClawBotReply(client, message, "CC GUI 当前无法处理该消息。", true);
             return;
         }
         completion.whenComplete((ignored, error) -> {
-            clawBotRunningSession = null;
-            clawBotActiveTurn = null;
-            refreshClawBotActivity(client);
             String reply = error == null && currentSession.getError() == null
                     ? latestAssistantMessage(currentSession.getMessages(), firstTurnMessageIndex)
                     : "CC GUI 处理消息失败，请检查对应 IDE 会话。";
+            activeTurn.progress().close();
+            clawBotRunningSession = null;
+            clawBotActiveTurn.compareAndSet(activeTurn, null);
+            refreshClawBotActivity(client);
             sendClawBotReply(client, message, reply, true);
         });
     }
@@ -3464,6 +3465,10 @@ public class ClaudeChatWindow {
     private void sendClawBotProgress(
             ClawBotIdeClient client, ClawBotInboundMessage message, String text, String phase) {
         AppExecutorUtil.getAppExecutorService().execute(() -> {
+            ClawBotActiveTurn turn = clawBotActiveTurn.get();
+            if (disposed || turn == null || !turn.message().messageId().equals(message.messageId())) {
+                return;
+            }
             try {
                 client.sendProgress(permissionServiceKey, message.messageId(),
                         message.messageId() + ":" + phase, text);
@@ -3701,23 +3706,7 @@ public class ClaudeChatWindow {
     }
 
     private record ClawBotActiveTurn(
-            ClawBotInboundMessage message, String phase, long nextProgressAtNanos, int progressCount) {
-
-        private static ClawBotActiveTurn started(ClawBotInboundMessage message) {
-            return new ClawBotActiveTurn(message, "RUNNING",
-                    System.nanoTime() + TimeUnit.SECONDS.toNanos(15), 0);
-        }
-
-        private ClawBotActiveTurn nextProgress(long now) {
-            return new ClawBotActiveTurn(message, phase,
-                    now + TimeUnit.MINUTES.toNanos(1), progressCount + 1);
-        }
-
-        private ClawBotActiveTurn changePhase(String nextPhase, long now) {
-            return new ClawBotActiveTurn(message, nextPhase,
-                    now + TimeUnit.MINUTES.toNanos(10), progressCount + 1);
-        }
-    }
+            ClawBotInboundMessage message, ClaudeSession session, ClawBotProgressTracker progress) { }
 
     public void dispose() {
         // Begin teardown under the dispatch gate: this waits for any in-flight dispatch to finish

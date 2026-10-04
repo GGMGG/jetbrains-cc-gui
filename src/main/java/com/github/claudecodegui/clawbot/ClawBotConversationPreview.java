@@ -20,6 +20,33 @@ public final class ClawBotConversationPreview {
         }
     }
 
+    /** Captures only public assistant text belonging to the originating turn. */
+    static ClawBotProgressTracker.Response captureResponse(
+            ClaudeSession session, int firstMessageIndex, Object turnOwner, String runtimeEpoch,
+            ClaudeSession.Message question) {
+        synchronized (session.getState().getMessageStateLock()) {
+            if (!session.getState().isCurrentTurn(turnOwner)
+                    || !runtimeEpoch.equals(session.getRuntimeSessionEpoch())) {
+                return null;
+            }
+            List<ClaudeSession.Message> messages = session.getMessages();
+            if (firstMessageIndex < 0 || firstMessageIndex >= messages.size()
+                    || messages.get(firstMessageIndex) != question) {
+                return null;
+            }
+            for (int index = messages.size() - 1; index > firstMessageIndex; index--) {
+                ClaudeSession.Message message = messages.get(index);
+                if (message.type == ClaudeSession.Message.Type.ASSISTANT) {
+                    String text = visibleText(message, Integer.MAX_VALUE);
+                    if (!text.isBlank()) {
+                        return new ClawBotProgressTracker.Response(message, text);
+                    }
+                }
+            }
+            return new ClawBotProgressTracker.Response(null, "");
+        }
+    }
+
     static String format(List<ClaudeSession.Message> messages, boolean busy) {
         String question = "";
         String answer = "";

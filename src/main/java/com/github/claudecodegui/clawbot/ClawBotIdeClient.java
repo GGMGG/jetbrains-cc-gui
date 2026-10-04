@@ -336,7 +336,10 @@ public final class ClawBotIdeClient implements AutoCloseable {
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("eventId", requireBoundedValue(eventId, "eventId", 256));
             payload.addProperty("text", requireText(text));
-            return readAccepted(send("SESSION_PROGRESS", payload));
+            JsonObject result = send("SESSION_PROGRESS", payload);
+            // A concurrent attempt is still pending; retry the same event instead of advancing its cursor.
+            return readAccepted(result) && (!result.has("deliveryStatus")
+                    || !"PENDING".equals(result.get("deliveryStatus").getAsString()));
         }
     }
 

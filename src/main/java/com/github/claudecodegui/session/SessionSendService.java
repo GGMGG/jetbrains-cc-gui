@@ -360,7 +360,8 @@ public class SessionSendService {
             String requestedReasoningEffort,
             String effectiveCodexServiceTier
     ) {
-        CodexMessageHandler handler = new CodexMessageHandler(state, callbackFacade.getCallbackHandler());
+        CompletableFuture<Void> turnCompletion = new CompletableFuture<>();
+        CodexMessageHandler handler = new CodexMessageHandler(state, callbackFacade.getCallbackHandler(), turnCompletion);
         String accessMode = CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE;
         try {
             accessMode = new CodemossSettingsService().getCodexRuntimeAccessMode();
@@ -371,14 +372,14 @@ public class SessionSendService {
         String accessError = getCodexRuntimeAccessError(accessMode);
         if (accessError != null) {
             handler.onError(accessError);
-            return CompletableFuture.completedFuture(null);
+            return turnCompletion;
         }
 
         String contextAppend = contextService.buildCodexContextAppend(openedFilesJson, fileTagPaths);
         String finalInput = (input != null ? input : "") + contextAppend;
         String configuredModel = new CodexSettingsManager(gson).resolveModelAlias(state.getModel());
 
-        return codexSDKBridge.sendMessage(
+        codexSDKBridge.sendMessage(
                 channelId,
                 finalInput,
                 state.getSessionId(),
@@ -390,7 +391,16 @@ public class SessionSendService {
                 requestedReasoningEffort != null ? requestedReasoningEffort : state.getReasoningEffort(),
                 effectiveCodexServiceTier,
                 handler
-        ).thenApply(result -> null);
+        ).whenComplete((result, error) -> {
+            // Process exit remains a fallback for startup failures or missing protocol markers.
+            // A successful MESSAGE_END can finish the turn while the bridge cleans up MCP children.
+            if (error != null) {
+                turnCompletion.completeExceptionally(error);
+            } else {
+                turnCompletion.complete(null);
+            }
+        });
+        return turnCompletion;
     }
 
     private CompletableFuture<Void> sendToGrok(

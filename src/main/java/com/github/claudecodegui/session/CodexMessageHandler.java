@@ -10,6 +10,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
  * Codex message callback handler.
  * Processes messages returned by Codex AI.
@@ -28,6 +30,7 @@ public class CodexMessageHandler implements MessageCallback {
     private final SessionState state;
     private final Object turnOwner;
     private final String runtimeSessionEpoch;
+    private final CompletableFuture<Void> turnCompletion;
     /**
      * callback handler.
      */
@@ -66,10 +69,15 @@ public class CodexMessageHandler implements MessageCallback {
      * @since 1.0.0
      */
     public CodexMessageHandler(SessionState state, CallbackHandler callbackHandler) {
+        this(state, callbackHandler, null);
+    }
+
+    CodexMessageHandler(SessionState state, CallbackHandler callbackHandler, CompletableFuture<Void> turnCompletion) {
         this.state = state;
         this.turnOwner = state.getTurnOwner();
         this.runtimeSessionEpoch = state.getRuntimeSessionEpoch();
         this.callbackHandler = callbackHandler;
+        this.turnCompletion = turnCompletion;
     }
 
     /**
@@ -126,6 +134,11 @@ public class CodexMessageHandler implements MessageCallback {
                 LOG.debug("CodexMessageHandler: Unhandled message type: " + type);
             }
         }
+        // Complete outside the session lock: consumers may perform IPC or start another turn.
+        // MESSAGE_END follows the final text (including the no-response fallback), unlike STREAM_END.
+        if ("message_end".equals(type) && turnCompletion != null) {
+            turnCompletion.complete(null);
+        }
     }
 
     /**
@@ -170,6 +183,9 @@ public class CodexMessageHandler implements MessageCallback {
             resetStreamingAccumulator();
             callbackHandler.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
         }
+        if (turnCompletion != null) {
+            turnCompletion.completeExceptionally(new IllegalStateException(error));
+        }
     }
 
     /**
@@ -202,12 +218,16 @@ public class CodexMessageHandler implements MessageCallback {
             resetStreamingAccumulator();
             callbackHandler.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
         }
+        if (turnCompletion != null) {
+            turnCompletion.complete(null);
+        }
     }
 
     // ===== Private methods =====
 
     private boolean ownsCurrentTurn() {
-        return state.isCurrentTurn(turnOwner) && runtimeSessionEpoch.equals(state.getRuntimeSessionEpoch());
+        return state.isCurrentTurn(turnOwner) && runtimeSessionEpoch.equals(state.getRuntimeSessionEpoch())
+                && (turnCompletion == null || !turnCompletion.isDone());
     }
 
     /**
@@ -904,7 +924,10 @@ public class CodexMessageHandler implements MessageCallback {
      * @since 1.0.0
      */
     private void handleMessageEnd() {
-        LOG.debug("Codex message_end received, deferring stream cleanup to stream_end/onComplete");
+        if (turnCompletion != null && !streamEndedThisTurn) {
+            handleStreamEnd();
+        }
+        LOG.debug("Codex message_end received");
     }
 
     /**
