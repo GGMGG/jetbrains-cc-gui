@@ -253,6 +253,57 @@
   margin-top: 16px;
 }
 
+.progressSettings {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.progressSettings h4 {
+  margin: 0 0 6px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.progressSettings p {
+  margin: 0 0 12px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.progressFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.progressField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.progressField input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 4px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.progressSettings > .primaryButton {
+  margin-top: 12px;
+}
+
 .senderAccess {
   margin-top: 16px;
   padding: 16px;

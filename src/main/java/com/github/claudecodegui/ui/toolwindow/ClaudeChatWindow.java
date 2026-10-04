@@ -3366,7 +3366,9 @@ public class ClaudeChatWindow {
         clawBotRunningSession = currentSession;
         int firstTurnMessageIndex = currentSession.getMessages().size();
         ClawBotActiveTurn activeTurn = new ClawBotActiveTurn(message, currentSession,
-                new ClawBotProgressTracker(currentSession, firstTurnMessageIndex, System.nanoTime()), new ClawBotInteractionExchange());
+                new ClawBotProgressTracker(currentSession, firstTurnMessageIndex, System.nanoTime(),
+                        ClawBotGatewayRuntimeService.getInstance()::progressSettings),
+                new ClawBotInteractionExchange());
         clawBotActiveTurn.set(activeTurn);
         refreshClawBotActivity(client);
         CompletableFuture<Void> completion;

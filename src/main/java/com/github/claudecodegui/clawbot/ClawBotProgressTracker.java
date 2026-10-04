@@ -4,20 +4,21 @@ import com.github.claudecodegui.session.ClaudeSession;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /** Per-request progress cursor; transport I/O never holds the session message lock. */
 public final class ClawBotProgressTracker {
-    private static final long TEXT_INTERVAL = TimeUnit.MINUTES.toNanos(1);
-    private static final long IDLE_INTERVAL = TimeUnit.MINUTES.toNanos(5);
-    private static final long WAIT_INTERVAL = TimeUnit.MINUTES.toNanos(10);
+    private static final long INITIAL_CHECK_DELAY = TimeUnit.SECONDS.toNanos(15);
     private static final int MAX_NOTIFICATIONS = 12;
     private static final int MAX_TEXT = 800;
 
     private final Object deliveryLock = new Object();
     private final ClaudeSession session;
     private final int firstMessageIndex;
+    private final Supplier<ClawBotProgressSettings> settingsSupplier;
     private Object turnOwner;
     private String runtimeEpoch;
     private ClaudeSession.Message question;
@@ -34,11 +35,22 @@ public final class ClawBotProgressTracker {
     private Response pendingResponse;
     private int failures;
     private long retryAt;
+    private ClawBotProgressSettings appliedSettings;
 
     public ClawBotProgressTracker(ClaudeSession session, int firstMessageIndex, long now) {
+        this(session, firstMessageIndex, now, ClawBotProgressSettings::defaults);
+    }
+
+    public ClawBotProgressTracker(
+            ClaudeSession session,
+            int firstMessageIndex,
+            long now,
+            Supplier<ClawBotProgressSettings> settingsSupplier) {
         this.session = session;
         this.firstMessageIndex = firstMessageIndex;
-        nextCheck = now + TimeUnit.SECONDS.toNanos(15);
+        this.settingsSupplier = Objects.requireNonNull(settingsSupplier, "settingsSupplier");
+        appliedSettings = currentSettings();
+        nextCheck = now + INITIAL_CHECK_DELAY;
         nextReminder = nextCheck;
     }
 
@@ -72,6 +84,12 @@ public final class ClawBotProgressTracker {
     public synchronized Notification prepare(String currentPhase, String statusText, long now) {
         if (closed || question == null) {
             return null;
+        }
+        ClawBotProgressSettings settings = currentSettings();
+        if (!settings.equals(appliedSettings)) {
+            appliedSettings = settings;
+            nextCheck = now + settings.textIntervalNanos();
+            nextReminder = now + reminderIntervalNanos(settings, phase);
         }
         boolean phaseChanged = !phase.equals(currentPhase)
                 || (!"RUNNING".equals(currentPhase) && !phaseText.equals(statusText));
@@ -117,7 +135,7 @@ public final class ClawBotProgressTracker {
         if (pending == null && notificationCount < MAX_NOTIFICATIONS) {
             boolean running = "RUNNING".equals(phase);
             if (running) {
-                nextCheck = now + TEXT_INTERVAL;
+                nextCheck = now + settings.textIntervalNanos();
             }
             if (running && !response.text().isBlank() && !response.equals(delivered)) {
                 String text = response.text();
@@ -184,8 +202,11 @@ public final class ClawBotProgressTracker {
                 notificationCount++;
             }
             boolean running = "RUNNING".equals(phase);
-            nextReminder = now + (running ? IDLE_INTERVAL : WAIT_INTERVAL);
-            nextCheck = notification.essential() ? now : now + (running ? TEXT_INTERVAL : WAIT_INTERVAL);
+            ClawBotProgressSettings settings = currentSettings();
+            appliedSettings = settings;
+            nextReminder = now + reminderIntervalNanos(settings, phase);
+            nextCheck = notification.essential() ? now : now + (running
+                    ? settings.textIntervalNanos() : settings.waitReminderNanos());
             pending = null;
             pendingResponse = null;
             failures = 0;
@@ -219,6 +240,19 @@ public final class ClawBotProgressTracker {
             start = paragraph + 1;
         }
         return "…（仅展示最新片段）\n" + visible.substring(start).trim();
+    }
+
+    private ClawBotProgressSettings currentSettings() {
+        try {
+            ClawBotProgressSettings settings = settingsSupplier.get();
+            return settings == null ? ClawBotProgressSettings.defaults() : settings;
+        } catch (RuntimeException ignored) {
+            return ClawBotProgressSettings.defaults();
+        }
+    }
+
+    private static long reminderIntervalNanos(ClawBotProgressSettings settings, String currentPhase) {
+        return "RUNNING".equals(currentPhase) ? settings.idleReminderNanos() : settings.waitReminderNanos();
     }
 
     record Response(Object message, String text) { }

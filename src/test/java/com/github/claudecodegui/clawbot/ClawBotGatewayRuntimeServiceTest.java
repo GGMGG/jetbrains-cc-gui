@@ -52,6 +52,51 @@ public class ClawBotGatewayRuntimeServiceTest {
     }
 
     @Test
+    public void persistsAndReportsProgressSettingsAcrossGatewayInstances() throws Exception {
+        Path runtime = temporaryFolder.newFolder("progress-settings-runtime").toPath();
+        ClawBotGatewayRuntimeService service = new ClawBotGatewayRuntimeService(
+                runtime, "gateway-instance", testHandoff());
+        try {
+            JsonObject defaults = service.statusSnapshot();
+            assertEquals(1, defaults.get("progressTextIntervalMinutes").getAsInt());
+            assertEquals(5, defaults.get("progressIdleReminderMinutes").getAsInt());
+            assertEquals(10, defaults.get("progressWaitReminderMinutes").getAsInt());
+
+            assertTrue(service.start());
+            JsonObject update = new JsonObject();
+            update.addProperty("textIntervalMinutes", 2);
+            update.addProperty("idleReminderMinutes", 6);
+            update.addProperty("waitReminderMinutes", 12);
+            JsonObject updated = service.control("UPDATE_PROGRESS_SETTINGS", update);
+            assertEquals(2, updated.get("progressTextIntervalMinutes").getAsInt());
+            assertEquals(6, updated.get("progressIdleReminderMinutes").getAsInt());
+            assertEquals(12, updated.get("progressWaitReminderMinutes").getAsInt());
+
+            JsonObject invalid = new JsonObject();
+            invalid.add("textIntervalMinutes", com.google.gson.JsonNull.INSTANCE);
+            invalid.add("idleReminderMinutes", com.google.gson.JsonNull.INSTANCE);
+            invalid.add("waitReminderMinutes", com.google.gson.JsonNull.INSTANCE);
+            IOException error = assertThrows(IOException.class,
+                    () -> service.control("UPDATE_PROGRESS_SETTINGS", invalid));
+            assertEquals("CLAWBOT_PROGRESS_SETTINGS_INVALID", error.getMessage());
+            assertEquals(2, service.statusSnapshot().get("progressTextIntervalMinutes").getAsInt());
+        } finally {
+            service.stop();
+        }
+
+        ClawBotGatewayRuntimeService reloaded = new ClawBotGatewayRuntimeService(
+                runtime, "reloaded-instance", testHandoff());
+        try {
+            JsonObject persisted = reloaded.statusSnapshot();
+            assertEquals(2, persisted.get("progressTextIntervalMinutes").getAsInt());
+            assertEquals(6, persisted.get("progressIdleReminderMinutes").getAsInt());
+            assertEquals(12, persisted.get("progressWaitReminderMinutes").getAsInt());
+        } finally {
+            reloaded.stop();
+        }
+    }
+
+    @Test
     public void countsBridgeFilteredMessagesBeforeRouting() throws Exception {
         ClawBotGatewayRuntimeService service = new ClawBotGatewayRuntimeService(
                 temporaryFolder.newFolder("inbound-counts").toPath(), "gateway-instance", testHandoff());
@@ -494,6 +539,33 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals("FOLLOWER", status.get("state").getAsString());
             assertEquals("BOUND", status.get("bindingState").getAsString());
             assertFalse(status.toString().contains("fixture-token"));
+        } finally {
+            follower.stop();
+            leader.stop();
+        }
+    }
+
+    @Test
+    public void followerRefreshesItsLocalProgressSettingsAfterLeaderUpdate() throws Exception {
+        Path runtime = temporaryFolder.newFolder("progress-settings-follower-runtime").toPath();
+        ClawBotGatewayRuntimeService leader = new ClawBotGatewayRuntimeService(
+                runtime, "leader", testHandoff());
+        ClawBotGatewayRuntimeService follower = new ClawBotGatewayRuntimeService(
+                runtime, "follower", testHandoff());
+        try {
+            assertTrue(leader.start());
+            assertFalse(follower.start());
+
+            JsonObject update = new JsonObject();
+            update.addProperty("textIntervalMinutes", 3);
+            update.addProperty("idleReminderMinutes", 7);
+            update.addProperty("waitReminderMinutes", 11);
+            JsonObject result = follower.control("UPDATE_PROGRESS_SETTINGS", update);
+
+            assertEquals("FOLLOWER", result.get("state").getAsString());
+            assertEquals(3, follower.progressSettings().textIntervalMinutes());
+            assertEquals(7, follower.progressSettings().idleReminderMinutes());
+            assertEquals(11, follower.progressSettings().waitReminderMinutes());
         } finally {
             follower.stop();
             leader.stop();

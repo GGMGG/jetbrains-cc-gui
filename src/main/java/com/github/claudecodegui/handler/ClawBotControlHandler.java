@@ -22,7 +22,8 @@ public final class ClawBotControlHandler extends BaseMessageHandler {
             "clawbot_unbind",
             "clawbot_allow_sender",
             "clawbot_revoke_sender",
-            "clawbot_list_senders"
+            "clawbot_list_senders",
+            "clawbot_update_progress_settings"
     };
 
     public ClawBotControlHandler(HandlerContext context) {

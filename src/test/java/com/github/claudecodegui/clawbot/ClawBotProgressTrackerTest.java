@@ -8,6 +8,7 @@ import org.junit.Test;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -91,6 +92,24 @@ public class ClawBotProgressTrackerTest {
         assertNull(fixture.tracker().prepare("RUNNING", "", FIRST_CHECK + TEXT_INTERVAL));
         ClawBotProgressTracker.Notification reminder = fixture.tracker().prepare(
                 "RUNNING", "", FIRST_CHECK + TimeUnit.MINUTES.toNanos(5));
+        assertNotNull(reminder);
+        assertTrue(reminder.reminder());
+    }
+
+    @Test
+    public void appliesUpdatedIntervalsToAnActiveTurn() {
+        AtomicReference<ClawBotProgressSettings> settings = new AtomicReference<>(
+                ClawBotProgressSettings.defaults());
+        Fixture fixture = startTurn(settings::get);
+        ClawBotProgressTracker.Notification first = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK);
+        assertNotNull(first);
+        fixture.tracker().finish(first, true, FIRST_CHECK);
+
+        settings.set(new ClawBotProgressSettings(1, 1, 1));
+        long changedAt = FIRST_CHECK + TimeUnit.SECONDS.toNanos(30);
+        assertNull(fixture.tracker().prepare("RUNNING", "", changedAt));
+        ClawBotProgressTracker.Notification reminder = fixture.tracker().prepare(
+                "RUNNING", "", changedAt + TimeUnit.MINUTES.toNanos(1));
         assertNotNull(reminder);
         assertTrue(reminder.reminder());
     }
@@ -182,10 +201,14 @@ public class ClawBotProgressTrackerTest {
     }
 
     private static Fixture startTurn() {
+        return startTurn(ClawBotProgressSettings::defaults);
+    }
+
+    private static Fixture startTurn(java.util.function.Supplier<ClawBotProgressSettings> settingsSupplier) {
         ClaudeSession session = new ClaudeSession(null, null, null, null);
         session.getState().beginTurn();
         session.getState().addMessage(new Message(Message.Type.USER, "question"));
-        ClawBotProgressTracker tracker = new ClawBotProgressTracker(session, 0, 0L);
+        ClawBotProgressTracker tracker = new ClawBotProgressTracker(session, 0, 0L, settingsSupplier);
         tracker.bind();
         return new Fixture(session, tracker);
     }

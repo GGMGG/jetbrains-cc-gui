@@ -33,6 +33,55 @@ describe('ClawBotSection', () => {
     expect(within(pairingRefreshRow as HTMLElement).getByText('0')).toBeTruthy();
   });
 
+  it('edits and saves progress intervals, then reflects the live gateway values', () => {
+    render(<ClawBotSection />);
+
+    act(() => {
+      window.onClawBotStatus?.(JSON.stringify({
+        state: 'LEADER', transport: 'MOCK', sessionCount: 0,
+        bindingState: 'UNBOUND', bindingRevision: 0,
+        progressTextIntervalMinutes: 1,
+        progressIdleReminderMinutes: 5,
+        progressWaitReminderMinutes: 10,
+      }));
+    });
+
+    fireEvent.change(screen.getByRole('spinbutton', {
+      name: 'settings.clawBot.progressTextInterval',
+    }), { target: { value: '2' } });
+    fireEvent.change(screen.getByRole('spinbutton', {
+      name: 'settings.clawBot.progressIdleReminderInterval',
+    }), { target: { value: '6' } });
+    fireEvent.change(screen.getByRole('spinbutton', {
+      name: 'settings.clawBot.progressWaitReminderInterval',
+    }), { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clawBot.saveProgressSettings' }));
+
+    expect(window.sendToJava).toHaveBeenLastCalledWith(
+      'clawbot_update_progress_settings:{"textIntervalMinutes":2,"idleReminderMinutes":6,"waitReminderMinutes":12}',
+    );
+    act(() => {
+      window.onClawBotOperation?.('{"operation":"update_progress_settings","ok":true}');
+      window.onClawBotStatus?.(JSON.stringify({
+        state: 'LEADER', transport: 'MOCK', sessionCount: 0,
+        bindingState: 'UNBOUND', bindingRevision: 0,
+        progressTextIntervalMinutes: 2,
+        progressIdleReminderMinutes: 6,
+        progressWaitReminderMinutes: 12,
+      }));
+    });
+
+    expect((screen.getByRole('spinbutton', {
+      name: 'settings.clawBot.progressTextInterval',
+    }) as HTMLInputElement).value).toBe('2');
+    expect((screen.getByRole('spinbutton', {
+      name: 'settings.clawBot.progressIdleReminderInterval',
+    }) as HTMLInputElement).value).toBe('6');
+    expect((screen.getByRole('spinbutton', {
+      name: 'settings.clawBot.progressWaitReminderInterval',
+    }) as HTMLInputElement).value).toBe('12');
+  });
+
   it('renders outbound receipt counts without requiring recipient details', () => {
     render(<ClawBotSection />);
 

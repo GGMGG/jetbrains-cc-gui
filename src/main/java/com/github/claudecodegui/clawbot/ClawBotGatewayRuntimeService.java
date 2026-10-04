@@ -40,6 +40,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private static final long TAKEOVER_PERIOD_SECONDS = 1L;
     private static final long INBOUND_POLL_RETRY_DELAY_MILLIS = 1_000L;
     private static final long INBOUND_POLL_MAX_BACKOFF_MILLIS = 60_000L;
+    private static final long PROGRESS_SETTINGS_REFRESH_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     private final Path runtimeDirectory;
     private final String instanceId;
@@ -52,6 +53,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private final ClawBotTransportStateStore transportStateStore;
     private final ClawBotExecutionJournal executionJournal;
     private final ClawBotOutboundReceiptStore outboundReceiptStore;
+    private final ClawBotProgressSettingsStore progressSettingsStore;
     private final ClawBotSenderAccessStore senderAccessStore;
     private final ScheduledExecutorService takeoverExecutor;
     private final ScheduledExecutorService transportExecutor;
@@ -63,7 +65,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private final Map<String, String> outboundEventStates = new ConcurrentHashMap<>();
     private final Set<String> terminalRepliesInFlight = ConcurrentHashMap.newKeySet();
     private final Set<String> controlRepliesInFlight = ConcurrentHashMap.newKeySet();
-    private State state = State.STOPPED;
+    private volatile State state = State.STOPPED;
     private ClawBotProcessCoordinator.LeaderLease leaderLease;
     private ClawBotLocalIpcServer ipcServer;
     private ClawBotLocalIpcServer.Endpoint endpoint;
@@ -81,6 +83,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private volatile long inboundLastSuccessAt;
     private volatile long outboundLastSuccessAt;
     private volatile String outboundLastError = "";
+    private volatile ClawBotProgressSettings progressSettings;
+    private volatile long progressSettingsLastRefreshNanos;
     private ScheduledFuture<?> takeoverTask;
     private ScheduledFuture<?> routeSweepTask;
     private ScheduledFuture<?> inboundPollTask;
@@ -135,6 +139,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         this.transportStateStore = new ClawBotTransportStateStore(this.runtimeDirectory);
         this.executionJournal = new ClawBotExecutionJournal(this.runtimeDirectory);
         this.outboundReceiptStore = new ClawBotOutboundReceiptStore(this.runtimeDirectory);
+        this.progressSettingsStore = new ClawBotProgressSettingsStore(this.runtimeDirectory);
+        this.progressSettings = loadProgressSettings();
         this.connectionEpoch = Math.max(System.currentTimeMillis(), 1L);
         this.processCoordinator = new ClawBotProcessCoordinator(this.runtimeDirectory, instanceId);
         this.secretStore = new ClawBotIpcSecretStore(this.runtimeDirectory);
@@ -151,6 +157,12 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
 
     public static ClawBotGatewayRuntimeService getInstance() {
         return ApplicationManager.getApplication().getService(ClawBotGatewayRuntimeService.class);
+    }
+
+    /** Returns the current progress intervals; the value changes when the Settings panel saves them. */
+    public ClawBotProgressSettings progressSettings() {
+        refreshFollowerProgressSettings();
+        return progressSettings;
     }
 
     /** Starts the gateway or joins the existing leader as a follower. */
@@ -191,6 +203,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         if (state == State.FOLLOWER) {
             try {
                 JsonObject leaderStatus = requestLeaderStatus();
+                syncProgressSettings(leaderStatus);
                 // The counters belong to the leader, but the role shown in this IDE must
                 // describe the local gateway instance. Otherwise every follower appears as
                 // another leader in its Settings view.
@@ -209,6 +222,10 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         recoverTransportIfProcessStopped();
         status.addProperty("transport", transportActive ? "ILINK" : "MOCK");
         status.addProperty("transportState", transportActive ? "READY" : "STOPPED");
+        ClawBotProgressSettings currentProgressSettings = progressSettings;
+        status.addProperty("progressTextIntervalMinutes", currentProgressSettings.textIntervalMinutes());
+        status.addProperty("progressIdleReminderMinutes", currentProgressSettings.idleReminderMinutes());
+        status.addProperty("progressWaitReminderMinutes", currentProgressSettings.waitReminderMinutes());
         status.addProperty("transportRecoveryScheduled", transportRestartTask != null
                 && !transportRestartTask.isDone());
         status.addProperty("sessionCount", state == State.LEADER ? sessionRegistry.snapshot().size() : 0);
@@ -294,13 +311,56 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         if ("ERROR".equals(response.type())) {
             throw new IOException(readErrorCode(response.payload()));
         }
-        return withLocalState(response.payload());
+        JsonObject localResponse = withLocalState(response.payload());
+        syncProgressSettings(localResponse);
+        return localResponse;
     }
 
     private synchronized JsonObject withLocalState(JsonObject remoteStatus) {
         JsonObject status = remoteStatus == null ? new JsonObject() : remoteStatus.deepCopy();
         status.addProperty("state", state.name());
         return status;
+    }
+
+    private void syncProgressSettings(JsonObject status) {
+        if (status == null || !status.has("progressTextIntervalMinutes")
+                || !status.has("progressIdleReminderMinutes")
+                || !status.has("progressWaitReminderMinutes")) {
+            return;
+        }
+        JsonObject settings = new JsonObject();
+        settings.add("textIntervalMinutes", status.get("progressTextIntervalMinutes"));
+        settings.add("idleReminderMinutes", status.get("progressIdleReminderMinutes"));
+        settings.add("waitReminderMinutes", status.get("progressWaitReminderMinutes"));
+        try {
+            progressSettings = ClawBotProgressSettings.fromUpdatePayload(settings);
+            progressSettingsLastRefreshNanos = System.nanoTime();
+        } catch (IOException | IllegalArgumentException ignored) {
+            // Keep the last valid local value if a newer peer sends an invalid payload.
+        }
+    }
+
+    private void refreshFollowerProgressSettings() {
+        if (state != State.FOLLOWER) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (progressSettingsLastRefreshNanos != 0L
+                && now - progressSettingsLastRefreshNanos < PROGRESS_SETTINGS_REFRESH_INTERVAL_NANOS) {
+            return;
+        }
+        synchronized (this) {
+            if (state != State.FOLLOWER || (progressSettingsLastRefreshNanos != 0L
+                    && now - progressSettingsLastRefreshNanos < PROGRESS_SETTINGS_REFRESH_INTERVAL_NANOS)) {
+                return;
+            }
+            progressSettingsLastRefreshNanos = now;
+            try {
+                progressSettings = progressSettingsStore.load();
+            } catch (IOException | RuntimeException ignored) {
+                // Keep the last valid value while the leader is rotating or the file is unavailable.
+            }
+        }
     }
 
     /** Creates an IDE client using this runtime's leader or the discovered leader endpoint. */
@@ -516,6 +576,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     return controlResponse(request, "REVOKE_SENDER", payload);
                 case "CLAWBOT_LIST_SENDERS":
                     return controlResponse(request, "LIST_SENDERS", payload);
+                case "CLAWBOT_UPDATE_PROGRESS_SETTINGS":
+                    return controlResponse(request, "UPDATE_PROGRESS_SETTINGS", payload);
                 case "CLAWBOT_STATUS":
                     return response(request, "CLAWBOT_STATUS_RESULT", localStatusSnapshot());
                 case "SESSION_POLL":
@@ -711,10 +773,33 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 page.lastUsedAt().forEach(lastUsedAt::addProperty);
                 result.add("senderLastUsedAt", lastUsedAt);
                 return result;
+            case "UPDATE_PROGRESS_SETTINGS":
+                return updateProgressSettings(payload);
             case "STATUS":
                 return localStatusSnapshot();
             default:
                 throw new IllegalArgumentException("Unsupported Claw Bot control operation");
+        }
+    }
+
+    private JsonObject updateProgressSettings(JsonObject payload) throws IOException {
+        ClawBotProgressSettings next;
+        try {
+            next = ClawBotProgressSettings.fromUpdatePayload(payload);
+        } catch (IOException | IllegalArgumentException error) {
+            throw new IOException("CLAWBOT_PROGRESS_SETTINGS_INVALID", error);
+        }
+        progressSettingsStore.save(next);
+        progressSettings = next;
+        return localStatusSnapshot();
+    }
+
+    private ClawBotProgressSettings loadProgressSettings() {
+        try {
+            return progressSettingsStore.load();
+        } catch (IOException | RuntimeException error) {
+            LOG.warn("[ClawBot] Progress settings unavailable; using defaults", error);
+            return ClawBotProgressSettings.defaults();
         }
     }
 
