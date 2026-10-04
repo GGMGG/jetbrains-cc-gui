@@ -191,7 +191,14 @@ export class IlinkClient {
       throw new IlinkClientError('ILINK_SEND_RESULT_UNKNOWN');
     }
     if (!result.ok) {
-      throw new IlinkClientError('ILINK_SEND_REJECTED');
+      // Preserve numeric service diagnostics so the gateway can distinguish a
+      // rate limit, expired context, or another business rejection without
+      // exposing the server's free-form error text.
+      throw new IlinkClientError('ILINK_SEND_REJECTED', {
+        ret: result.ret,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+      });
     }
     return result;
   }

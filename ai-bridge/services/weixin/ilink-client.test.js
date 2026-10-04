@@ -258,10 +258,16 @@ test('sendText accepts explicit success and rejects business errors without retr
   assert.equal(response.ok, true);
   assert.equal(calls, 1);
 
-  const failed = client(async () => jsonResponse({ ret: 1 }));
+  const failed = client(async () => jsonResponse({ ret: 1, errcode: 429, errmsg: 'too many requests' }));
   await assert.rejects(failed.sendText({
     botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
-  }), { code: 'ILINK_SEND_REJECTED' });
+  }), (error) => {
+    assert.equal(error.code, 'ILINK_SEND_REJECTED');
+    assert.equal(error.ret, 1);
+    assert.equal(error.errorCode, 429);
+    assert.equal(error.errorMessage, 'too many requests');
+    return true;
+  });
 });
 
 test('sendText accepts successful responses with omitted zero-valued status fields', async () => {
