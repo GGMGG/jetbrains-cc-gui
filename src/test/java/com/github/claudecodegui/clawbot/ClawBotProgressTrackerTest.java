@@ -19,6 +19,7 @@ import static org.junit.Assert.assertTrue;
 public class ClawBotProgressTrackerTest {
     private static final long FIRST_CHECK = TimeUnit.SECONDS.toNanos(15);
     private static final long TEXT_INTERVAL = TimeUnit.MINUTES.toNanos(1);
+    private static final long WAIT_INTERVAL = TimeUnit.MINUTES.toNanos(10);
 
     @Test
     public void sendsOnlyNewPublicAssistantTextFromCurrentTurn() {
@@ -79,6 +80,22 @@ public class ClawBotProgressTrackerTest {
     }
 
     @Test
+    public void sendsPeriodicReminderWhenNoNewAssistantTextExists() {
+        Fixture fixture = startTurn();
+
+        ClawBotProgressTracker.Notification first = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK);
+        assertNotNull(first);
+        assertTrue(first.reminder());
+        fixture.tracker().finish(first, true, FIRST_CHECK);
+
+        assertNull(fixture.tracker().prepare("RUNNING", "", FIRST_CHECK + TEXT_INTERVAL));
+        ClawBotProgressTracker.Notification reminder = fixture.tracker().prepare(
+                "RUNNING", "", FIRST_CHECK + TimeUnit.MINUTES.toNanos(5));
+        assertNotNull(reminder);
+        assertTrue(reminder.reminder());
+    }
+
+    @Test
     public void doesNotReadPreviousTurnAfterAnotherTurnStarts() {
         Fixture fixture = startTurn();
         fixture.session().getState().addMessage(new Message(Message.Type.ASSISTANT, "first turn response"));
@@ -124,17 +141,23 @@ public class ClawBotProgressTrackerTest {
         answer.content = "before question and post answer";
         assertNull(fixture.tracker().prepare("WAITING:q-1", "【等待回答】\n请回复选项。",
                 now + TEXT_INTERVAL));
+        ClawBotProgressTracker.Notification waitReminder = fixture.tracker().prepare(
+                "WAITING:q-1", "【等待回答】\n请回复选项。", now + WAIT_INTERVAL);
+        assertNotNull(waitReminder);
+        assertTrue(waitReminder.reminder());
+        assertFalse(waitReminder.text().isBlank());
+        fixture.tracker().finish(waitReminder, true, now + WAIT_INTERVAL);
 
         ClawBotProgressTracker.Notification resumed = fixture.tracker().prepare(
-                "RUNNING", "", now + TEXT_INTERVAL);
+                "RUNNING", "", now + WAIT_INTERVAL + 1);
         assertNotNull(resumed);
         assertTrue(resumed.essential());
         assertTrue(resumed.text().contains("等待已结束"));
-        fixture.tracker().finish(resumed, true, now + TEXT_INTERVAL);
+        fixture.tracker().finish(resumed, true, now + WAIT_INTERVAL + 1);
 
         answer.content = "before question and post answer and another chunk";
         ClawBotProgressTracker.Notification progress = fixture.tracker().prepare(
-                "RUNNING", "", now + TEXT_INTERVAL + 1);
+                "RUNNING", "", now + WAIT_INTERVAL + 2);
         assertNotNull(progress);
         assertFalse(progress.essential());
         assertTrue(progress.text().contains("another chunk"));

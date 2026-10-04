@@ -305,6 +305,7 @@ public class ClawBotGatewayRuntimeServiceTest {
         for (boolean control : List.of(false, true)) {
             try (ReplyFixture fixture = new ReplyFixture(control)) {
                 if (!control) {
+                    assertTrue(fixture.client.updateInteraction("session-1", "reply-message", "interaction-token"));
                     assertTrue(fixture.client.sendProgress("session-1", "reply-message", "progress-1", "Working"));
                     assertTrue(fixture.client.updateSession("session-1", "codex", "Chat", "generation-2", ""));
                 }

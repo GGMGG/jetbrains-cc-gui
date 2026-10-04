@@ -3089,8 +3089,12 @@ public class ClaudeChatWindow {
                         && token.equals(turn.interactions().revision())
                         && (token.isEmpty() ? phase.equals(clawBotProgressPhase()) : !permissionHandler.getClawBotInteractions().isEmpty()),
                 progress -> {
-                    if (!client.updateInteraction(permissionServiceKey, turn.message().messageId(), token)) {
-                        return false;
+                    try {
+                        if (!client.updateInteraction(permissionServiceKey, turn.message().messageId(), token)) {
+                            LOG.debug("[ClawBot] Interaction route was not updated before progress delivery");
+                        }
+                    } catch (IOException | RuntimeException error) {
+                        LOG.debug("[ClawBot] Interaction route refresh failed; sending progress anyway");
                     }
                     return client.sendProgress(permissionServiceKey, turn.message().messageId(),
                             turn.message().messageId() + ":progress:" + progress.sequence(), progress.text());
