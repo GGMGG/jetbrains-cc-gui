@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ClaudeSessionTest {
@@ -32,6 +33,29 @@ public class ClaudeSessionTest {
         ClaudeSession session = new ClaudeSession(null, null, null, null);
 
         assertEquals(0L, session.getLastTurnStartedAtMillis());
+    }
+
+    /** Restored Codex controls and the next send share their existing default runtime. */
+    @Test
+    public void restoredCodexKeepsItsControlChannelBeforeFirstSend() throws Exception {
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        session.setProvider("codex");
+        session.setSessionInfo("restored-root", "/workspace/demo");
+
+        assertEquals("codex", session.getChannelId());
+        assertEquals("codex", session.launchClaude().get(5, TimeUnit.SECONDS));
+        session.getState().setChannelId("existing-channel");
+        session.setSessionInfo("restored-root", "/workspace/demo");
+        assertEquals("existing-channel", session.getChannelId());
+    }
+
+    /** A new Codex chat still defers allocating its normal send channel. */
+    @Test
+    public void emptyCodexSessionDoesNotClaimARestoredControlChannel() {
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        session.setProvider("codex");
+        session.setSessionInfo(null, "/workspace/demo");
+        assertNull(session.getChannelId());
     }
 
     @Test

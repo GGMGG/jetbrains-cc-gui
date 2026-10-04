@@ -415,11 +415,13 @@ export function getCodexRuntimeState() {
   const hasExplicitCurrent = !!codex && Object.prototype.hasOwnProperty.call(codex, 'current') && codex.current !== null;
   const currentId = hasExplicitCurrent ? String(codex.current).trim() : '';
 
-  if (currentId === CODEX_CLI_LOGIN_PROVIDER_ID) {
+  if (currentId === CODEX_CLI_LOGIN_PROVIDER_ID && codex?.localConfigAuthorized === true) {
     return { access: 'cli_login', currentId };
   }
 
-  if (currentId && Object.prototype.hasOwnProperty.call(providers, currentId)) {
+  if (currentId && Object.prototype.hasOwnProperty.call(providers, currentId)
+      && providers[currentId] && typeof providers[currentId] === 'object'
+      && !Array.isArray(providers[currentId])) {
     return { access: 'managed', currentId };
   }
 

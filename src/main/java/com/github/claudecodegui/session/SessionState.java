@@ -125,11 +125,23 @@ public class SessionState {
         }
     }
 
-    // Session metadata — cwd is written in handler thread before send(), read inside send();
-    // the happens-before from CompletableFuture.runAsync guarantees visibility, so volatile is not required.
+    // Session metadata — cwd is also written from the daemon event thread
+    // (thread/settings/updated) while send() reads it on another thread, so
+    // volatile is required; there is no happens-before between those threads.
     private String summary = null;
     private long lastModifiedTime = System.currentTimeMillis();
-    private String cwd = null;
+    private volatile String cwd = null;
+    private volatile boolean codexCwdExplicit;
+
+    /** Records a user directory change separately from a restored native directory. */
+    public void setCodexCwdExplicit(boolean explicit) {
+        this.codexCwdExplicit = explicit;
+    }
+
+    /** Returns whether the current Codex thread has an explicit directory override. */
+    public boolean isCodexCwdExplicit() {
+        return this.codexCwdExplicit;
+    }
 
     // Configuration fields below are volatile because set_mode / set_model / set_provider
     // and send_message may execute on different async handler threads with no other

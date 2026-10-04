@@ -13,6 +13,26 @@ import {
 
 const API_CONFIG_MODULE = pathToFileURL(path.resolve('ai-bridge/config/api-config.js')).href;
 
+test('Codex native access requires an active managed provider or explicitly authorized CLI Login', () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-access-'));
+  try {
+    fs.mkdirSync(path.join(homeDir, '.codemoss'));
+    for (const [codex, access] of [
+      [{ current: '' }, 'inactive'],
+      [{ current: '__codex_cli_login__' }, 'inactive'],
+      [{ current: '__codex_cli_login__', localConfigAuthorized: true }, 'cli_login'],
+      [{ current: 'provider', providers: { provider: { configToml: 'model="test"' } } }, 'managed'],
+      [{ current: 'provider', providers: { provider: 'invalid' } }, 'inactive'],
+    ]) {
+      fs.writeFileSync(path.join(homeDir, '.codemoss', 'config.json'), JSON.stringify({ codex }));
+      const output = execFileSync(process.execPath, ['--input-type=module', '--eval',
+        `import { getCodexRuntimeState } from ${JSON.stringify(API_CONFIG_MODULE)}; console.log(JSON.stringify(getCodexRuntimeState()));`],
+      { env: buildChildEnv(homeDir), encoding: 'utf8' });
+      assert.equal(JSON.parse(output.trim()).access, access);
+    }
+  } finally { fs.rmSync(homeDir, { recursive: true, force: true }); }
+});
+
 function buildChildEnv(homeDir) {
   const env = {
     ...process.env,
