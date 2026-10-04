@@ -23,6 +23,14 @@ final class ClawBotMessageRouter {
     private static final long IDLE_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(30);
     private static final long LIST_TTL_NANOS = TimeUnit.MINUTES.toNanos(5);
 
+    private static boolean isKnownSlashCommand(String text) {
+        String name = text.trim().split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+        return switch (name) {
+            case "/help", "/whoami", "/sessions", "/use", "/continue", "/answer", "/status", "/stop", "/new" -> true;
+            default -> false;
+        };
+    }
+
     private final Map<String, RouteLease> routes = new LinkedHashMap<>();
     private final Map<String, SessionList> sessionLists = new LinkedHashMap<>();
     private final Map<String, String> invalidated = new LinkedHashMap<>();
@@ -35,6 +43,49 @@ final class ClawBotMessageRouter {
     private long routeRevision;
     private boolean routesDirty;
     private Consumer<ClawBotInboundMessage> previewRequester = message -> { };
+
+    private final Map<String, InteractionRoute> interactions = new LinkedHashMap<>();
+
+    private record InteractionRoute(ClawBotSessionTarget target, String sender, String messageId, String token) { }
+
+    synchronized void setInteraction(ClawBotSessionSnapshot target, ClawBotInboundMessage source, String token) {
+        String key = target.sessionHandleId();
+        if (token.isEmpty()) {
+            clearInteraction(key, source.messageId());
+        } else {
+            interactions.put(key, new InteractionRoute(ClawBotSessionTarget.of(target), source.fromUserId(), source.messageId(), token));
+        }
+    }
+
+    synchronized void clearInteraction(String handle, String messageId) {
+        InteractionRoute current = interactions.get(handle);
+        if (current != null && current.messageId().equals(messageId)) {
+            interactions.remove(handle);
+        }
+    }
+
+    private boolean routeAnswer(ClawBotInboundMessage message, List<ClawBotSessionSnapshot> sessions,
+                                ReplySender replySender, SessionCommandEnqueuer enqueuer, boolean explicit) throws IOException {
+        ClawBotSessionSnapshot target = selectedSession(routeKey(message), sessions);
+        InteractionRoute interaction = target == null ? null : interactions.get(target.sessionHandleId());
+        if (interaction == null || !interaction.target().matches(target) || !interaction.sender().equals(message.fromUserId())) {
+            if (explicit) {
+                replySender.send(message, "当前选择的会话没有可回答的问题，或该问题不属于你。请查看最新问题提示。");
+            }
+            return explicit;
+        }
+        String text = explicit ? message.text().trim().replaceFirst("^/answer\\s*", "") : message.text();
+        if (text.isBlank()) {
+            replySender.send(message, "请在 /answer 后填写答案。");
+            return true;
+        }
+        ClawBotInboundMessage answer = new ClawBotInboundMessage(message.messageId(), message.fromUserId(), message.contextToken(), text)
+                .forTarget(target).forRoute(routes.get(routeKey(message)).revision()).forInteraction(interaction.token());
+        if (!enqueuer.enqueue(target.sessionHandleId(), answer)) {
+            replySender.send(message, "当前会话暂不可用，答案尚未提交，请稍后重试。");
+        }
+        return true;
+    }
 
     synchronized void setPreviewRequester(Consumer<ClawBotInboundMessage> requester) {
         previewRequester = Objects.requireNonNull(requester, "requester");
@@ -68,6 +119,7 @@ final class ClawBotMessageRouter {
             routesDirty = true;
             storeError = error;
         }
+        interactions.clear();
         routes.clear();
         sessionLists.clear();
         invalidated.clear();
@@ -257,6 +309,10 @@ final class ClawBotMessageRouter {
                 }
                 sweep(sessions);
                 if (command.startsWith("/")) {
+                    if (!isKnownSlashCommand(command)
+                            && routeAnswer(message, sessions, replySender, trackedCommandEnqueuer, false)) {
+                        return;
+                    }
                     handleCommand(message, command, sessions, replySender,
                             trackedMessageEnqueuer, trackedCommandEnqueuer);
                     return;
@@ -264,6 +320,9 @@ final class ClawBotMessageRouter {
                 NaturalCommand naturalCommand = parseNaturalCommand(command);
                 if (naturalCommand != null) {
                     handleNaturalCommand(message, naturalCommand, sessions, replySender, trackedCommandEnqueuer);
+                    return;
+                }
+                if (routeAnswer(message, sessions, replySender, trackedCommandEnqueuer, false)) {
                     return;
                 }
                 RouteSelection routeSelection = parseRouteSelection(command);
@@ -372,7 +431,7 @@ final class ClawBotMessageRouter {
                                 + "【会话控制】\n\n停止当前会话 — 请求停止当前任务\n\n"
                                 + "新建会话 — 替换当前页签会话，请谨慎使用\n\n"
                                 + "【授权】\n\n/whoami — 查看发送者 ID，在 IDE 设置中授权\n\n"
-                                + "/approve <token> 或 /deny <token> — 处理当前会话的一次性审批\n\n"
+                                + "等待回答时直接回复编号或文字；多题使用 Q编号: 答案。/answer 答案 — 回答当前问题\n\n"
                                 + "编号以 /sessions 为准，/use 和 /continue 也支持会话 handle。");
                 return;
             case "/whoami":
@@ -387,11 +446,8 @@ final class ClawBotMessageRouter {
             case "/continue":
                 handleContinue(message, parts, sessions, replySender, messageEnqueuer);
                 return;
-            case "/approve":
-                handleApproval(message, parts, sessions, replySender, commandEnqueuer, ClawBotInboundAction.APPROVE);
-                return;
-            case "/deny":
-                handleApproval(message, parts, sessions, replySender, commandEnqueuer, ClawBotInboundAction.DENY);
+            case "/answer":
+                routeAnswer(message, sessions, replySender, commandEnqueuer, true);
                 return;
             case "/status":
                 replySender.send(message, formatRoute(message, sessions));
@@ -405,36 +461,6 @@ final class ClawBotMessageRouter {
                 replySender.send(message,
                         "未知命令，请发送 /help 查看可用命令。");
         }
-    }
-
-    private void handleApproval(
-            ClawBotInboundMessage message,
-            String[] parts,
-            List<ClawBotSessionSnapshot> sessions,
-            ReplySender replySender,
-            SessionCommandEnqueuer commandEnqueuer,
-            ClawBotInboundAction action
-    ) throws IOException {
-        if (parts.length != 2 || !isSafeSelector(parts[1]) || parts[1].length() > 256) {
-            replySender.send(message,
-                    "Usage: /" + action.name().toLowerCase(Locale.ROOT) + " <token>. Use the one-time token from the approval notice.");
-            return;
-        }
-        ClawBotSessionSnapshot target = resolveControlTarget(null, message, sessions);
-        if (target == null) {
-            replySender.send(message,
-                    "No controllable target session is selected. Send /sessions and /use first.");
-            return;
-        }
-        ClawBotInboundMessage forwarded = ClawBotInboundMessage.command(message, action).forTarget(target);
-        if (!commandEnqueuer.enqueue(target.sessionHandleId(), forwarded)) {
-            replySender.send(message,
-                    "The target session is unavailable; approval was not executed.");
-            return;
-        }
-        renewRoute(message, sessions);
-        replySender.send(message,
-                "Approval command forwarded to " + displayName(target) + ".");
     }
 
     private void handleNaturalCommand(
@@ -696,6 +722,7 @@ final class ClawBotMessageRouter {
     }
 
     synchronized void sweep(List<ClawBotSessionSnapshot> sessions) throws IOException {
+        interactions.values().removeIf(interaction -> sessions.stream().noneMatch(interaction.target()::matches));
         boolean changed = false;
         var iterator = routes.entrySet().iterator();
         while (iterator.hasNext()) {

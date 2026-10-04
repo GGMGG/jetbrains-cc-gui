@@ -4,6 +4,7 @@ import com.github.claudecodegui.action.SendShortcutSync;
 import com.github.claudecodegui.clawbot.ClawBotGatewayRuntimeService;
 import com.github.claudecodegui.clawbot.ClawBotConversationPreview;
 import com.github.claudecodegui.clawbot.ClawBotProgressTracker;
+import com.github.claudecodegui.clawbot.ClawBotInteractionExchange;
 import com.github.claudecodegui.clawbot.ClawBotDeliveryRetryPolicy;
 import com.github.claudecodegui.clawbot.ClawBotIdeClient;
 import com.github.claudecodegui.clawbot.ClawBotIdeExecutionJournal;
@@ -16,7 +17,6 @@ import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.handler.history.HistoryHandler;
 import com.github.claudecodegui.handler.core.MessageDispatcher;
 import com.github.claudecodegui.handler.PermissionHandler;
-import com.github.claudecodegui.permission.PermissionRequest;
 import com.github.claudecodegui.permission.PermissionService;
 import com.github.claudecodegui.provider.claude.ClaudeSDKBridge;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
@@ -141,7 +141,6 @@ public class ClaudeChatWindow {
     private String clawBotActivityId = "";
     private volatile ClaudeSession clawBotRunningSession;
     private final AtomicReference<ClawBotActiveTurn> clawBotActiveTurn = new AtomicReference<>();
-    private final Map<String, ClawBotApproval> clawBotApprovals = new ConcurrentHashMap<>();
 
     private volatile JBCefBrowser browser;
     // volatile: read from the daemon reader thread by the session_updated listener
@@ -2382,11 +2381,6 @@ public class ClaudeChatWindow {
                 persistTabSessionState();
             }
 
-            @Override
-            public void onPermissionRequested(PermissionRequest request) {
-                super.onPermissionRequested(request);
-                registerClawBotApproval(request);
-            }
         };
         session.setCallback(sessionCallbackAdapter);
 
@@ -3004,7 +2998,6 @@ public class ClaudeChatWindow {
         if (closingTurn != null) {
             closingTurn.progress().close();
         }
-        clawBotApprovals.clear();
         ClawBotIdeClient client;
         synchronized (clawBotClientLock) {
             client = clawBotClient;
@@ -3080,80 +3073,34 @@ public class ClaudeChatWindow {
         if (turn == null || client == null || disposed || permissionServiceKey == null || session != turn.session()) {
             return;
         }
-        String phase = clawBotProgressPhase();
-        ClawBotProgressTracker.Notification notification = turn.progress().prepare(
-                phase, formatClawBotProgress(turn, phase), System.nanoTime());
+        long interactionVersion = permissionHandler == null ? 0 : permissionHandler.getClawBotInteractionRevision();
+        turn.interactions().update(permissionHandler == null ? List.of() : permissionHandler.getClawBotInteractions());
+        String token = turn.interactions().revision();
+        String phase = token.isEmpty() ? clawBotProgressPhase() : "WAITING:" + token;
+        String prompt = token.isEmpty() ? clawBotWaitingPrompt(phase)
+                : turn.interactions().prompt();
+        ClawBotProgressTracker.Notification notification = turn.progress().prepare(phase, prompt, System.nanoTime());
         if (notification == null) {
             return;
         }
         AppExecutorUtil.getAppExecutorService().execute(() -> turn.progress().dispatch(notification,
-                () -> !disposed && session == turn.session() && clawBotActiveTurn.get() == turn,
-                progress -> client.sendProgress(permissionServiceKey, turn.message().messageId(),
-                        turn.message().messageId() + ":progress:" + progress.sequence(), progress.text())));
-    }
-
-    private void registerClawBotApproval(PermissionRequest request) {
-        ClawBotActiveTurn turn = clawBotActiveTurn.get();
-        ClaudeSession owner = clawBotRunningSession;
-        if (turn == null || owner == null || request == null || request.isResolved()) {
-            return;
-        }
-        String token = UUID.randomUUID().toString();
-        ClawBotApproval approval = new ClawBotApproval(request, owner, clawBotGeneration(owner),
-                turn.message().fromUserId(), request.getToolName(),
-                System.nanoTime() + TimeUnit.MINUTES.toNanos(10));
-        clawBotApprovals.put(token, approval);
-        while (clawBotApprovals.size() > 16) {
-            clawBotApprovals.remove(clawBotApprovals.keySet().iterator().next());
-        }
-        String contextToken = turn.message().contextToken();
-        String senderId = turn.message().fromUserId();
-        String serviceKey = permissionServiceKey;
-        request.getResultFuture().whenComplete((result, error) -> {
-            if (!clawBotApprovals.remove(token, approval) || error != null || result == null
-                    || serviceKey == null || disposed) {
-                return;
-            }
-            String decision = result.getBehavior() == PermissionRequest.PermissionResult.Behavior.ALLOW
-                    ? "已在 IDE 中批准该权限请求，微信审批 token 已失效。"
-                    : "已在 IDE 中拒绝该权限请求，微信审批 token 已失效。";
-            AppExecutorUtil.getAppExecutorService().execute(() -> {
-                try {
-                    ClawBotIdeClient client = clawBotClient;
-                    if (client != null && !disposed) {
-                        client.sendText(serviceKey, senderId, contextToken, decision);
+                () -> !disposed && session == turn.session() && clawBotActiveTurn.get() == turn
+                        && (permissionHandler == null || permissionHandler.getClawBotInteractionRevision() == interactionVersion)
+                        && token.equals(turn.interactions().revision())
+                        && (token.isEmpty() ? phase.equals(clawBotProgressPhase()) : !permissionHandler.getClawBotInteractions().isEmpty()),
+                progress -> {
+                    if (!client.updateInteraction(permissionServiceKey, turn.message().messageId(), token)) {
+                        return false;
                     }
-                } catch (IOException | RuntimeException notificationError) {
-                    LOG.debug("[ClawBot] Local approval notification unavailable");
-                }
-            });
-        });
-    }
-
-    private String formatClawBotApprovalProgress(ClawBotActiveTurn turn) {
-        long now = System.nanoTime();
-        clawBotApprovals.entrySet().removeIf(entry -> now - entry.getValue().expiresAtNanos() >= 0L);
-        for (Map.Entry<String, ClawBotApproval> entry : clawBotApprovals.entrySet()) {
-            ClawBotApproval approval = entry.getValue();
-            if (approval.session() == clawBotRunningSession
-                    && approval.senderId().equals(turn.message().fromUserId())) {
-                return "任务需要 IDE 权限确认：回复 /approve " + entry.getKey() + " 或 /deny "
-                        + entry.getKey() + "。操作类型：" + approval.toolName();
-            }
-        }
-        return "任务正在等待 IDE 权限确认，请在 IDE 中处理。";
-    }
-
-    private String formatClawBotProgress(ClawBotActiveTurn turn, String phase) {
-        return switch (phase) {
-            case "WAITING_APPROVAL" -> formatClawBotApprovalProgress(turn);
-            case "WAITING_USER" -> "任务正在等待 IDE 用户回答问题，请在 IDE 中完成回答。";
-            case "WAITING_PLAN_APPROVAL" -> "任务正在等待 IDE 计划审批，请在 IDE 中完成处理。";
-            default -> "";
-        };
+                    return client.sendProgress(permissionServiceKey, turn.message().messageId(),
+                            turn.message().messageId() + ":progress:" + progress.sequence(), progress.text());
+                }));
     }
 
     private String clawBotProgressPhase() {
+        if (permissionServiceKey != null && PermissionService.getInstance(project, permissionServiceKey).hasPendingIdeReview()) {
+            return "WAITING_IDE_REVIEW";
+        }
         ClaudeSession current = session;
         if (current != null && !current.getPermissionManager().getPendingRequests().isEmpty()) {
             return "WAITING_APPROVAL";
@@ -3165,6 +3112,16 @@ public class ClaudeChatWindow {
             }
         }
         return "RUNNING";
+    }
+
+    private String clawBotWaitingPrompt(String phase) {
+        String reason = switch (phase) {
+            case "WAITING_USER" -> "任务正在等待 IDE 用户回答问题，请在 IDE 中完成回答。";
+            case "WAITING_PLAN_APPROVAL" -> "任务正在等待 IDE 计划审批，请在 IDE 中完成处理。";
+            case "WAITING_APPROVAL" -> "任务正在等待 IDE 权限审批，请在 IDE 中完成处理。";
+            default -> "任务正在等待 IDE 中的审批或审查，请在 IDE 中处理。";
+        };
+        return reason + "普通进度推送已暂停。";
     }
 
     private void pollClawBotControl() {
@@ -3243,9 +3200,21 @@ public class ClaudeChatWindow {
             return;
         }
         clawBotInFlightControlMessageId = command.messageId();
-        if (command.action() == ClawBotInboundAction.APPROVE
-                || command.action() == ClawBotInboundAction.DENY) {
-            handleClawBotApproval(client, command, currentSession);
+        if (command.action() == ClawBotInboundAction.ANSWER) {
+            ClawBotActiveTurn turn = clawBotActiveTurn.get();
+            String reply = "当前任务没有可回答的问题，或该问题不属于你。";
+            if (turn != null && turn.session() == currentSession && permissionHandler != null
+                    && turn.message().fromUserId().equals(command.fromUserId())) {
+                turn.interactions().update(permissionHandler.getClawBotInteractions());
+                reply = turn.interactions().answer(command.interactionToken(), command.text(), permissionHandler::answerClawBotInteraction);
+                turn.interactions().update(permissionHandler.getClawBotInteractions());
+                syncClawBotInteraction(client, turn);
+            }
+            sendClawBotControlReply(client, command, reply);
+            return;
+        }
+        if (command.action() != ClawBotInboundAction.INTERRUPT && command.action() != ClawBotInboundAction.NEW_SESSION) {
+            sendClawBotControlReply(client, command, "该控制命令已停用，请根据当前问题直接回复编号或文字。");
             return;
         }
         try {
@@ -3271,40 +3240,12 @@ public class ClaudeChatWindow {
         });
     }
 
-    private void handleClawBotApproval(
-            ClawBotIdeClient client, ClawBotInboundMessage command, ClaudeSession currentSession) {
-        String[] parts = command.text().trim().split("\\s+");
-        if (parts.length != 2) {
-            sendClawBotControlReply(client, command, "审批 token 格式不正确。");
-            return;
+    private void syncClawBotInteraction(ClawBotIdeClient client, ClawBotActiveTurn turn) {
+        try {
+            client.updateInteraction(permissionServiceKey, turn.message().messageId(), turn.interactions().revision());
+        } catch (IOException | RuntimeException error) {
+            LOG.debug("[ClawBot] Interaction route refresh unavailable; progress polling will retry");
         }
-        ClawBotApproval approval = clawBotApprovals.get(parts[1]);
-        if (approval == null || approval.session() != currentSession
-                || !approval.senderId().equals(command.fromUserId())
-                || System.nanoTime() - approval.expiresAtNanos() >= 0L
-                || !approval.generation().equals(clawBotGeneration(currentSession))) {
-            if (approval != null && System.nanoTime() - approval.expiresAtNanos() >= 0L) {
-                clawBotApprovals.remove(parts[1], approval);
-            }
-            sendClawBotControlReply(client, command, "审批请求已过期、已处理或不属于当前会话。");
-            return;
-        }
-        if (!clawBotApprovals.remove(parts[1], approval)) {
-            sendClawBotControlReply(client, command, "审批请求已处理。");
-            return;
-        }
-        if (approval.request().isResolved()) {
-            sendClawBotControlReply(client, command, "IDE 已先处理了该审批请求。");
-            return;
-        }
-        boolean allow = command.action() == ClawBotInboundAction.APPROVE;
-        boolean resolved = currentSession.tryHandleRemotePermissionDecision(approval.request(), allow,
-                allow ? null : "Denied from Claw Bot");
-        if (!resolved) {
-            sendClawBotControlReply(client, command, "审批已过期或已在 IDE 中处理。");
-            return;
-        }
-        sendClawBotControlReply(client, command, allow ? "已批准该操作。" : "已拒绝该操作。");
     }
 
     private void sendClawBotControlReply(
@@ -3421,7 +3362,7 @@ public class ClaudeChatWindow {
         clawBotRunningSession = currentSession;
         int firstTurnMessageIndex = currentSession.getMessages().size();
         ClawBotActiveTurn activeTurn = new ClawBotActiveTurn(message, currentSession,
-                new ClawBotProgressTracker(currentSession, firstTurnMessageIndex, System.nanoTime()));
+                new ClawBotProgressTracker(currentSession, firstTurnMessageIndex, System.nanoTime()), new ClawBotInteractionExchange());
         clawBotActiveTurn.set(activeTurn);
         refreshClawBotActivity(client);
         CompletableFuture<Void> completion;
@@ -3466,7 +3407,8 @@ public class ClaudeChatWindow {
             ClawBotIdeClient client, ClawBotInboundMessage message, String text, String phase) {
         AppExecutorUtil.getAppExecutorService().execute(() -> {
             ClawBotActiveTurn turn = clawBotActiveTurn.get();
-            if (disposed || turn == null || !turn.message().messageId().equals(message.messageId())) {
+            if (disposed || turn == null || !turn.message().messageId().equals(message.messageId())
+                    || !"RUNNING".equals(clawBotProgressPhase())) {
                 return;
             }
             try {
@@ -3656,7 +3598,6 @@ public class ClaudeChatWindow {
     }
 
     private void invalidateClawBotRemoteState() {
-        clawBotApprovals.clear();
         clawBotPendingReply = null;
         clawBotPendingControlReply = null;
         clawBotInFlightControlMessageId = null;
@@ -3699,17 +3640,8 @@ public class ClaudeChatWindow {
             ClawBotInboundMessage message, String reply, int failureCount, long nextAttemptAtNanos) {
     }
 
-    private record ClawBotApproval(
-            PermissionRequest request,
-            ClaudeSession session,
-            String generation,
-            String senderId,
-            String toolName,
-            long expiresAtNanos) {
-    }
-
     private record ClawBotActiveTurn(
-            ClawBotInboundMessage message, ClaudeSession session, ClawBotProgressTracker progress) { }
+            ClawBotInboundMessage message, ClaudeSession session, ClawBotProgressTracker progress, ClawBotInteractionExchange interactions) { }
 
     public void dispose() {
         // Begin teardown under the dispatch gate: this waits for any in-flight dispatch to finish

@@ -6,6 +6,8 @@ import com.google.gson.JsonParser;
 import org.junit.Test;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -103,6 +105,57 @@ public class ClawBotProgressTrackerTest {
 
         answer.content = "progress after limit";
         assertNull(fixture.tracker().prepare("RUNNING", "", now));
+    }
+
+    @Test
+    public void pausesProgressWhileWaitingAndSendsResumeBeforeNewText() {
+        Fixture fixture = startTurn();
+        Message answer = new Message(Message.Type.ASSISTANT, "before question");
+        fixture.session().getState().addMessage(answer);
+        long now = FIRST_CHECK;
+
+        ClawBotProgressTracker.Notification waiting = fixture.tracker().prepare(
+                "WAITING:q-1", "【等待回答】\n请回复选项。", now);
+        assertNotNull(waiting);
+        assertTrue(waiting.essential());
+        assertTrue(waiting.text().contains("等待回答"));
+        fixture.tracker().finish(waiting, true, now);
+
+        answer.content = "before question and post answer";
+        assertNull(fixture.tracker().prepare("WAITING:q-1", "【等待回答】\n请回复选项。",
+                now + TEXT_INTERVAL));
+
+        ClawBotProgressTracker.Notification resumed = fixture.tracker().prepare(
+                "RUNNING", "", now + TEXT_INTERVAL);
+        assertNotNull(resumed);
+        assertTrue(resumed.essential());
+        assertTrue(resumed.text().contains("等待已结束"));
+        fixture.tracker().finish(resumed, true, now + TEXT_INTERVAL);
+
+        answer.content = "before question and post answer and another chunk";
+        ClawBotProgressTracker.Notification progress = fixture.tracker().prepare(
+                "RUNNING", "", now + TEXT_INTERVAL + 1);
+        assertNotNull(progress);
+        assertFalse(progress.essential());
+        assertTrue(progress.text().contains("another chunk"));
+    }
+
+    @Test
+    public void rechecksTurnStateImmediatelyBeforeSendingPreparedProgress() {
+        Fixture fixture = startTurn();
+        fixture.session().getState().addMessage(new Message(Message.Type.ASSISTANT, "prepared text"));
+        ClawBotProgressTracker.Notification notification = fixture.tracker().prepare(
+                "RUNNING", "", FIRST_CHECK);
+        AtomicInteger checks = new AtomicInteger();
+        AtomicBoolean sent = new AtomicBoolean();
+
+        fixture.tracker().dispatch(notification, () -> checks.incrementAndGet() < 2, ignored -> {
+            sent.set(true);
+            return true;
+        });
+
+        assertFalse(sent.get());
+        assertTrue(checks.get() >= 2);
     }
 
     private static Fixture startTurn() {

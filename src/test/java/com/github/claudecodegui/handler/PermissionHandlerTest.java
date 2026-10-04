@@ -2,7 +2,9 @@ package com.github.claudecodegui.handler;
 
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.permission.PermissionService;
+import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.settings.CodemossSettingsService;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Before;
 import org.junit.Test;
@@ -12,6 +14,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -64,6 +67,43 @@ public class PermissionHandlerTest {
 
         injectAskUserFuture("question-progress", new CompletableFuture<>());
         assertEquals("WAITING_USER", handler.getClawBotPendingInteractionPhase());
+    }
+
+    @Test
+    public void exposesAskUserQuestionToClawBotAndResolvesTheSameFuture() throws Exception {
+        HandlerContext context = contextStub();
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        session.getState().beginTurn();
+        session.getState().addMessage(new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "question"));
+        context.setSession(session);
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                context, scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        JsonObject question = new JsonObject();
+        question.addProperty("question", "选择颜色");
+        JsonArray options = new JsonArray();
+        options.add("红");
+        options.add("蓝");
+        question.add("options", options);
+        JsonArray questions = new JsonArray();
+        questions.add(question);
+        JsonObject data = new JsonObject();
+        data.add("questions", questions);
+
+        CompletableFuture<JsonObject> future = configuredHandler.showAskUserQuestionDialog("remote-ask", data);
+        List<com.github.claudecodegui.clawbot.ClawBotInteraction> interactions =
+                configuredHandler.getClawBotInteractions();
+        assertEquals(1, interactions.size());
+
+        JsonObject answer = new JsonObject();
+        JsonObject answers = new JsonObject();
+        answers.addProperty("选择颜色", "蓝");
+        answer.add("answers", answers);
+        assertTrue(configuredHandler.answerClawBotInteraction(interactions.get(0).token(), answer));
+        assertEquals("蓝", future.get(1, TimeUnit.SECONDS).get("选择颜色").getAsString());
+        assertTrue(configuredHandler.getClawBotInteractions().isEmpty());
     }
 
     @Test

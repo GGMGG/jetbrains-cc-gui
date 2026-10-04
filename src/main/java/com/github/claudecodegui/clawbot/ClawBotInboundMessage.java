@@ -13,7 +13,8 @@ public record ClawBotInboundMessage(
         String text,
         ClawBotInboundAction action,
         ClawBotSessionTarget target,
-        long routeRevision
+        long routeRevision,
+        String interactionToken
 ) {
 
     static final int MAX_MESSAGE_ID_LENGTH = 512;
@@ -26,10 +27,23 @@ public record ClawBotInboundMessage(
         fromUserId = requireBounded(fromUserId, "fromUserId", MAX_USER_ID_LENGTH);
         contextToken = requireBounded(contextToken, "contextToken", MAX_CONTEXT_TOKEN_LENGTH);
         action = Objects.requireNonNull(action, "action");
+        interactionToken = interactionToken == null ? "" : interactionToken;
+        if (!interactionToken.isEmpty()) {
+            requireBounded(interactionToken, "interactionToken", 256);
+        }
         text = action == ClawBotInboundAction.UNSUPPORTED_MEDIA ? requireOptionalText(text) : requireText(text);
         if (routeRevision < 0) {
             throw new IllegalArgumentException("Invalid route revision");
         }
+    }
+
+    public ClawBotInboundMessage(String messageId, String fromUserId, String contextToken, String text,
+                                 ClawBotInboundAction action, ClawBotSessionTarget target, long routeRevision) {
+        this(messageId, fromUserId, contextToken, text, action, target, routeRevision, "");
+    }
+
+    ClawBotInboundMessage forInteraction(String token) {
+        return new ClawBotInboundMessage(messageId, fromUserId, contextToken, text, ClawBotInboundAction.ANSWER, target, routeRevision, token);
     }
 
     public ClawBotInboundMessage(String messageId, String fromUserId, String contextToken, String text) {
@@ -41,11 +55,11 @@ public record ClawBotInboundMessage(
     }
 
     ClawBotInboundMessage forTarget(ClawBotSessionSnapshot session) {
-        return new ClawBotInboundMessage(messageId, fromUserId, contextToken, text, action, ClawBotSessionTarget.of(session), routeRevision);
+        return new ClawBotInboundMessage(messageId, fromUserId, contextToken, text, action, ClawBotSessionTarget.of(session), routeRevision, interactionToken);
     }
 
     ClawBotInboundMessage forRoute(long revision) {
-        return new ClawBotInboundMessage(messageId, fromUserId, contextToken, text, action, target, revision);
+        return new ClawBotInboundMessage(messageId, fromUserId, contextToken, text, action, target, revision, interactionToken);
     }
 
     static ClawBotInboundMessage command(ClawBotInboundMessage source, ClawBotInboundAction action) {
@@ -64,6 +78,7 @@ public record ClawBotInboundMessage(
         result.addProperty("fromUserId", fromUserId);
         result.addProperty("contextToken", contextToken);
         result.addProperty("text", text);
+        result.addProperty("interactionToken", interactionToken);
         if (action != ClawBotInboundAction.MESSAGE) {
             result.addProperty("action", action.name());
         }
@@ -91,7 +106,7 @@ public record ClawBotInboundMessage(
                     readString(object, "text"),
                     readAction(object),
                     targetElement == null ? null : ClawBotSessionTarget.fromJson(targetElement.getAsJsonObject()),
-                    revision);
+                    revision, object.has("interactionToken") ? readString(object, "interactionToken") : "");
         } catch (IllegalArgumentException error) {
             throw error;
         } catch (RuntimeException error) {

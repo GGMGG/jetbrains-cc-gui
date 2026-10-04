@@ -327,6 +327,19 @@ public final class ClawBotIdeClient implements AutoCloseable {
         }
     }
 
+    /** Publishes only routing metadata; question content remains in the IDE. */
+    public boolean updateInteraction(String handle, String messageId, String token) throws IOException {
+        synchronized (requestLock) {
+            ensureOpen();
+            JsonObject payload = ownerPayload(handle);
+            payload.addProperty("messageId", requireBoundedValue(
+                    messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
+            payload.addProperty("interactionToken", token == null ? ""
+                    : requireBoundedValue(token, "interactionToken", 256));
+            return readAccepted(send("SESSION_INTERACTION", payload));
+        }
+    }
+
     public boolean sendProgress(
             String sessionHandleId, String messageId, String eventId, String text) throws IOException {
         synchronized (requestLock) {

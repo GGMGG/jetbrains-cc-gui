@@ -11,7 +11,6 @@ import java.util.function.BooleanSupplier;
 public final class ClawBotProgressTracker {
     private static final long TEXT_INTERVAL = TimeUnit.MINUTES.toNanos(1);
     private static final long IDLE_INTERVAL = TimeUnit.MINUTES.toNanos(5);
-    private static final long WAIT_INTERVAL = TimeUnit.MINUTES.toNanos(10);
     private static final int MAX_NOTIFICATIONS = 12;
     private static final int MAX_TEXT = 800;
 
@@ -70,7 +69,7 @@ public final class ClawBotProgressTracker {
     }
 
     public synchronized Notification prepare(String currentPhase, String statusText, long now) {
-        if (closed || inFlight || question == null) {
+        if (closed || question == null) {
             return null;
         }
         boolean phaseChanged = !phase.equals(currentPhase)
@@ -81,8 +80,25 @@ public final class ClawBotProgressTracker {
             pending = null;
             pendingResponse = null;
             failures = 0;
+            inFlight = false;
+            Response baseline = ClawBotConversationPreview.captureResponse(session, firstMessageIndex, turnOwner, runtimeEpoch, question);
+            if (baseline == null) {
+                closed = true;
+                return null;
+            }
+            delivered = baseline;
+            pendingResponse = baseline;
+            pending = new Notification(++sequence, "RUNNING".equals(phase)
+                    ? "等待已结束（已回答、取消或超时），任务继续处理。" : statusText, true, true);
+            retryAt = now;
             nextCheck = now;
             nextReminder = now;
+        }
+        if (inFlight) {
+            return null;
+        }
+        if (pending == null && !"RUNNING".equals(phase)) {
+            return null;
         }
         if (pending != null) {
             if (!ClawBotDeliveryRetryPolicy.isDue(now, retryAt)) {
@@ -101,20 +117,20 @@ public final class ClawBotProgressTracker {
         }
         if (pending == null && notificationCount < MAX_NOTIFICATIONS) {
             boolean running = "RUNNING".equals(phase);
-            nextCheck = now + (running ? TEXT_INTERVAL : WAIT_INTERVAL);
+            nextCheck = now + TEXT_INTERVAL;
             if (running && !response.text().isBlank() && !response.equals(delivered)) {
                 String text = response.text();
                 if (response.message() == delivered.message() && text.startsWith(delivered.text())) {
                     text = text.substring(delivered.text().length());
                 }
                 pendingResponse = response;
-                pending = new Notification(++sequence, "【处理中 · 最新回复】\n\n" + latestExcerpt(text), false);
+                pending = new Notification(++sequence, "【处理中 · 最新回复】\n\n" + latestExcerpt(text), false, false);
             } else if (ClawBotDeliveryRetryPolicy.isDue(now, nextReminder)) {
                 String text = running
                         ? (response.text().isBlank() ? "任务仍在处理中，暂未产生可展示的回复。"
                         : "任务仍在执行，暂无新的文本回复。") : statusText;
                 pendingResponse = delivered;
-                pending = new Notification(++sequence, text, true);
+                pending = new Notification(++sequence, text, true, false);
             }
         }
         inFlight = pending != null;
@@ -135,13 +151,20 @@ public final class ClawBotProgressTracker {
                     close();
                     return;
                 }
+                synchronized (this) {
+                    if (closed || pending != notification || !current.getAsBoolean()) {
+                        return;
+                    }
+                }
                 boolean accepted = sender.send(notification);
                 finish(notification, accepted, System.nanoTime());
             } catch (IOException | RuntimeException error) {
                 finish(notification, false, System.nanoTime());
             } finally {
                 synchronized (this) {
-                    inFlight = false;
+                    if (pending == notification) {
+                        inFlight = false;
+                    }
                 }
             }
         }
@@ -154,9 +177,11 @@ public final class ClawBotProgressTracker {
         inFlight = false;
         if (accepted) {
             delivered = pendingResponse;
-            notificationCount++;
-            nextReminder = now + ("RUNNING".equals(phase) ? IDLE_INTERVAL : WAIT_INTERVAL);
-            nextCheck = now + ("RUNNING".equals(phase) ? TEXT_INTERVAL : WAIT_INTERVAL);
+            if (!notification.essential()) {
+                notificationCount++;
+            }
+            nextReminder = now + IDLE_INTERVAL;
+            nextCheck = now + TEXT_INTERVAL;
             pending = null;
             pendingResponse = null;
             failures = 0;
@@ -194,7 +219,7 @@ public final class ClawBotProgressTracker {
 
     record Response(Object message, String text) { }
 
-    public record Notification(long sequence, String text, boolean reminder) { }
+    public record Notification(long sequence, String text, boolean reminder, boolean essential) { }
 
     @FunctionalInterface
     public interface Sender {

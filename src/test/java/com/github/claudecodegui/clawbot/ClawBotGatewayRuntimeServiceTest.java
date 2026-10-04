@@ -490,7 +490,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertFalse(follower.start());
 
             JsonObject status = follower.statusSnapshot();
-            assertEquals("LEADER", status.get("state").getAsString());
+            assertEquals("FOLLOWER", status.get("state").getAsString());
             assertEquals("BOUND", status.get("bindingState").getAsString());
             assertFalse(status.toString().contains("fixture-token"));
         } finally {
@@ -513,7 +513,8 @@ public class ClawBotGatewayRuntimeServiceTest {
             for (int index = 0; index < 9; index++) {
                 JsonObject payload = new JsonObject();
                 payload.addProperty("senderId", "fixture-sender-" + index);
-                follower.control("ALLOW_SENDER", payload);
+                JsonObject result = follower.control("ALLOW_SENDER", payload);
+                assertEquals("FOLLOWER", result.get("state").getAsString());
             }
 
             JsonObject status = follower.statusSnapshot();

@@ -190,7 +190,12 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     public synchronized JsonObject statusSnapshot() {
         if (state == State.FOLLOWER) {
             try {
-                return requestLeaderStatus();
+                JsonObject leaderStatus = requestLeaderStatus();
+                // The counters belong to the leader, but the role shown in this IDE must
+                // describe the local gateway instance. Otherwise every follower appears as
+                // another leader in its Settings view.
+                leaderStatus.addProperty("state", state.name());
+                return leaderStatus;
             } catch (IOException | RuntimeException ignored) {
                 // The local snapshot remains useful while the leader is restarting.
             }
@@ -289,7 +294,13 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         if ("ERROR".equals(response.type())) {
             throw new IOException(readErrorCode(response.payload()));
         }
-        return response.payload();
+        return withLocalState(response.payload());
+    }
+
+    private synchronized JsonObject withLocalState(JsonObject remoteStatus) {
+        JsonObject status = remoteStatus == null ? new JsonObject() : remoteStatus.deepCopy();
+        status.addProperty("state", state.name());
+        return status;
     }
 
     /** Creates an IDE client using this runtime's leader or the discovered leader endpoint. */
@@ -548,6 +559,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     return sessionControlReplyResponse(request, payload);
                 case "SESSION_CONTROL_REJECT":
                     return rejectPendingMessageResponse(request, payload, true);
+                case "SESSION_INTERACTION":
+                    return sessionInteractionResponse(request, payload);
                 case "SESSION_PROGRESS":
                     return sessionProgressResponse(request, payload);
                 case "SESSION_PREVIEW_POLL":
@@ -1057,6 +1070,21 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         }
     }
 
+    private synchronized ClawBotIpcEnvelope sessionInteractionResponse(ClawBotIpcEnvelope request, JsonObject payload) throws IOException {
+        String handle = readString(payload, "sessionHandleId");
+        String messageId = readBoundedString(payload, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH, false);
+        String token = readBoundedString(payload, "interactionToken", 256, true);
+        ClawBotInboundMessage source = sessionRegistry.pollInbound(handle, request.instanceId(), request.connectionEpoch());
+        ClawBotSessionSnapshot target = sessionRegistry.snapshot().stream()
+                .filter(value -> value.sessionHandleId().equals(handle)).findFirst().orElse(null);
+        if (source == null || target == null || !source.messageId().equals(messageId)
+                || !sessionRegistry.isInboundDispatched(handle, request.instanceId(), request.connectionEpoch(), messageId)) {
+            return errorResponse(request, "CLAWBOT_SESSION_MESSAGE_NOT_PENDING");
+        }
+        messageRouter.setInteraction(target, source, token);
+        return acceptedResponse(request, "SESSION_INTERACTION_RESULT", "SENT");
+    }
+
     private ClawBotIpcEnvelope sessionProgressResponse(
             ClawBotIpcEnvelope request, JsonObject payload) {
         try {
@@ -1172,6 +1200,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             throws IOException {
         resolveInboundExecution(messageId);
         synchronized (this) {
+            messageRouter.clearInteraction(sessionHandleId, messageId);
             sessionRegistry.acknowledgeInbound(
                     sessionHandleId, request.instanceId(), request.connectionEpoch(), messageId);
         }
@@ -1187,6 +1216,9 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     }
 
     private void resolveInboundExecution(String messageId) throws IOException {
+        for (ClawBotSessionSnapshot target : sessionRegistry.snapshot()) {
+            messageRouter.clearInteraction(target.sessionHandleId(), messageId);
+        }
         messageRouter.resolveUncertainMessage(messageId,
                 messageIds -> transportStateStore.save(
                         inboundCursor, messageIds, messageRouter.uncertainMessageIdsSnapshot()));

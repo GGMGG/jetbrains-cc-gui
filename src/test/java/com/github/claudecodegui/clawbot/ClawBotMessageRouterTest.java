@@ -261,14 +261,15 @@ public class ClawBotMessageRouterTest {
     }
 
     @Test
-    public void approvalCommandsUseTheIndependentControlMailbox() throws Exception {
+    public void answersUseTheIndependentControlMailbox() throws Exception {
         ClawBotMessageRouter router = new ClawBotMessageRouter();
         ClawBotSessionSnapshot session = controllableSession("session-1", "Project", "Chat", "codex");
         List<ClawBotInboundMessage> commands = new ArrayList<>();
 
         router.handle(new ClawBotInboundMessage("select", "user-1", "context", "/use session-1"),
                 List.of(session), (user, context, text) -> { }, (handle, message) -> true);
-        router.handle(new ClawBotInboundMessage("approve", "user-1", "context-2", "/approve token-1"),
+        router.setInteraction(session, new ClawBotInboundMessage("task", "user-1", "context-1", "task"), "question-version");
+        router.handle(new ClawBotInboundMessage("approve", "user-1", "context-2", "1"),
                 List.of(session), (user, context, text) -> { }, (handle, message) -> true,
                 (handle, message) -> {
                     commands.add(message);
@@ -276,10 +277,33 @@ public class ClawBotMessageRouterTest {
                 }, ignored -> { });
 
         assertEquals(1, commands.size());
-        assertEquals(ClawBotInboundAction.APPROVE, commands.get(0).action());
-        assertEquals("/approve token-1", commands.get(0).text());
+        assertEquals(ClawBotInboundAction.ANSWER, commands.get(0).action());
+        assertEquals("question-version", commands.get(0).interactionToken());
+        assertEquals(commands.get(0), ClawBotInboundMessage.fromJson(commands.get(0).toJson()));
+        assertEquals("1", commands.get(0).text());
         assertEquals("context-2", commands.get(0).contextToken());
         assertEquals("session-1", commands.get(0).target().handle());
+    }
+
+    @Test
+    public void treatsUnknownSlashTextAsAnAnswerWhileAnInteractionIsPending() throws Exception {
+        ClawBotMessageRouter router = new ClawBotMessageRouter();
+        ClawBotSessionSnapshot session = controllableSession("session-1", "Project", "Chat", "codex");
+        List<ClawBotInboundMessage> commands = new ArrayList<>();
+
+        router.handle(new ClawBotInboundMessage("select", "user-1", "context", "/use session-1"),
+                List.of(session), (user, context, text) -> { }, (handle, message) -> true);
+        router.setInteraction(session, new ClawBotInboundMessage("task", "user-1", "context", "task"), "revision");
+        router.handle(new ClawBotInboundMessage("answer", "user-1", "context", "/workspace/path"),
+                List.of(session), (user, context, text) -> { }, (handle, message) -> true,
+                (handle, message) -> {
+                    commands.add(message);
+                    return true;
+                }, ignored -> { });
+
+        assertEquals(1, commands.size());
+        assertEquals(ClawBotInboundAction.ANSWER, commands.get(0).action());
+        assertEquals("/workspace/path", commands.get(0).text());
     }
 
     @Test
