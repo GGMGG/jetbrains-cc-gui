@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -79,6 +80,16 @@ public class ClawBotSessionRegistryTest {
         assertFalse(registry.acknowledgeInbound("session", "ide-a", 1, "second"));
         assertTrue(registry.acknowledgeInbound("session", "ide-a", 1, "first"));
         assertEquals(second, registry.pollInbound("session", "ide-a", 1));
+    }
+
+    @Test
+    public void keepsDispatchedInboundAcrossRegistrationTargetRefresh() {
+        assertDispatchedInboundSurvivesTargetRefresh(false);
+    }
+
+    @Test
+    public void keepsDispatchedInboundAcrossSnapshotTargetRefresh() {
+        assertDispatchedInboundSurvivesTargetRefresh(true);
     }
 
     @Test
@@ -180,6 +191,37 @@ public class ClawBotSessionRegistryTest {
     private static ClawBotSessionRegistration inboundRegistration() {
         return new ClawBotSessionRegistration("session", "ide-a", "project", "Project", "codex",
                 Set.of("STATUS", "INBOUND"), ClawBotSessionStatus.ONLINE, 1);
+    }
+
+    private static void assertDispatchedInboundSurvivesTargetRefresh(boolean replaceSnapshot) {
+        ClawBotSessionRegistry registry = new ClawBotSessionRegistry();
+        ClawBotSessionRegistration originalRegistration = inboundRegistration("generation-1");
+        assertTrue(registry.register(originalRegistration));
+        ClawBotSessionSnapshot originalTarget = registry.snapshot().get(0);
+        ClawBotInboundMessage dispatched = new ClawBotInboundMessage(
+                "dispatched", "user", "context", "running task").forTarget(originalTarget);
+        ClawBotInboundMessage waiting = new ClawBotInboundMessage(
+                "waiting", "user", "context", "not yet accepted").forTarget(originalTarget);
+        assertTrue(registry.enqueueInbound("session", dispatched));
+        assertTrue(registry.enqueueInbound("session", waiting));
+        assertTrue(registry.markInboundDispatched("session", "ide-a", 1, "dispatched"));
+
+        ClawBotSessionRegistration refreshedRegistration = inboundRegistration("generation-2");
+        if (replaceSnapshot) {
+            assertTrue(registry.replaceSnapshot("ide-a", 1, List.of(refreshedRegistration)));
+        } else {
+            assertTrue(registry.register(refreshedRegistration));
+        }
+
+        assertEquals(dispatched, registry.pollInbound("session", "ide-a", 1));
+        assertTrue(registry.isInboundDispatched("session", "ide-a", 1, "dispatched"));
+        assertTrue(registry.acknowledgeInbound("session", "ide-a", 1, "dispatched"));
+        assertEquals(null, registry.pollInbound("session", "ide-a", 1));
+    }
+
+    private static ClawBotSessionRegistration inboundRegistration(String generation) {
+        return new ClawBotSessionRegistration("session", "ide-a", "project", "Project", "codex",
+                Set.of("STATUS", "INBOUND"), ClawBotSessionStatus.ONLINE, 1, "Chat", generation);
     }
 
     private static final class MutableClock extends Clock {

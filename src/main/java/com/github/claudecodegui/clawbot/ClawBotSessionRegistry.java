@@ -57,18 +57,26 @@ public final class ClawBotSessionRegistry {
         if (current != null && !isNewer(registration, current)) {
             return false;
         }
-        if (current != null && !sameTarget(registration, current)) {
-            pendingMessages.remove(registration.sessionHandleId());
-            pendingCommands.remove(registration.sessionHandleId());
-            dispatchedMessages.remove(registration.sessionHandleId());
-            dispatchedCommands.remove(registration.sessionHandleId());
-            idleClocks.remove(registration.sessionHandleId());
-        }
         long now = clock.millis();
-        sessions.put(registration.sessionHandleId(), new ClawBotSessionSnapshot(
+        ClawBotSessionSnapshot updated = new ClawBotSessionSnapshot(
                 registration.sessionHandleId(), registration.instanceId(), registration.projectId(),
                 registration.projectDisplayName(), registration.provider(), registration.capabilities(),
-                registration.status(), registration.connectionEpoch(), now, now, registration.tabDisplayName(), registration.generation(), 0));
+                registration.status(), registration.connectionEpoch(), now, now,
+                registration.tabDisplayName(), registration.generation(), 0);
+        if (current != null && !sameTarget(registration, current)) {
+            String handle = registration.sessionHandleId();
+            if (sameOwner(registration, current)) {
+                pruneStaleUndispatched(pendingMessages.get(handle), dispatchedMessages.get(handle), updated);
+                pruneStaleUndispatched(pendingCommands.get(handle), dispatchedCommands.get(handle), updated);
+            } else {
+                pendingMessages.remove(handle);
+                pendingCommands.remove(handle);
+                dispatchedMessages.remove(handle);
+                dispatchedCommands.remove(handle);
+            }
+            idleClocks.remove(registration.sessionHandleId());
+        }
+        sessions.put(registration.sessionHandleId(), updated);
         idleClocks.computeIfAbsent(registration.sessionHandleId(), ignored -> new ClawBotSessionIdleClock(ticker.getAsLong()));
         heartbeatTicks.put(registration.sessionHandleId(), ticker.getAsLong());
         pendingMessages.computeIfAbsent(registration.sessionHandleId(), ignored -> new ArrayDeque<>());
@@ -113,10 +121,17 @@ public final class ClawBotSessionRegistry {
         for (ClawBotSessionRegistration registration : registrations) {
             ClawBotSessionSnapshot current = sessions.get(registration.sessionHandleId());
             if (current != null && !sameTarget(registration, current)) {
-                pendingMessages.remove(registration.sessionHandleId());
-                pendingCommands.remove(registration.sessionHandleId());
-                dispatchedMessages.remove(registration.sessionHandleId());
-                dispatchedCommands.remove(registration.sessionHandleId());
+                String handle = registration.sessionHandleId();
+                if (sameOwner(registration, current)) {
+                    ClawBotSessionSnapshot next = updated.get(handle);
+                    pruneStaleUndispatched(pendingMessages.get(handle), dispatchedMessages.get(handle), next);
+                    pruneStaleUndispatched(pendingCommands.get(handle), dispatchedCommands.get(handle), next);
+                } else {
+                    pendingMessages.remove(handle);
+                    pendingCommands.remove(handle);
+                    dispatchedMessages.remove(handle);
+                    dispatchedCommands.remove(handle);
+                }
                 idleClocks.remove(registration.sessionHandleId());
             }
         }
@@ -268,14 +283,7 @@ public final class ClawBotSessionRegistry {
         }
         Deque<ClawBotInboundMessage> queue = pendingMessages.get(sessionHandleId);
         if (queue != null) {
-            Set<String> dispatched = dispatchedMessages.get(sessionHandleId);
-            queue.removeIf(message -> {
-                boolean stale = message.target() != null && !message.target().matches(current);
-                if (stale && dispatched != null) {
-                    dispatched.remove(message.messageId());
-                }
-                return stale;
-            });
+            pruneStaleUndispatched(queue, dispatchedMessages.get(sessionHandleId), current);
         }
         return queue == null ? null : queue.peekFirst();
     }
@@ -330,14 +338,7 @@ public final class ClawBotSessionRegistry {
         }
         Deque<ClawBotInboundMessage> queue = pendingCommands.get(sessionHandleId);
         if (queue != null) {
-            Set<String> dispatched = dispatchedCommands.get(sessionHandleId);
-            queue.removeIf(message -> {
-                boolean stale = message.target() != null && !message.target().matches(current);
-                if (stale && dispatched != null) {
-                    dispatched.remove(message.messageId());
-                }
-                return stale;
-            });
+            pruneStaleUndispatched(queue, dispatchedCommands.get(sessionHandleId), current);
         }
         return queue == null ? null : queue.peekFirst();
     }
@@ -444,6 +445,23 @@ public final class ClawBotSessionRegistry {
         }
         idleClocks.get(sessionHandleId).report(!activeTurnId.isEmpty(), ticker.getAsLong());
         return true;
+    }
+
+    private static void pruneStaleUndispatched(
+            Deque<ClawBotInboundMessage> queue,
+            Set<String> dispatched,
+            ClawBotSessionSnapshot current) {
+        if (queue == null) {
+            return;
+        }
+        queue.removeIf(message -> message.target() != null
+                && (dispatched == null || !dispatched.contains(message.messageId()))
+                && !message.target().matches(current));
+    }
+
+    private static boolean sameOwner(ClawBotSessionRegistration registration, ClawBotSessionSnapshot current) {
+        return current.instanceId().equals(registration.instanceId())
+                && current.connectionEpoch() == registration.connectionEpoch();
     }
 
     private static boolean sameTarget(ClawBotSessionRegistration registration, ClawBotSessionSnapshot current) {

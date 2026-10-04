@@ -3613,6 +3613,9 @@ public class ClaudeChatWindow {
             clawBotPendingReply = stale ? null : pendingReply(message, reply, restoreOnline, previousFailures);
         } finally {
             if (accepted || stale) {
+                if (stale) {
+                    LOG.warn("[ClawBot] Final reply was not delivered because the inbound request is no longer pending or owned");
+                }
                 acknowledgeClawBotExecution(message.messageId());
             }
             if (accepted && restoreOnline) {
