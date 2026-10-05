@@ -666,6 +666,9 @@ test('an acked compact that never announces its turn is recovered by its announc
     scenario: 'delayed-compact-start',
     serviceOpts: { stopBudgetMs: 40, compactAnnouncementBudgetMs: 60 },
   });
+  // The announcement watchdog is unref'd (production keeps its own handles),
+  // so the test must hold the loop open while the wedge budget expires.
+  const keepAlive = setTimeout(() => {}, 200);
   try {
     await service.preconnect({ threadId: THREAD_ID });
     const peer = getPeer();
@@ -680,7 +683,10 @@ test('an acked compact that never announces its turn is recovered by its announc
     assert.equal(eventsOf(events, 'runtimeUnhealthy').length >= 1, true,
       'wedged compact surfaced as unhealthy');
     assert.equal(service.busy, false, 'the FIFO drains after the recovery');
-  } finally { await service.resetRuntime(); }
+  } finally {
+    clearTimeout(keepAlive);
+    await service.resetRuntime();
+  }
 });
 
 test('a compact without acceptance still retires an unconfirmed dispatch', async () => {
