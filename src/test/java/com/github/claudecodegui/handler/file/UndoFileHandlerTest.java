@@ -128,6 +128,7 @@ public class UndoFileHandlerTest {
         Application application = (Application) Proxy.newProxyInstance(Application.class.getClassLoader(),
                 new Class<?>[]{Application.class}, (proxy, method, args) -> {
                     if ("invokeLater".equals(method.getName())) queued.add((Runnable) args[0]);
+                    if ("executeOnPooledThread".equals(method.getName())) queued.add((Runnable) args[0]);
                     return method.getReturnType() == boolean.class ? false : null;
                 });
         ApplicationManager.setApplication(application);

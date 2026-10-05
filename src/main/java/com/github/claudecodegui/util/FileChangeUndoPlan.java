@@ -45,6 +45,11 @@ public record FileChangeUndoPlan(String filePath, String content) {
                     if (op.has("replaceAll") && !op.get("replaceAll").isJsonNull() && op.get("replaceAll").getAsBoolean()) {
                         before = before.replace(newText, oldText);
                     } else {
+                        // Same ambiguity bar as reverseHunk: without a patch there is
+                        // no recorded location, so multiple matches would rewrite an
+                        // arbitrary occurrence and silently corrupt the file.
+                        require(before.indexOf(newText, position + 1) < 0,
+                                "Recorded edit matches multiple locations in the current file");
                         before = before.substring(0, position) + oldText + before.substring(position + newText.length());
                     }
                 }

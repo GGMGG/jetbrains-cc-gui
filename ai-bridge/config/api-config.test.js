@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import {
   buildCliEnv,
   buildWebviewControlledSettingsOverride,
+  isDangerousEnvVar,
   isWebviewControlledEnvVar,
 } from './api-config.js';
 
@@ -247,6 +248,19 @@ test('isWebviewControlledEnvVar classifies model, context, and reasoning control
   assert.equal(isWebviewControlledEnvVar('CLAUDE_CODE_DISABLE_1M_CONTEXT'), true);
   assert.equal(isWebviewControlledEnvVar('HTTPS_PROXY'), false);
   assert.equal(isWebviewControlledEnvVar('ANTHROPIC_API_KEY'), false);
+});
+
+test('isDangerousEnvVar blocks code injection and Codex CLI path overrides', () => {
+  assert.equal(isDangerousEnvVar('NODE_OPTIONS'), true);
+  assert.equal(isDangerousEnvVar('LD_PRELOAD'), true);
+  // A request-injected CLI path override would relaunch the app-server child
+  // as an attacker binary with managed credentials.
+  assert.equal(isDangerousEnvVar('CODEX_BIN'), true);
+  assert.equal(isDangerousEnvVar('CODEX_PATH'), true);
+  assert.equal(isDangerousEnvVar('CODEX_CLI_PATH'), true);
+  assert.equal(isDangerousEnvVar('codex_cli_path'), true); // case-insensitive
+  assert.equal(isDangerousEnvVar('ANTHROPIC_API_KEY'), false);
+  assert.equal(isDangerousEnvVar('PATH'), false); // Java EnvironmentConfigurator supplies PATH
 });
 
 test('buildCliEnv strips stale CLI override env vars and sets host-managed for first-party auth', () => {

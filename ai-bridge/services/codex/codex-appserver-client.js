@@ -34,6 +34,7 @@ import { EventEmitter } from 'node:events';
 import { redactCodexDiagnostic } from './codex-diagnostics.js';
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+export const DEFAULT_EXIT_DRAIN_TIMEOUT_MS = 5_000;
 
 export const CLIENT_STATES = Object.freeze([
   'idle',
@@ -47,6 +48,7 @@ export const CLIENT_STATES = Object.freeze([
 export class CodexAppServerClient extends EventEmitter {
   #readerCleanup = null;
   #shutdownTimer = null;
+  #drainTimer = null;
   /**
    * @param {object} opts
    * @param {string[]} opts.command  argv prefix for the transport, e.g.
@@ -68,6 +70,7 @@ export class CodexAppServerClient extends EventEmitter {
     sensitiveEnvNames = [],
     clientInfo = null,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    exitDrainTimeoutMs = DEFAULT_EXIT_DRAIN_TIMEOUT_MS,
     onServerRequest = null,
     spawnFn = null,
   } = {}) {
@@ -82,6 +85,9 @@ export class CodexAppServerClient extends EventEmitter {
     this.clientInfo = clientInfo
       || { name: 'codemoss_intellij', title: 'CC GUI', version: '0.0.0' };
     this.requestTimeoutMs = requestTimeoutMs;
+    // Grace period for stdio to drain after the child's exit event; if a
+    // grandchild inherited the pipes, 'close' never fires without teardown.
+    this.exitDrainTimeoutMs = exitDrainTimeoutMs;
     this.onServerRequest = onServerRequest;
     // Test-only injection: spawnFn(argv) returns a child-like object with
     // {stdin, stdout, stderr, pid, on, kill}. Production never sets this.
@@ -162,6 +168,24 @@ export class CodexAppServerClient extends EventEmitter {
         'CHILD_EXITED',
         `codex app-server exited (code=${code}, signal=${signal})`
       );
+      // A grandchild that inherited our stdout/stderr pipes (e.g. a dev server
+      // the agent launched with `&`) keeps them open after the child died, so
+      // 'close' never arrives and waitForExit() would hang reset/shutdown
+      // forever. Allow a short drain grace, then tear the pipes down ourselves.
+      if (this.#drainTimer == null && !this.exitSettled) {
+        this.#drainTimer = setTimeout(() => {
+          this.#drainTimer = null;
+          if (this.exitSettled) return;
+          try { this.child?.stdout?.destroy(); } catch { /* best effort */ }
+          try { this.child?.stderr?.destroy(); } catch { /* best effort */ }
+          try { this.child?.stdin?.destroy(); } catch { /* best effort */ }
+          this.#finalizeExit(this.exitError || new ClassifiedError(
+            'CHILD_EXITED', 'codex app-server exited (stdio drain timed out)'
+          ));
+        }, this.exitDrainTimeoutMs);
+        // Deliberately NOT unref'd: the timer must fire even when it is the only
+        // pending handle, e.g. during daemon shutdown awaiting waitForExit().
+      }
     });
     this.child.on('close', (code, signal) => {
       this.#finalizeExit(this.exitError || new ClassifiedError(
@@ -534,6 +558,10 @@ export class CodexAppServerClient extends EventEmitter {
     if (this.#shutdownTimer != null) {
       clearTimeout(this.#shutdownTimer);
       this.#shutdownTimer = null;
+    }
+    if (this.#drainTimer != null) {
+      clearTimeout(this.#drainTimer);
+      this.#drainTimer = null;
     }
     // Exactly one failure finalization: timers and registries are cleaned up
     // before the exit event so nothing lingers after 'exited'.

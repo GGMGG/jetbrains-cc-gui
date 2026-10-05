@@ -84,6 +84,18 @@ public class FileChangeUndoPlanTest {
         assertThrows(IllegalArgumentException.class, () -> FileChangeUndoPlan.rebuild("file", "different\n", ops(legacy)));
     }
 
+    /** A patch-less replacement refuses to guess between duplicate occurrences. */
+    @Test
+    public void refusesAmbiguousLegacyReplacement() {
+        JsonObject legacy = change("update", "old", "new");
+        legacy.remove("patch");
+        assertThrows(IllegalArgumentException.class, () -> FileChangeUndoPlan.rebuild("file",
+                "new\nkeep\nnew\n", ops(legacy)));
+        JsonObject replaceAll = change("update", "old", "new");
+        replaceAll.addProperty("replaceAll", true);
+        assertEquals("old\nkeep\nold\n", FileChangeUndoPlan.rebuild("file", "new\nkeep\nnew\n", ops(replaceAll)).content());
+    }
+
     private static JsonArray ops(JsonObject... operations) {
         JsonArray result = new JsonArray();
         for (JsonObject operation : operations) result.add(operation);

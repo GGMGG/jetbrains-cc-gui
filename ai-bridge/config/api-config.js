@@ -189,6 +189,11 @@ const DANGEROUS_ENV_VAR_SET = new Set([
   'PYTHONSTARTUP',
   'GIT_SSH_COMMAND',
   'GIT_EXTERNAL_DIFF',
+  // Codex CLI binary path overrides would redirect the app-server child to an
+  // attacker-controlled executable launched with managed credentials (RCE).
+  'CODEX_BIN',
+  'CODEX_PATH',
+  'CODEX_CLI_PATH',
 ]);
 
 export function isDangerousEnvVar(varName) {

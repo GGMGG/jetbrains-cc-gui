@@ -141,6 +141,34 @@ test('a post-spawn process error keeps its exit lease until the owned child actu
   }
 });
 
+test('a grandchild holding the stdio pipes cannot hang waitForExit after the child exits', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const stderr = new PassThrough();
+  const child = new EventEmitter();
+  Object.assign(child, { stdin: input, stdout: output, stderr, pid: -1, kill: () => true });
+  startPeerWithStreams({ scenario: 'native-read-only', input, output, stderr, onExit: () => {} });
+  const client = new CodexAppServerClient({
+    command: ['in-process-peer'], spawnFn: () => child, exitDrainTimeoutMs: 50,
+  });
+  try {
+    await client.ensureInitialized();
+    // The child exits but 'close' never fires: a surviving grandchild still
+    // holds the inherited pipe write ends. The drain grace must settle exit.
+    child.emit('exit', 0, null);
+    assert.equal(client.exitSettled, false);
+    const err = await client.waitForExit();
+    assert.equal(client.exitSettled, true);
+    assert.equal(err.code, 'CHILD_EXITED');
+    assert.equal(client.state, 'exited');
+  } finally {
+    client.close();
+    input.end();
+    output.end();
+    stderr.end();
+  }
+});
+
 test('closing a retired process cancels the delayed process-group kill', async (t) => {
   const client = makeClient('native-read-only');
   const platform = Object.getOwnPropertyDescriptor(process, 'platform');

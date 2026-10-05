@@ -8,11 +8,13 @@ import com.github.claudecodegui.handler.core.HandlerContext;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 
@@ -110,7 +112,9 @@ public class UndoFileHandler extends BaseMessageHandler {
 
             LOG.info("[UndoFileHandler] Undoing changes for file: " + filePath + ", status: " + status);
 
-            ApplicationManager.getApplication().invokeLater(() -> {
+            // Disk IO and plan computation stay off the EDT; only document writes
+            // and VFS deletes hop to the EDT via runEdtWrite.
+            ApplicationManager.getApplication().executeOnPooledThread(() -> {
                 try {
                     if (this.hasNativeOperations(operations)) {
                         this.restoreNativeEdits(undoPath, status, this.resolveOperationPaths(operations, workingDirectory));
@@ -156,7 +160,7 @@ public class UndoFileHandler extends BaseMessageHandler {
 
             LOG.info("[UndoFileHandler] Undoing changes for " + files.size() + " files");
             String workingDirectory = this.resolveUndoDirectory();
-            ApplicationManager.getApplication().invokeLater(() -> {
+            ApplicationManager.getApplication().executeOnPooledThread(() -> {
                 int successCount = 0;
                 int failCount = 0;
                 JsonArray successfulFiles = new JsonArray();
@@ -175,7 +179,7 @@ public class UndoFileHandler extends BaseMessageHandler {
                     }
 
                     String undoPath = this.resolveFilePath(filePath, workingDirectory);
-                    // Session selection can change while this write waits on the EDT.
+                    // Session selection can change while this work waits for the EDT.
                     if (!this.isValidFilePath(undoPath)) {
                         failCount++;
                         errors.append(filePath).append(": Invalid path (outside project); ");
@@ -228,7 +232,7 @@ public class UndoFileHandler extends BaseMessageHandler {
         // Use AtomicReference to capture exception from lambda
         final java.util.concurrent.atomic.AtomicReference<Exception> exceptionRef = new java.util.concurrent.atomic.AtomicReference<>();
 
-        WriteCommandAction.runWriteCommandAction(this.context.getProject(), "Undo File Creation", null, () -> {
+        this.runEdtWrite("Undo File Creation", () -> {
             try {
                 file.delete(this);
                 LOG.info("[UndoFileHandler] Successfully deleted file: " + filePath);
@@ -255,12 +259,13 @@ public class UndoFileHandler extends BaseMessageHandler {
             throw new Exception("Cannot get document for: " + filePath);
         }
 
-        String baseline = FileChangeUndoPlan.rebuild(filePath, document.getText(), operations).content();
-        WriteCommandAction.runWriteCommandAction(this.context.getProject(), "Undo Session Changes", null,
-                () -> document.setText(baseline));
-
-        // Save the document
-        FileDocumentManager.getInstance().saveDocument(document);
+        // Document reads need a read lock; plan computation stays off the EDT.
+        String currentText = ApplicationManager.getApplication().runReadAction((Computable<String>) document::getText);
+        String baseline = FileChangeUndoPlan.rebuild(filePath, currentText, operations).content();
+        this.runEdtWrite("Undo Session Changes", () -> {
+            document.setText(baseline);
+            FileDocumentManager.getInstance().saveDocument(document);
+        });
 
         // Refresh the file
         file.refresh(false, false);
@@ -330,7 +335,9 @@ public class UndoFileHandler extends BaseMessageHandler {
         VirtualFile file = LocalFileSystem.getInstance().refreshAndFindFileByPath(WslPathUtil.toVfsPath(currentPath.toString()));
         Charset charset = file == null || file.getCharset() == null ? StandardCharsets.UTF_8 : file.getCharset();
         Document document = file == null ? null : FileDocumentManager.getInstance().getDocument(file);
-        String currentContent = document != null ? document.getText()
+        // Disk reads stay off the EDT; document reads take a read lock.
+        String currentContent = document != null
+                ? ApplicationManager.getApplication().runReadAction((Computable<String>) document::getText)
                 : Files.exists(currentPath) ? Files.readString(currentPath, charset) : null;
         FileChangeUndoPlan plan = FileChangeUndoPlan.rebuild(currentPath.toString(), currentContent, resolvedOps);
         Path originalPath = Path.of(plan.filePath());
@@ -340,10 +347,17 @@ public class UndoFileHandler extends BaseMessageHandler {
         if (plan.content() != null && !originalPath.equals(currentPath) && Files.exists(originalPath)) {
             throw new IOException("Cannot restore rename: original path is occupied");
         }
-        if (originalPath.equals(currentPath) && plan.content() != null && document != null) {
-            WriteCommandAction.runWriteCommandAction(this.context.getProject(), "Undo Session Changes", null,
-                    () -> document.setText(plan.content()));
-            FileDocumentManager.getInstance().saveDocument(document);
+        boolean rename = !originalPath.equals(currentPath);
+        if (rename && document != null && FileDocumentManager.getInstance().isDocumentUnsaved(document)) {
+            // Deleting the current path would silently discard the unsaved buffer,
+            // and a later save would resurrect the renamed-away file.
+            throw new IOException("Cannot undo the rename while the file has unsaved changes in the editor: " + currentPath);
+        }
+        if (!rename && plan.content() != null && document != null) {
+            this.runEdtWrite("Undo Session Changes", () -> {
+                document.setText(plan.content());
+                FileDocumentManager.getInstance().saveDocument(document);
+            });
         } else {
             this.restoreFileBaseline(currentPath, originalPath, plan.content(), charset);
         }
@@ -368,10 +382,50 @@ public class UndoFileHandler extends BaseMessageHandler {
         Files.createDirectories(original.getParent());
         Files.writeString(original, content, charset, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         try {
-            Files.deleteIfExists(current);
+            this.deleteDiskFile(current);
         } catch (IOException failure) {
             Files.deleteIfExists(original);
             throw failure;
+        }
+    }
+
+    /**
+     * Runs a write action on the EDT while the caller stays on a background
+     * thread, keeping disk IO and plan computation off the UI thread.
+     */
+    private void runEdtWrite(String commandName, Runnable action) {
+        Application application = ApplicationManager.getApplication();
+        Runnable write = () -> WriteCommandAction.runWriteCommandAction(this.context.getProject(), commandName, null, action);
+        if (application.isDispatchThread()) {
+            write.run();
+        } else {
+            application.invokeAndWait(write);
+        }
+    }
+
+    /**
+     * Deletes through the VFS when possible so open editors close instead of
+     * resurrecting the file on the next save; falls back to plain Files when
+     * the IDE or the VFS entry is unavailable.
+     */
+    private void deleteDiskFile(Path path) throws IOException {
+        Application application = ApplicationManager.getApplication();
+        VirtualFile file = application == null ? null
+                : LocalFileSystem.getInstance().findFileByPath(WslPathUtil.toVfsPath(path.toString()));
+        if (application == null || file == null || !file.exists()) {
+            Files.deleteIfExists(path);
+            return;
+        }
+        java.util.concurrent.atomic.AtomicReference<IOException> failureRef = new java.util.concurrent.atomic.AtomicReference<>();
+        this.runEdtWrite("Undo File Rename", () -> {
+            try {
+                file.delete(this);
+            } catch (IOException e) {
+                failureRef.set(e);
+            }
+        });
+        if (failureRef.get() != null) {
+            throw failureRef.get();
         }
     }
 

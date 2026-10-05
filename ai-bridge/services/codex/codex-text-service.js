@@ -5,6 +5,7 @@ import { getRealHomeDir, getCodemossDir } from '../../utils/path-utils.js';
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { CodexAppServerService } from './codex-appserver-service.js';
 import { resolveCodexCli } from './codex-cli-resolver.js';
+import { getCodexPristineBaseEnv } from './persistent-codex-service.js';
 import { buildCodexNativeRuntime } from './codex-native-runtime-config.js';
 import { prepareCodexRuntimeEnvironment } from './codex-native-runtime-env.js';
 
@@ -26,6 +27,9 @@ export async function generateCodexText({
   resolveCli = () => resolveCodexCli({
     depsRoot: join(getCodemossDir(), 'dependencies', 'codex-sdk', 'node_modules'),
     nodePath: process.execPath,
+    // Never resolve against the live process.env: request handlers inject
+    // params.env into it, and a CODEX_* path override would hijack the child.
+    env: getCodexPristineBaseEnv(),
   }),
   clientFactory = (options) => new CodexAppServerClient(options),
   baseEnv = process.env,

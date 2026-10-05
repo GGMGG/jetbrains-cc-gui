@@ -61,6 +61,16 @@ export function setCodexPristineBaseEnv(env) {
   pristineBaseEnv = Object.freeze({ ...(env ?? {}) });
 }
 
+/**
+ * The frozen base environment, or the live one before startup completes.
+ * CLI resolution must use this instead of process.env: request handlers apply
+ * params.env to process.env, and an injected CODEX_BIN/CODEX_PATH/CODEX_CLI_PATH
+ * would otherwise redirect the app-server child to an attacker binary.
+ */
+export function getCodexPristineBaseEnv() {
+  return pristineBaseEnv ?? process.env;
+}
+
 function sessionKeyOf(stdinData) {
   const channelId = String(stdinData?.channelId ?? stdinData?.sessionId ?? 'default').trim();
   const epoch = String(stdinData?.sessionEpoch ?? '').trim();
@@ -101,6 +111,7 @@ function resolveCliCommand(stdinData) {
     explicitPath: stdinData?.codexCliPath || null,
     depsRoot: join(getCodemossDir(), 'dependencies', 'codex-sdk', 'node_modules'),
     nodePath: process.execPath,
+    env: getCodexPristineBaseEnv(),
   });
   if (resolution.status !== 'resolved') {
     const error = new Error(resolution.reason || 'Codex CLI not found');
