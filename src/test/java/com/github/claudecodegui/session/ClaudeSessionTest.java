@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -98,6 +99,39 @@ public class ClaudeSessionTest {
         assertTrue(session.isBusy());
         assertTrue(session.isLoading());
         assertEquals("next-turn-state", session.getError());
+    }
+
+    @Test
+    public void endingControlWaitingClearsWaitingStateWhenNoSendInterleaved() {
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        session.getState().beginTurn();
+
+        session.setCodexControlWaiting(true);
+        assertTrue(session.isBusy());
+        assertTrue(session.isLoading());
+
+        session.setCodexControlWaiting(false);
+        assertFalse(session.isBusy());
+        assertFalse(session.isLoading());
+    }
+
+    @Test
+    public void endingControlWaitingKeepsTheLiveSendState() {
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        session.setCodexControlWaiting(true);
+
+        // The user sends while the control operation runs; its beginTurn owns
+        // the waiting state when the operation completes.
+        session.getState().beginTurn();
+        session.setCodexControlWaiting(false);
+        assertTrue(session.isBusy());
+        assertTrue(session.isLoading());
+
+        // A later control operation that spans no send still ends normally.
+        session.setCodexControlWaiting(true);
+        session.setCodexControlWaiting(false);
+        assertFalse(session.isBusy());
+        assertFalse(session.isLoading());
     }
 
     @Test(expected = CompletionException.class)

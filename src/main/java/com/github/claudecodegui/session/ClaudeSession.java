@@ -40,6 +40,13 @@ public class ClaudeSession {
      */
     private volatile boolean manuallyInterrupted = false;
 
+    /**
+     * Turn owner captured when a Codex control operation (manual compaction)
+     * started waiting. Ending the wait may only clear the waiting state while
+     * no send has claimed it in the meantime; guarded by messageStateLock.
+     */
+    private Object codexControlWaitingTurnOwner;
+
     // Session state manager
     private final com.github.claudecodegui.session.SessionState state;
 
@@ -290,10 +297,23 @@ public class ClaudeSession {
 
     /** Keeps manual compaction in the session's normal waiting state. */
     public void setCodexControlWaiting(boolean waiting) {
-        this.state.setBusy(waiting);
-        this.state.setLoading(waiting);
-        if (waiting) {
-            this.state.setError(null);
+        synchronized (this.state.getMessageStateLock()) {
+            if (waiting) {
+                this.codexControlWaitingTurnOwner = this.state.getTurnOwner();
+                this.state.setBusy(true);
+                this.state.setLoading(true);
+                this.state.setError(null);
+            } else {
+                if (this.state.getTurnOwner() != this.codexControlWaitingTurnOwner) {
+                    // A send that began while the control operation ran owns the
+                    // busy state now; ending the wait must not clear it under
+                    // the live turn.
+                    return;
+                }
+                this.codexControlWaitingTurnOwner = null;
+                this.state.setBusy(false);
+                this.state.setLoading(false);
+            }
         }
         this.callbackFacade.notifyStateChange(this.state.isBusy(), this.state.isLoading(), null);
     }
