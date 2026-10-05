@@ -3,6 +3,7 @@ package com.github.claudecodegui.handler;
 import com.github.claudecodegui.handler.core.BaseMessageHandler;
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
+import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -324,22 +325,45 @@ public class CodexInteractionHandler extends BaseMessageHandler {
             this.notifyOperationResult(errorResult("Codex bridge is unavailable"), type, threadId, requestId);
             return;
         }
-        boolean compact = "codex_compact".equals(type);
-        if (compact && session != null) {
-            session.setCodexControlWaiting(true);
+        MessageCallback callback;
+        Object controlTurnOwner;
+        if (session != null) {
+            synchronized (session.getState().getMessageStateLock()) {
+                if (!java.util.Objects.equals(threadId, session.getSessionId())) {
+                    this.notifyOperationResult(errorResult("The requested Codex thread is no longer selected"),
+                            type, threadId, requestId);
+                    return;
+                }
+                if (!session.setCodexControlWaiting(true)) {
+                    this.notifyOperationResult(errorResult("Wait for the current Codex operation to finish"),
+                            type, threadId, requestId);
+                    return;
+                }
+                // Capture ownership before dispatch: a send may start while the
+                // background task is still preparing its daemon request.
+                callback = session.createCodexControlCallback();
+                controlTurnOwner = session.getState().getTurnOwner();
+            }
+        } else {
+            callback = null;
+            controlTurnOwner = null;
         }
         // Same JCEF-thread rule as handleExecutePlan: keep the daemon round-trip
         // prologue off the message-dispatch thread.
         java.util.concurrent.CompletableFuture
                 .supplyAsync(() -> "codex_compact".equals(type)
-                        ? bridge.compactCodex(channelId, cwd, threadId, session == null ? null : session.createCodexControlCallback())
-                        : bridge.reviewCodex(channelId, cwd, threadId, session == null ? null : session.createCodexControlCallback()),
+                        ? bridge.compactCodex(channelId, cwd, threadId, callback)
+                        : bridge.reviewCodex(channelId, cwd, threadId, callback),
                         CodexSDKBridge.codexControlExecutor())
                 .thenCompose(operation -> operation)
                 .whenComplete((result, error) -> {
-                    if (compact && session != null && this.context.getSession() == session
+                    if (session != null && this.context.getSession() == session
                             && java.util.Objects.equals(threadId, session.getSessionId())) {
-                        session.setCodexControlWaiting(false);
+                        synchronized (session.getState().getMessageStateLock()) {
+                            if (session.getState().isCurrentTurn(controlTurnOwner)) {
+                                session.setCodexControlWaiting(false);
+                            }
+                        }
                     }
                     JsonObject response = result == null ? new JsonObject() : result.deepCopy();
                     if (error != null) {

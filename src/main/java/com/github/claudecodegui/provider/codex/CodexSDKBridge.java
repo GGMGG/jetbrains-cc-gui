@@ -872,7 +872,8 @@ public class CodexSDKBridge extends BaseSDKBridge {
         params.addProperty("clientMessageId", UUID.randomUUID().toString());
         params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString()));
-        return this.dispatchCodexLongOperation(daemon, "codex.executePlan", params, safeChannelId);
+        return this.dispatchCodexLongOperation(daemon, "codex.executePlan", params,
+                this.callbackSubscriptions.get(safeChannelId));
     }
 
     /**
@@ -1132,14 +1133,21 @@ public class CodexSDKBridge extends BaseSDKBridge {
         if (callback != null) {
             // Restoring history does not start a send, so it has no send-created subscription.
             this.callbackSubscriptions.put(safeChannelId, callback);
+            // Stream-end unlocks controls before the previous send RPC drains.
+            // Its trailing receiver must not intercept this control's approvals.
+            this.activeCallbacks.put(safeChannelId, callback);
         }
-        return this.dispatchCodexLongOperation(daemon, method, params, safeChannelId)
+        MessageCallback operationCallback = callback != null ? callback : this.callbackSubscriptions.get(safeChannelId);
+        return this.dispatchCodexLongOperation(daemon, method, params, operationCallback)
                 .thenApply(acknowledgement -> {
                     if (!acknowledgement.has("error")) {
                         acknowledgement.addProperty("method", method);
                     }
                     return acknowledgement;
                 }).whenComplete((response, failure) -> {
+                    if (callback != null) {
+                        this.activeCallbacks.remove(safeChannelId, callback);
+                    }
                     if ((failure != null || response != null && response.has("error"))
                             && java.util.Objects.equals(nativeString(params, "sessionEpoch"), this.runtimeSessionEpochs.get(safeChannelId))) {
                         // Failed bootstrap releases only this operation's lease, preserving a loaded writer's claims.
@@ -1194,9 +1202,8 @@ public class CodexSDKBridge extends BaseSDKBridge {
     }
 
     private CompletableFuture<JsonObject> dispatchCodexLongOperation(
-            DaemonBridge daemon, String method, JsonObject params, String channelId
+            DaemonBridge daemon, String method, JsonObject params, MessageCallback callback
     ) {
-        MessageCallback callback = this.callbackSubscriptions.get(channelId);
         SDKResult streamed = new SDKResult();
         StringBuilder content = new StringBuilder();
         AtomicBoolean hadError = new AtomicBoolean();

@@ -41,11 +41,12 @@ public class ClaudeSession {
     private volatile boolean manuallyInterrupted = false;
 
     /**
-     * Turn owner captured when a Codex control operation (manual compaction)
-     * started waiting. Ending the wait may only clear the waiting state while
+     * Turn owner claimed when a Codex control operation started waiting.
+     * Ending the wait may only clear the waiting state while
      * no send has claimed it in the meantime; guarded by messageStateLock.
      */
     private Object codexControlWaitingTurnOwner;
+    private String codexControlWaitingSessionEpoch;
 
     // Session state manager
     private final com.github.claudecodegui.session.SessionState state;
@@ -290,32 +291,42 @@ public class ClaudeSession {
         callbackFacade.setCallback(callback);
     }
 
-    /** Creates a Codex control receiver for this session even before its first send. */
+    /** Creates a Codex control receiver fenced to the current operation and session. */
     public com.github.claudecodegui.provider.common.MessageCallback createCodexControlCallback() {
         return new CodexMessageHandler(this.state, this.callbackFacade.getCallbackHandler(), false);
     }
 
-    /** Keeps manual compaction in the session's normal waiting state. */
-    public void setCodexControlWaiting(boolean waiting) {
+    /**
+     * Claims an idle session's waiting state for a native control operation.
+     *
+     * @param waiting whether to begin or end the control wait
+     * @return whether the control wait was accepted or released
+     */
+    public boolean setCodexControlWaiting(boolean waiting) {
         synchronized (this.state.getMessageStateLock()) {
             if (waiting) {
-                this.codexControlWaitingTurnOwner = this.state.getTurnOwner();
-                this.state.setBusy(true);
-                this.state.setLoading(true);
-                this.state.setError(null);
-            } else {
-                if (this.state.getTurnOwner() != this.codexControlWaitingTurnOwner) {
-                    // A send that began while the control operation ran owns the
-                    // busy state now; ending the wait must not clear it under
-                    // the live turn.
-                    return;
+                if (this.state.isBusy() || this.state.isLoading()) {
+                    return false;
                 }
+                // Controls claim their own turn so a trailing terminal cannot
+                // release a newer send or another control's waiting state.
+                this.codexControlWaitingTurnOwner = this.state.beginTurn();
+                this.codexControlWaitingSessionEpoch = this.state.getRuntimeSessionEpoch();
+            } else {
+                Object owner = this.codexControlWaitingTurnOwner;
+                String epoch = this.codexControlWaitingSessionEpoch;
                 this.codexControlWaitingTurnOwner = null;
+                this.codexControlWaitingSessionEpoch = null;
+                if (owner == null || !this.state.isCurrentTurn(owner)
+                        || !Objects.equals(epoch, this.state.getRuntimeSessionEpoch())) {
+                    return false;
+                }
                 this.state.setBusy(false);
                 this.state.setLoading(false);
             }
         }
         this.callbackFacade.notifyStateChange(this.state.isBusy(), this.state.isLoading(), null);
+        return true;
     }
 
     public com.github.claudecodegui.session.EditorContextCollector getContextCollector() {
@@ -387,22 +398,38 @@ public class ClaudeSession {
 
     /**
      * Set session ID and working directory (used for session restoration).
+     *
+     * @param sessionId selected session or native thread id
+     * @param cwd restored working directory
      */
     public void setSessionInfo(String sessionId, String cwd) {
-        this.state.setCodexCwdExplicit(false);
-        this.state.setSessionId(sessionId);
-        if (sessionId != null && !sessionId.trim().isEmpty()) {
-            // Restored controls already use this default route before a send exists.
-            // Keep Stop and the next send on that same runtime instead of claiming another writer.
-            if ("codex".equals(this.state.getProvider()) && this.state.getChannelId() == null) {
-                this.state.setChannelId("codex");
+        synchronized (this.state.getMessageStateLock()) {
+            if ("codex".equals(this.state.getProvider())
+                    && !Objects.equals(sessionId, this.state.getSessionId())) {
+                // Codex history reuses this facade. Retire the old receiver and
+                // wait before publishing the newly selected thread's history.
+                this.state.rotateRuntimeSessionEpoch();
+                this.codexControlWaitingTurnOwner = null;
+                this.codexControlWaitingSessionEpoch = null;
+                this.state.setBusy(false);
+                this.state.setLoading(false);
+                this.state.setError(null);
             }
-            this.callbackFacade.notifySessionIdReceived(sessionId);
-        }
-        if (cwd != null) {
-            this.setCwd(cwd);
-        } else {
-            this.state.setCwd(null);
+            this.state.setCodexCwdExplicit(false);
+            this.state.setSessionId(sessionId);
+            if (sessionId != null && !sessionId.trim().isEmpty()) {
+                // Restored controls already use this default route before a send exists.
+                // Keep Stop and the next send on that same runtime instead of claiming another writer.
+                if ("codex".equals(this.state.getProvider()) && this.state.getChannelId() == null) {
+                    this.state.setChannelId("codex");
+                }
+                this.callbackFacade.notifySessionIdReceived(sessionId);
+            }
+            if (cwd != null) {
+                this.setCwd(cwd);
+            } else {
+                this.state.setCwd(null);
+            }
         }
     }
 
@@ -833,46 +860,49 @@ public class ClaudeSession {
     public CompletableFuture<Void> interrupt() {
         // Mark this turn as manually interrupted so the stream-end handler
         // suppresses the task-completion notification sound.
-        manuallyInterrupted = true;
+        this.manuallyInterrupted = true;
 
-        String provider = state.getProvider();
-        String channelId = state.getChannelId();
-        Object turnOwner = state.getTurnOwner();
+        String provider = this.state.getProvider();
+        String channelId = this.state.getChannelId();
+        Object turnOwner = this.state.getTurnOwner();
+        String runtimeSessionEpoch = this.state.getRuntimeSessionEpoch();
         if (channelId == null) {
             return CompletableFuture.completedFuture(null);
         }
 
         return CompletableFuture.runAsync(() -> {
             try {
-                providerRouter.interruptChannel(provider, channelId);
-                synchronized (state.getMessageStateLock()) {
-                    if (!isCurrentChannel(provider, channelId) || !state.isCurrentTurn(turnOwner)) {
+                this.providerRouter.interruptChannel(provider, channelId);
+                synchronized (this.state.getMessageStateLock()) {
+                    if (!this.isCurrentChannel(provider, channelId) || !this.state.isCurrentTurn(turnOwner)
+                            || !Objects.equals(runtimeSessionEpoch, this.state.getRuntimeSessionEpoch())) {
                         return;
                     }
-                    state.setError(null);
-                    state.setBusy(false);
-                    state.setLoading(false);
+                    this.state.setError(null);
+                    this.state.setBusy(false);
+                    this.state.setLoading(false);
 
                     // The frontend already ends the stream on interrupt. Replaying stream-end
                     // here could restore a cached message snapshot after clearMessages.
-                    callbackFacade.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
+                    this.callbackFacade.notifyStateChange(this.state.isBusy(), this.state.isLoading(), this.state.getError());
                 }
             } catch (Exception e) {
-                synchronized (state.getMessageStateLock()) {
-                    if (isCurrentChannel(provider, channelId) && state.isCurrentTurn(turnOwner)) {
-                        state.setError(e.getMessage());
-                        state.setLoading(false);
-                        callbackFacade.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
+                synchronized (this.state.getMessageStateLock()) {
+                    if (this.isCurrentChannel(provider, channelId) && this.state.isCurrentTurn(turnOwner)
+                            && Objects.equals(runtimeSessionEpoch, this.state.getRuntimeSessionEpoch())) {
+                        this.state.setError(e.getMessage());
+                        this.state.setLoading(false);
+                        this.callbackFacade.notifyStateChange(this.state.isBusy(), this.state.isLoading(), this.state.getError());
                     }
                 }
                 throw new CompletionException(e);
             }
-        });
+        }, "codex".equals(provider) ? CodexSDKBridge.codexControlExecutor() : java.util.concurrent.ForkJoinPool.commonPool());
     }
 
     private boolean isCurrentChannel(String provider, String channelId) {
-        return Objects.equals(provider, state.getProvider())
-                && Objects.equals(channelId, state.getChannelId());
+        return Objects.equals(provider, this.state.getProvider())
+                && Objects.equals(channelId, this.state.getChannelId());
     }
 
     /**

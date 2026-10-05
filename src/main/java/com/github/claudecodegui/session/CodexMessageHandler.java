@@ -80,11 +80,10 @@ public class CodexMessageHandler implements MessageCallback {
     }
 
     /**
-     * Session-lifetime receivers (native control channel) pass a null turn owner
-     * so they keep working across {@code beginTurn} boundaries.
+     * Control receivers omit duplicate error toasts while retaining turn fencing.
      */
     CodexMessageHandler(SessionState state, CallbackHandler callbackHandler, boolean reportStateErrors) {
-        this(state, callbackHandler, reportStateErrors, null, null);
+        this(state, callbackHandler, reportStateErrors, null, state.getTurnOwner());
     }
 
     CodexMessageHandler(SessionState state, CallbackHandler callbackHandler, String clientMessageId) {
@@ -247,10 +246,8 @@ public class CodexMessageHandler implements MessageCallback {
     // ===== Private methods =====
 
     private boolean ownsCurrentTurn() {
-        // Null owner marks a session-lifetime control receiver: it must survive
-        // beginTurn boundaries and epoch rotations of the sends it observes.
-        return turnOwner == null
-                || (state.isCurrentTurn(turnOwner) && runtimeSessionEpoch.equals(state.getRuntimeSessionEpoch()));
+        return this.state.isCurrentTurn(this.turnOwner)
+                && this.runtimeSessionEpoch.equals(this.state.getRuntimeSessionEpoch());
     }
 
     /**

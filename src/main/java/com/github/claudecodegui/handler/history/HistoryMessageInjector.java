@@ -7,6 +7,7 @@ import com.github.claudecodegui.handler.UsagePushService;
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader;
 import com.github.claudecodegui.provider.codex.CodexNativeHistoryReader;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.SessionState;
 import com.github.claudecodegui.util.JsUtils;
@@ -211,7 +212,7 @@ public class HistoryMessageInjector {
                 }));
                 notifyHistoryLoadComplete(generation);
             }
-        });
+        }, CodexSDKBridge.codexControlExecutor());
     }
 
     private CodexHistoryPage readInitialCodexHistory(CodexHistoryReader legacyReader, String sessionId, long generation) throws Exception {
@@ -390,7 +391,7 @@ public class HistoryMessageInjector {
                 Integer failedBeforeTurn = beforeTurn;
                 publishIfCurrent(generation, () -> notifyCodexHistoryPageError(failedSessionId, failedBeforeTurn, e.getMessage()));
             }
-        });
+        }, CodexSDKBridge.codexControlExecutor());
     }
 
     private void notifyCodexHistoryPageRenderComplete() {
