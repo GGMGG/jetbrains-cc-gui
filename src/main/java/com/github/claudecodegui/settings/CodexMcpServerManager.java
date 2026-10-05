@@ -800,6 +800,8 @@ public class CodexMcpServerManager {
 
         ProcessBuilder pb = new ProcessBuilder(
                 SystemInfo.isWindows ? "where.exe" : "which", commandName);
+        // Drain stderr together with stdout so the lookup cannot block on a full pipe
+        pb.redirectErrorStream(true);
         try {
             Process process = pb.start();
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -818,11 +820,13 @@ public class CodexMcpServerManager {
                     .filter(line -> !line.isEmpty())
                     .toList();
             if (SystemInfo.isWindows) {
-                for (String extension : List.of(".exe", ".cmd", ".bat")) {
-                    for (String match : matches) {
-                        if (match.toLowerCase(Locale.ROOT).endsWith(extension)) {
-                            return match;
-                        }
+                // where.exe lists matches in PATH order; the first executable
+                // shim is the one Windows itself would launch. Preferring .exe
+                // globally would let a later PATH entry shadow an earlier .cmd.
+                for (String match : matches) {
+                    String lower = match.toLowerCase(Locale.ROOT);
+                    if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat")) {
+                        return match;
                     }
                 }
             }

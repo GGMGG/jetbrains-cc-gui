@@ -18,7 +18,10 @@ function findWindowsCommand(command, env) {
     const result = spawnSync('where.exe', [lookupName], {
       env,
       encoding: 'utf8',
-      windowsHide: true
+      windowsHide: true,
+      // A hung lookup must not block the event loop; on timeout status is
+      // null and the candidate is skipped below.
+      timeout: 5000
     });
     if (result.status !== 0 || typeof result.stdout !== 'string') {
       continue;
