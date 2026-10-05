@@ -144,6 +144,48 @@ public class ClawBotProgressTrackerTest {
     }
 
     @Test
+    public void usesConfiguredInitialDelayNotificationLimitAndExcerptLength() {
+        ClawBotProgressSettings settings = new ClawBotProgressSettings(1, 5, 10, 30, 1, 100, 30);
+        Fixture fixture = startTurn(() -> settings);
+        Message answer = new Message(Message.Type.ASSISTANT, "x".repeat(500));
+        fixture.session().getState().addMessage(answer);
+
+        assertNull(fixture.tracker().prepare("RUNNING", "", TimeUnit.SECONDS.toNanos(29)));
+        ClawBotProgressTracker.Notification first = fixture.tracker().prepare(
+                "RUNNING", "", TimeUnit.SECONDS.toNanos(30));
+        assertNotNull(first);
+        assertTrue(first.text().length() < 150);
+        fixture.tracker().finish(first, true, TimeUnit.SECONDS.toNanos(30));
+
+        answer.content = "next chunk";
+        assertNull(fixture.tracker().prepare("RUNNING", "", TimeUnit.MINUTES.toNanos(1) + 1));
+    }
+
+    @Test
+    public void appliesUpdatedNotificationLimitAndExcerptLengthToActiveTurn() {
+        AtomicReference<ClawBotProgressSettings> settings = new AtomicReference<>(
+                ClawBotProgressSettings.defaults());
+        Fixture fixture = startTurn(settings::get);
+        Message answer = new Message(Message.Type.ASSISTANT, "initial response");
+        fixture.session().getState().addMessage(answer);
+        ClawBotProgressTracker.Notification first = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK);
+        assertNotNull(first);
+        fixture.tracker().finish(first, true, FIRST_CHECK);
+
+        settings.set(new ClawBotProgressSettings(1, 5, 10, 15, 2, 100, 30));
+        answer.content = "initial response plus " + "x".repeat(500);
+        long changedAt = FIRST_CHECK + TimeUnit.SECONDS.toNanos(30);
+        assertNull(fixture.tracker().prepare("RUNNING", "", changedAt));
+        ClawBotProgressTracker.Notification second = fixture.tracker().prepare(
+                "RUNNING", "", changedAt + TEXT_INTERVAL);
+        assertNotNull(second);
+        assertTrue(second.text().length() < 150);
+        fixture.tracker().finish(second, true, changedAt + TEXT_INTERVAL);
+        answer.content = "more output";
+        assertNull(fixture.tracker().prepare("RUNNING", "", changedAt + 2 * TEXT_INTERVAL));
+    }
+
+    @Test
     public void pausesProgressWhileWaitingAndSendsResumeBeforeNewText() {
         Fixture fixture = startTurn();
         Message answer = new Message(Message.Type.ASSISTANT, "before question");

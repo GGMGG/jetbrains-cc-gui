@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
@@ -99,6 +100,26 @@ public class ClawBotStrictRoutingTest {
         harness.send("hello");
         assertTrue(harness.delivered.isEmpty());
         assertTrue(harness.replies.get(harness.replies.size() - 1).contains("因空闲取消"));
+    }
+
+    @Test
+    public void appliesUpdatedSessionIdleTimeoutWhenSweepingRoutes() throws Exception {
+        Store store = new Store();
+        AtomicLong time = new AtomicLong();
+        AtomicReference<ClawBotProgressSettings> settings = new AtomicReference<>(
+                new ClawBotProgressSettings(1, 5, 10, 15, 12, 800, 10));
+        ClawBotMessageRouter router = new ClawBotMessageRouter(
+                store, sender -> true, time::get, settings::get);
+        List<ClawBotSessionSnapshot> sessions = List.of(target("first", "g1", 0));
+
+        router.handle(new ClawBotInboundMessage("select", "user", "ctx", "/use first"), sessions,
+                (sender, context, text) -> { }, (handle, message) -> true);
+        router.sweep(List.of(target("first", "g1", TimeUnit.MINUTES.toMillis(5))));
+        assertFalse(store.values.isEmpty());
+
+        settings.set(new ClawBotProgressSettings(1, 5, 10, 15, 12, 800, 5));
+        router.sweep(List.of(target("first", "g1", TimeUnit.MINUTES.toMillis(5))));
+        assertTrue(store.values.isEmpty());
     }
 
     @Test

@@ -61,16 +61,28 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals(1, defaults.get("progressTextIntervalMinutes").getAsInt());
             assertEquals(5, defaults.get("progressIdleReminderMinutes").getAsInt());
             assertEquals(10, defaults.get("progressWaitReminderMinutes").getAsInt());
+            assertEquals(15, defaults.get("progressInitialCheckDelaySeconds").getAsInt());
+            assertEquals(12, defaults.get("progressMaxNotifications").getAsInt());
+            assertEquals(800, defaults.get("progressExcerptMaxCharacters").getAsInt());
+            assertEquals(30, defaults.get("sessionIdleTimeoutMinutes").getAsInt());
 
             assertTrue(service.start());
             JsonObject update = new JsonObject();
             update.addProperty("textIntervalMinutes", 2);
             update.addProperty("idleReminderMinutes", 6);
             update.addProperty("waitReminderMinutes", 12);
+            update.addProperty("initialCheckDelaySeconds", 20);
+            update.addProperty("maxNotifications", 20);
+            update.addProperty("excerptMaxCharacters", 1200);
+            update.addProperty("sessionIdleTimeoutMinutes", 45);
             JsonObject updated = service.control("UPDATE_PROGRESS_SETTINGS", update);
             assertEquals(2, updated.get("progressTextIntervalMinutes").getAsInt());
             assertEquals(6, updated.get("progressIdleReminderMinutes").getAsInt());
             assertEquals(12, updated.get("progressWaitReminderMinutes").getAsInt());
+            assertEquals(20, updated.get("progressInitialCheckDelaySeconds").getAsInt());
+            assertEquals(20, updated.get("progressMaxNotifications").getAsInt());
+            assertEquals(1200, updated.get("progressExcerptMaxCharacters").getAsInt());
+            assertEquals(45, updated.get("sessionIdleTimeoutMinutes").getAsInt());
 
             JsonObject invalid = new JsonObject();
             invalid.add("textIntervalMinutes", com.google.gson.JsonNull.INSTANCE);
@@ -91,6 +103,10 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals(2, persisted.get("progressTextIntervalMinutes").getAsInt());
             assertEquals(6, persisted.get("progressIdleReminderMinutes").getAsInt());
             assertEquals(12, persisted.get("progressWaitReminderMinutes").getAsInt());
+            assertEquals(20, persisted.get("progressInitialCheckDelaySeconds").getAsInt());
+            assertEquals(20, persisted.get("progressMaxNotifications").getAsInt());
+            assertEquals(1200, persisted.get("progressExcerptMaxCharacters").getAsInt());
+            assertEquals(45, persisted.get("sessionIdleTimeoutMinutes").getAsInt());
         } finally {
             reloaded.stop();
         }
@@ -560,12 +576,20 @@ public class ClawBotGatewayRuntimeServiceTest {
             update.addProperty("textIntervalMinutes", 3);
             update.addProperty("idleReminderMinutes", 7);
             update.addProperty("waitReminderMinutes", 11);
+            update.addProperty("initialCheckDelaySeconds", 18);
+            update.addProperty("maxNotifications", 9);
+            update.addProperty("excerptMaxCharacters", 1000);
+            update.addProperty("sessionIdleTimeoutMinutes", 60);
             JsonObject result = follower.control("UPDATE_PROGRESS_SETTINGS", update);
 
             assertEquals("FOLLOWER", result.get("state").getAsString());
             assertEquals(3, follower.progressSettings().textIntervalMinutes());
             assertEquals(7, follower.progressSettings().idleReminderMinutes());
             assertEquals(11, follower.progressSettings().waitReminderMinutes());
+            assertEquals(18, follower.progressSettings().initialCheckDelaySeconds());
+            assertEquals(9, follower.progressSettings().maxNotifications());
+            assertEquals(1000, follower.progressSettings().excerptMaxCharacters());
+            assertEquals(60, follower.progressSettings().sessionIdleTimeoutMinutes());
         } finally {
             follower.stop();
             leader.stop();

@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Applies channel commands and explicit conversation-to-session routing. */
@@ -20,7 +21,6 @@ final class ClawBotMessageRouter {
     private static final int MAX_ROUTE_COUNT = 256;
     private static final int MAX_SEEN_MESSAGE_COUNT = 2_048;
     private static final int MAX_CONTROL_SELECTOR_LENGTH = 256;
-    private static final long IDLE_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(30);
     private static final long LIST_TTL_NANOS = TimeUnit.MINUTES.toNanos(5);
 
     private static boolean isKnownSlashCommand(String text) {
@@ -40,6 +40,7 @@ final class ClawBotMessageRouter {
     private final RouteStore routeStore;
     private final Predicate<String> senderAllowed;
     private final LongSupplier ticker;
+    private final Supplier<ClawBotProgressSettings> settingsSupplier;
     private long routeRevision;
     private boolean routesDirty;
     private Consumer<ClawBotInboundMessage> previewRequester = message -> { };
@@ -96,13 +97,29 @@ final class ClawBotMessageRouter {
     }
 
     ClawBotMessageRouter(RouteStore routeStore, Predicate<String> senderAllowed) {
-        this(routeStore, senderAllowed, System::nanoTime);
+        this(routeStore, senderAllowed, System::nanoTime, ClawBotProgressSettings::defaults);
     }
 
     ClawBotMessageRouter(RouteStore routeStore, Predicate<String> senderAllowed, LongSupplier ticker) {
+        this(routeStore, senderAllowed, ticker, ClawBotProgressSettings::defaults);
+    }
+
+    ClawBotMessageRouter(
+            RouteStore routeStore,
+            Predicate<String> senderAllowed,
+            Supplier<ClawBotProgressSettings> settingsSupplier) {
+        this(routeStore, senderAllowed, System::nanoTime, settingsSupplier);
+    }
+
+    ClawBotMessageRouter(
+            RouteStore routeStore,
+            Predicate<String> senderAllowed,
+            LongSupplier ticker,
+            Supplier<ClawBotProgressSettings> settingsSupplier) {
         this.routeStore = Objects.requireNonNull(routeStore, "routeStore");
         this.senderAllowed = Objects.requireNonNull(senderAllowed, "senderAllowed");
         this.ticker = Objects.requireNonNull(ticker, "ticker");
+        this.settingsSupplier = Objects.requireNonNull(settingsSupplier, "settingsSupplier");
         try {
             routeStore.load();
         } catch (IOException error) {
@@ -722,6 +739,7 @@ final class ClawBotMessageRouter {
     }
 
     synchronized void sweep(List<ClawBotSessionSnapshot> sessions) throws IOException {
+        long idleTimeoutMillis = currentSettings().sessionIdleTimeoutMillis();
         interactions.values().removeIf(interaction -> sessions.stream().noneMatch(interaction.target()::matches));
         boolean changed = false;
         var iterator = routes.entrySet().iterator();
@@ -731,7 +749,7 @@ final class ClawBotMessageRouter {
             ClawBotSessionSnapshot target = findUsableSession(sessions, lease.target().handle());
             boolean invalid = !lease.target().matches(target);
             boolean expired = !invalid && (target.idleMillis() < lease.idleAtSelection()
-                    || target.idleMillis() - lease.idleAtSelection() >= IDLE_TIMEOUT_MILLIS);
+                    || target.idleMillis() - lease.idleAtSelection() >= idleTimeoutMillis);
             if (invalid || expired) {
                 invalidated.put(entry.getKey(), expired ? "会话选择已因空闲取消，请重新 /use。" : "目标会话已失效，请重新 /use。");
                 iterator.remove();
@@ -762,6 +780,15 @@ final class ClawBotMessageRouter {
         routesDirty = true;
         routeStore.save(serialized);
         routesDirty = false;
+    }
+
+    private ClawBotProgressSettings currentSettings() {
+        try {
+            ClawBotProgressSettings settings = settingsSupplier.get();
+            return settings == null ? ClawBotProgressSettings.defaults() : settings;
+        } catch (RuntimeException ignored) {
+            return ClawBotProgressSettings.defaults();
+        }
     }
 
     private String listSessions(String sender, List<ClawBotSessionSnapshot> sessions) {

@@ -186,6 +186,57 @@
   border: 1px solid var(--border-secondary);
   border-radius: 6px;
   overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  color: var(--text-primary);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.cardHeader:hover {
+  background: var(--bg-tertiary);
+}
+
+.cardHeader:focus-visible {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.cardHeaderTitle {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cardHeaderSummary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+}
+
+.cardBody {
+  border-top: 1px solid var(--border-secondary);
+}
+
+.cardBody.collapsed {
+  display: none;
+}
+
+.cardBody.expanded {
+  display: block;
 }
 
 .row {
@@ -255,10 +306,10 @@
 
 .progressSettings {
   margin-top: 16px;
-  padding: 16px;
   border: 1px solid var(--border-secondary);
   border-radius: 6px;
   background: var(--bg-secondary);
+  overflow: hidden;
 }
 
 .progressSettings h4 {
@@ -269,7 +320,8 @@
 }
 
 .progressSettings p {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
+  padding: 16px 16px 0;
   color: var(--text-tertiary);
   font-size: 13px;
   line-height: 1.5;
@@ -277,6 +329,7 @@
 
 .progressFields {
   display: grid;
+  padding: 0 16px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
@@ -300,8 +353,8 @@
   background: var(--bg-primary);
 }
 
-.progressSettings > .primaryButton {
-  margin-top: 12px;
+.progressSettings .primaryButton {
+  margin: 12px 16px 16px;
 }
 
 .senderAccess {

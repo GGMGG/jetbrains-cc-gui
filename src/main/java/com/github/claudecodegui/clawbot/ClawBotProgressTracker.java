@@ -5,16 +5,11 @@ import com.github.claudecodegui.session.ClaudeSession;
 import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /** Per-request progress cursor; transport I/O never holds the session message lock. */
 public final class ClawBotProgressTracker {
-    private static final long INITIAL_CHECK_DELAY = TimeUnit.SECONDS.toNanos(15);
-    private static final int MAX_NOTIFICATIONS = 12;
-    private static final int MAX_TEXT = 800;
-
     private final Object deliveryLock = new Object();
     private final ClaudeSession session;
     private final int firstMessageIndex;
@@ -50,7 +45,7 @@ public final class ClawBotProgressTracker {
         this.firstMessageIndex = firstMessageIndex;
         this.settingsSupplier = Objects.requireNonNull(settingsSupplier, "settingsSupplier");
         appliedSettings = currentSettings();
-        nextCheck = now + INITIAL_CHECK_DELAY;
+        nextCheck = now + appliedSettings.initialCheckDelayNanos();
         nextReminder = nextCheck;
     }
 
@@ -88,7 +83,8 @@ public final class ClawBotProgressTracker {
         ClawBotProgressSettings settings = currentSettings();
         if (!settings.equals(appliedSettings)) {
             appliedSettings = settings;
-            nextCheck = now + settings.textIntervalNanos();
+            nextCheck = now + (notificationCount == 0
+                    ? settings.initialCheckDelayNanos() : settings.textIntervalNanos());
             nextReminder = now + reminderIntervalNanos(settings, phase);
         }
         boolean phaseChanged = !phase.equals(currentPhase)
@@ -132,7 +128,7 @@ public final class ClawBotProgressTracker {
             pendingResponse = null;
             return null;
         }
-        if (pending == null && notificationCount < MAX_NOTIFICATIONS) {
+        if (pending == null && notificationCount < settings.maxNotifications()) {
             boolean running = "RUNNING".equals(phase);
             if (running) {
                 nextCheck = now + settings.textIntervalNanos();
@@ -143,7 +139,8 @@ public final class ClawBotProgressTracker {
                     text = text.substring(delivered.text().length());
                 }
                 pendingResponse = response;
-                pending = new Notification(++sequence, "【处理中 · 最新回复】\n\n" + latestExcerpt(text), false, false);
+                pending = new Notification(++sequence, "【处理中 · 最新回复】\n\n"
+                        + latestExcerpt(text, settings.excerptMaxCharacters()), false, false);
             } else if (running && ClawBotDeliveryRetryPolicy.isDue(now, nextReminder)) {
                 String text = response.text().isBlank() ? "任务仍在处理中，暂未产生可展示的回复。"
                         : "任务仍在执行，暂无新的文本回复。";
@@ -227,16 +224,20 @@ public final class ClawBotProgressTracker {
     }
 
     static String latestExcerpt(String text) {
+        return latestExcerpt(text, ClawBotProgressSettings.DEFAULT_EXCERPT_MAX_CHARACTERS);
+    }
+
+    static String latestExcerpt(String text, int maxCharacters) {
         String visible = text.trim();
-        if (visible.length() <= MAX_TEXT) {
+        if (visible.length() <= maxCharacters) {
             return visible;
         }
-        int start = visible.length() - MAX_TEXT;
+        int start = visible.length() - maxCharacters;
         if (Character.isLowSurrogate(visible.charAt(start))) {
             start++;
         }
         int paragraph = visible.indexOf('\n', start);
-        if (paragraph >= start && paragraph < start + MAX_TEXT / 2) {
+        if (paragraph >= start && paragraph < start + maxCharacters / 2) {
             start = paragraph + 1;
         }
         return "…（仅展示最新片段）\n" + visible.substring(start).trim();

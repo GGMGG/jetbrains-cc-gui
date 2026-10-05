@@ -119,6 +119,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         this.instanceId = requireValue(instanceId, "instanceId");
         this.bindingHandoff = Objects.requireNonNull(bindingHandoff, "bindingHandoff");
         this.senderAccessStore = Objects.requireNonNull(senderAccessStore, "senderAccessStore");
+        this.progressSettingsStore = new ClawBotProgressSettingsStore(this.runtimeDirectory);
+        this.progressSettings = loadProgressSettings();
         this.messageRouter = new ClawBotMessageRouter(
                 Objects.requireNonNull(routeStore, "routeStore"), new ClawBotMessageRouter.SenderUsageRecorder() {
                     @Override
@@ -134,13 +136,11 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                             // Usage metadata is diagnostic only.
                         }
                     }
-                });
+                }, this::progressSettings);
         this.messageRouter.setPreviewRequester(previewMailbox::request);
         this.transportStateStore = new ClawBotTransportStateStore(this.runtimeDirectory);
         this.executionJournal = new ClawBotExecutionJournal(this.runtimeDirectory);
         this.outboundReceiptStore = new ClawBotOutboundReceiptStore(this.runtimeDirectory);
-        this.progressSettingsStore = new ClawBotProgressSettingsStore(this.runtimeDirectory);
-        this.progressSettings = loadProgressSettings();
         this.connectionEpoch = Math.max(System.currentTimeMillis(), 1L);
         this.processCoordinator = new ClawBotProcessCoordinator(this.runtimeDirectory, instanceId);
         this.secretStore = new ClawBotIpcSecretStore(this.runtimeDirectory);
@@ -226,6 +226,10 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         status.addProperty("progressTextIntervalMinutes", currentProgressSettings.textIntervalMinutes());
         status.addProperty("progressIdleReminderMinutes", currentProgressSettings.idleReminderMinutes());
         status.addProperty("progressWaitReminderMinutes", currentProgressSettings.waitReminderMinutes());
+        status.addProperty("progressInitialCheckDelaySeconds", currentProgressSettings.initialCheckDelaySeconds());
+        status.addProperty("progressMaxNotifications", currentProgressSettings.maxNotifications());
+        status.addProperty("progressExcerptMaxCharacters", currentProgressSettings.excerptMaxCharacters());
+        status.addProperty("sessionIdleTimeoutMinutes", currentProgressSettings.sessionIdleTimeoutMinutes());
         status.addProperty("transportRecoveryScheduled", transportRestartTask != null
                 && !transportRestartTask.isDone());
         status.addProperty("sessionCount", state == State.LEADER ? sessionRegistry.snapshot().size() : 0);
@@ -332,11 +336,22 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         settings.add("textIntervalMinutes", status.get("progressTextIntervalMinutes"));
         settings.add("idleReminderMinutes", status.get("progressIdleReminderMinutes"));
         settings.add("waitReminderMinutes", status.get("progressWaitReminderMinutes"));
+        copyIfPresent(status, settings, "progressInitialCheckDelaySeconds", "initialCheckDelaySeconds");
+        copyIfPresent(status, settings, "progressMaxNotifications", "maxNotifications");
+        copyIfPresent(status, settings, "progressExcerptMaxCharacters", "excerptMaxCharacters");
+        copyIfPresent(status, settings, "sessionIdleTimeoutMinutes", "sessionIdleTimeoutMinutes");
         try {
-            progressSettings = ClawBotProgressSettings.fromUpdatePayload(settings);
+            progressSettings = ClawBotProgressSettings.fromUpdatePayload(settings, progressSettings);
             progressSettingsLastRefreshNanos = System.nanoTime();
         } catch (IOException | IllegalArgumentException ignored) {
             // Keep the last valid local value if a newer peer sends an invalid payload.
+        }
+    }
+
+    private static void copyIfPresent(JsonObject source, JsonObject target, String sourceName, String targetName) {
+        JsonElement value = source.get(sourceName);
+        if (value != null && !value.isJsonNull()) {
+            target.add(targetName, value.deepCopy());
         }
     }
 
@@ -785,7 +800,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private JsonObject updateProgressSettings(JsonObject payload) throws IOException {
         ClawBotProgressSettings next;
         try {
-            next = ClawBotProgressSettings.fromUpdatePayload(payload);
+            next = ClawBotProgressSettings.fromUpdatePayload(payload, progressSettings);
         } catch (IOException | IllegalArgumentException error) {
             throw new IOException("CLAWBOT_PROGRESS_SETTINGS_INVALID", error);
         }
