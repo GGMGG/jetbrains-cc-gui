@@ -20,8 +20,6 @@ public class CodexNativeDataHandler extends BaseMessageHandler {
             "codex_native_list_threads", "codex.listThreads",
             "codex_native_list_threads_page", "codex.listThreads",
             "codex_native_read_thread", "codex.readThread",
-            "codex_native_list_turns", "codex.listTurns",
-            "codex_native_list_items", "codex.listItems",
             "codex_native_list_models", "codex.listModels",
             "codex_native_list_skills", "codex.listSkills",
             "codex_native_mcp_status", "codex.getMcpStatus",

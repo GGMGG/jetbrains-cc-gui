@@ -143,7 +143,8 @@
     "codexReviewStarted": "Codex is reviewing the workspace",
     "codexDiffUsage": "Use /diff without arguments",
     "codexApprovalsUsage": "Use /approvals without arguments",
-    "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval."
+    "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval.",
+    "continueRefiningPlan": "Continuer à affiner ce plan :"
   },
   "settings": {
     "title": "Paramètres",
@@ -1786,7 +1787,10 @@
     "truncated": "L'instantané de l'espace de travail était trop volumineux et a été tronqué",
     "notGit": "Le répertoire courant n'est pas un arbre de travail Git",
     "refresh": "Actualiser",
-    "fileCount": "{{count}} fichiers"
+    "fileCount": "{{count}} fichiers",
+    "fileCount_one": "{{count}} fichier",
+    "fileCount_many": "{{count}} fichiers",
+    "fileCount_other": "{{count}} fichiers"
   },
   "codexModes": {
     "default": {

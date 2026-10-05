@@ -26,7 +26,12 @@ function readDiff(lines: string[], unified: boolean): DiffResult {
     || line.startsWith('--- ') && lines[index + 1]?.startsWith('+++ '));
   let inHunk = !unified || !hasHeaders;
   for (const line of lines) {
-    if (unified && /^(?:diff --git |index |--- |\+\+\+ )/.test(line) && !inHunk) continue;
+    if (unified && line.startsWith('diff --git ')) {
+      // A second file's header must not be counted as hunk content.
+      inHunk = false;
+      continue;
+    }
+    if (unified && /^(?:index |--- |\+\+\+ )/.test(line) && !inHunk) continue;
     if (line.startsWith('@@')) inHunk = true;
     if (line.startsWith('+')) {
       diff.lines.push({ type: 'added', content: line.slice(1) });

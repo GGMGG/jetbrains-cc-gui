@@ -21,7 +21,7 @@
  * the daemon wraps them into the active request envelope on purpose.
  */
 
-import { CodexAppServerClient } from './codex-appserver-client.js';
+import { ClassifiedError, CodexAppServerClient } from './codex-appserver-client.js';
 import { CodexAppServerService } from './codex-appserver-service.js';
 import { resolveCodexCli } from './codex-cli-resolver.js';
 import {
@@ -461,9 +461,13 @@ export async function codexExecutePlanPersistent(stdinData) {
 /** Long operation: native compaction via the session FIFO. */
 export async function codexCompactPersistent(stdinData) {
   const { service } = ensureSessionService(stdinData);
+  const threadId = stdinData?.threadId || service.rootThreadId;
+  if (!threadId) {
+    throw new ClassifiedError('NO_THREAD', 'Start a Codex conversation before compacting it');
+  }
   const operation = service.enqueueOperation({
     kind: 'compact',
-    threadId: stdinData?.threadId || service.rootThreadId,
+    threadId,
     settings: buildTurnSettings(stdinData) ?? undefined,
   });
   captureOperationMarkers(operation);
@@ -474,9 +478,13 @@ export async function codexCompactPersistent(stdinData) {
 /** Long operation: native inline review via the session FIFO. */
 export async function codexReviewPersistent(stdinData) {
   const { service } = ensureSessionService(stdinData);
+  const threadId = stdinData?.threadId || service.rootThreadId;
+  if (!threadId) {
+    throw new ClassifiedError('NO_THREAD', 'Start a Codex conversation before reviewing it');
+  }
   const operation = service.enqueueOperation({
     kind: 'review',
-    threadId: stdinData?.threadId || service.rootThreadId,
+    threadId,
     settings: buildTurnSettings(stdinData) ?? undefined,
   });
   captureOperationMarkers(operation);
@@ -576,14 +584,6 @@ export function projectThreadFileChanges(thread) {
   return (thread?.turns ?? []).flatMap(turn => (turn.items ?? [])
     .filter(item => item.type === 'fileChange' || item.type === 'file_change')
     .flatMap(item => projectCodexItemMessages(item, { threadId: thread.id, turnId: turn.id, authoritative: true })));
-}
-
-export async function codexListTurnsPersistent(stdinData) {
-  return await codexReadOnlyPersistent('thread/turns/list', stdinData);
-}
-
-export async function codexListItemsPersistent(stdinData) {
-  return await codexReadOnlyPersistent('thread/items/list', stdinData);
 }
 
 export async function codexListModelsPersistent(stdinData) {

@@ -162,7 +162,8 @@
     "codexReviewStarted": "Codex 正在审查工作区改动",
     "codexDiffUsage": "请直接使用 /diff，无需参数",
     "codexApprovalsUsage": "请直接使用 /approvals，无需参数",
-    "codexSandboxConflict": "Codex 自动审查不能使用 danger-full-access 沙箱，请改用 workspace-write 或请求批准模式。"
+    "codexSandboxConflict": "Codex 自动审查不能使用 danger-full-access 沙箱，请改用 workspace-write 或请求批准模式。",
+    "continueRefiningPlan": "继续完善此计划："
   },
   "settings": {
     "title": "设置",

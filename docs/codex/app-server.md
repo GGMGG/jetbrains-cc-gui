@@ -24,7 +24,7 @@
 | `codex.respondInteraction` / `codex.respondInteractionError` | 控制（绕过队列） | 对指定 rpcId 回 typed result/error |
 | `codex.abortTurn` | 控制（绕过队列） | 停止活动 operation（派发阶段语义见下文） |
 | `codex.releaseThread` / `codex.resetRuntime` | 生命周期 | 排空 relation set / 关闭 child 并确认退出 |
-| `codex.listThreads` / `codex.readThread` / `codex.listTurns` / `codex.listItems` / `codex.readHistoryPage` / `codex.readSubagent` | 独立只读通道 | 通过 app-server history projection 查询；child 先验证 parentThreadId 关系，不占发送 FIFO、不 resume writer |
+| `codex.listThreads` / `codex.readThread` / `codex.readHistoryPage` / `codex.readSubagent` | 独立只读通道 | 通过 app-server history projection 查询；child 先验证 parentThreadId 关系，不占发送 FIFO、不 resume writer |
 | `codex.listModels` / `codex.listSkills` / `codex.getMcpStatus` / `codex.reloadMcp` | 独立只读通道 | 目录与 MCP 状态查询；reload 仍受 native runtime access 门控 |
 
 事件（进程级 NDJSON，经 `_originalStdoutWrite` 直写，**不带** activeRequestId 包装）：

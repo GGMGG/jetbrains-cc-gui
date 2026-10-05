@@ -38,6 +38,19 @@ describe('Codex manual compaction waiting state', () => {
     expect(opts.setMessages).not.toHaveBeenCalled();
   });
 
+  it('unlocks a threadless session whose echo arrives without a threadId', () => {
+    // Java omits null JSON fields, so a session without a thread echoes no
+    // threadId at all; that must still match the page's null.
+    const opts = { ...options(), threadId: null };
+    const { result } = renderHook(() => useCodexCompactionStatus(opts));
+    act(() => result.current.startCompaction());
+    expect(result.current.pending).toBe(true);
+    emit({ requestId: submitted().requestId, requestType: 'codex_compact', success: true });
+    expect(result.current.pending).toBe(false);
+    expect(opts.setLoading).toHaveBeenLastCalledWith(false);
+    expect(opts.setMessages).not.toHaveBeenCalled();
+  });
+
   it('retains compaction ownership without rewriting loading after native cleanup', () => {
     const opts = options();
     const { result, rerender } = renderHook(() => useCodexCompactionStatus(opts), {

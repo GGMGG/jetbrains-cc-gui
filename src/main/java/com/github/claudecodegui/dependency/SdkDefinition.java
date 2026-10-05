@@ -23,8 +23,7 @@ public enum SdkDefinition {
         Arrays.asList("@anthropic-ai/sdk", "@anthropic-ai/bedrock-sdk"),
         Arrays.asList("0.3.220", "0.3.201", "0.3.182"),
         "Claude AI 提供商所需，包含 Agent SDK 和 Bedrock 支持。",
-        "0.3.182", // minRequiredVersion — Fable tier (ANTHROPIC_DEFAULT_FABLE_MODEL) needs SDK >= 0.3.182
-        Collections.emptyList()
+        "0.3.182" // minRequiredVersion — Fable tier (ANTHROPIC_DEFAULT_FABLE_MODEL) needs SDK >= 0.3.182
     );
 
     private final String id;
@@ -35,11 +34,10 @@ public enum SdkDefinition {
     private final List<String> fallbackVersions;
     private final String description;
     private final String minRequiredVersion;
-    private final List<String> legacyNpmPackages;
 
     SdkDefinition(String id, String displayName, String npmPackage, String version,
                   List<String> dependencies, List<String> fallbackVersions, String description,
-                  String minRequiredVersion, List<String> legacyNpmPackages) {
+                  String minRequiredVersion) {
         this.id = id;
         this.displayName = displayName;
         this.npmPackage = npmPackage;
@@ -48,7 +46,6 @@ public enum SdkDefinition {
         this.fallbackVersions = fallbackVersions;
         this.description = description;
         this.minRequiredVersion = minRequiredVersion;
-        this.legacyNpmPackages = legacyNpmPackages;
     }
 
     public String getId() {
@@ -77,13 +74,6 @@ public enum SdkDefinition {
 
     public String getDescription() {
         return description;
-    }
-
-    /**
-     * Returns package names accepted from earlier SDK installations.
-     */
-    public List<String> getLegacyNpmPackages() {
-        return legacyNpmPackages;
     }
 
     /**

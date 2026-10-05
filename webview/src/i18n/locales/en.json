@@ -162,7 +162,8 @@
     "codexReviewStarted": "Codex is reviewing the workspace",
     "codexDiffUsage": "Use /diff without arguments",
     "codexApprovalsUsage": "Use /approvals without arguments",
-    "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval."
+    "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval.",
+    "continueRefiningPlan": "Continue refining this plan:"
   },
   "settings": {
     "title": "Settings",

@@ -398,9 +398,10 @@ export const useAppChatController = ({
 
   const handleContinueCodexPlan = useCallback(() => {
     if (!codexPlan?.text || currentProvider !== 'codex') return;
-    chatInputRef.current?.setValue(`Continue refining this plan:\n\n${codexPlan.text}`);
+    chatInputRef.current?.setValue(
+      `${t('chat.continueRefiningPlan', { defaultValue: 'Continue refining this plan:' })}\n\n${codexPlan.text}`);
     chatInputRef.current?.focus();
-  }, [codexPlan, currentProvider]);
+  }, [codexPlan, currentProvider, t]);
 
   // ── Rewind handlers ──
   const {

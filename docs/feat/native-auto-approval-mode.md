@@ -164,7 +164,7 @@ every mode. Users opening untrusted repositories should stay in `default` mode.
 ## Verification
 
 - `node --check` on all modified AI Bridge JavaScript files.
-- `node --test ai-bridge/services/codex/codex-event-handler.test.js ai-bridge/services/codex/codex-utils.test.js ai-bridge/utils/permission-mapper.test.js ai-bridge/services/claude/permission-mode.test.js ai-bridge/services/claude/runtime-lifecycle.test.js ai-bridge/services/claude/setPermissionModePersistent.test.mjs ai-bridge/services/claude/setPermissionModePersistent.bypass.test.js`
+- `node --test ai-bridge/services/codex/codex-utils.test.js ai-bridge/utils/permission-mapper.test.js ai-bridge/services/claude/permission-mode.test.js ai-bridge/services/claude/runtime-lifecycle.test.js ai-bridge/services/claude/setPermissionModePersistent.test.mjs ai-bridge/services/claude/setPermissionModePersistent.bypass.test.js`
 - `cd webview && npm run test`
 - `cd webview && npx vitest run src/components/PlanApprovalDialog.test.tsx src/components/ChatInputBox/selectors/ModeSelect.test.tsx src/hooks/providers/cliProviders.test.ts`
 - `cd webview && npx tsc -p tsconfig.test.json --noEmit`

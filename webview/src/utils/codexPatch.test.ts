@@ -34,4 +34,18 @@ describe('patch display', () => {
     ]);
     expect(readPatchFiles({ patch: 'await tools.apply_patch(patch)' })).toEqual([]);
   });
+  it('resets hunk state at each file header in a multi-file unified diff', () => {
+    const [first, second] = readPatchFiles({ changes: [
+      { path: 'a.ts', kind: 'update', diff: 'diff --git a/a.ts b/a.ts\nindex 111..222 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,1 @@\n-old a\n+new a' },
+      { path: 'b.ts', kind: 'update', diff: 'diff --git a/b.ts b/b.ts\nindex 333..444 100644\n--- a/b.ts\n+++ b/b.ts\n@@ -1,1 +1,1 @@\n-old b\n+new b' },
+    ] });
+    expect(first.diff.additions).toBe(1);
+    expect(first.diff.deletions).toBe(1);
+    expect(second.diff.additions).toBe(1);
+    expect(second.diff.deletions).toBe(1);
+    expect(second.diff.lines).toEqual([
+      { type: 'unchanged', content: '@@ -1,1 +1,1 @@' },
+      { type: 'deleted', content: 'old b' }, { type: 'added', content: 'new b' },
+    ]);
+  });
 });

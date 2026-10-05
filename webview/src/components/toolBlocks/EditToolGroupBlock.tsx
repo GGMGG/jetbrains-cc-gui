@@ -344,7 +344,7 @@ const EditFileItem = ({ item, onFileClick, onShowDiff, onRefresh, t, previewExpa
 
 const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
   const [expanded, setExpanded] = useState(true);
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [previewItem, setPreviewItem] = useState<EditItem | null>(null);
   const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const prevItemCountRef = useRef(0);
@@ -377,7 +377,7 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
   const totalDeletions = editItems.reduce((sum, item) => sum + item.deletions, 0);
 
   // Calculate list height
-  const needsScroll = editItems.length > MAX_VISIBLE_ITEMS || previewIndex !== null;
+  const needsScroll = editItems.length > MAX_VISIBLE_ITEMS || previewItem !== null;
   const listHeight = needsScroll
     ? MAX_VISIBLE_ITEMS * ITEM_HEIGHT
     : editItems.length * ITEM_HEIGHT;
@@ -405,8 +405,9 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
   const handleShowDiff = (item: EditItem, e: React.MouseEvent) => {
     e.stopPropagation();
     if (item.diff) {
-      const index = editItems.indexOf(item);
-      setPreviewIndex(previous => previous === index ? null : index);
+      // Track the item itself: an index drifts when native snapshots insert
+      // or reorder rows while a preview is open.
+      setPreviewItem(previous => previous === item ? null : item);
       return;
     }
     showDiff(item.openPath, item.oldString, item.newString, t('tools.editPrefix', { fileName: item.fileName }));
@@ -458,7 +459,7 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
               onShowDiff={handleShowDiff}
               onRefresh={handleRefresh}
               t={t}
-              previewExpanded={previewIndex === index}
+              previewExpanded={previewItem === item}
             />
           ))}
         </div>

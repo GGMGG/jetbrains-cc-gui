@@ -143,7 +143,8 @@
     "codexReviewStarted": "Codex is reviewing the workspace",
     "codexDiffUsage": "Use /diff without arguments",
     "codexApprovalsUsage": "Use /approvals without arguments",
-    "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval."
+    "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval.",
+    "continueRefiningPlan": "इस योजना को और बेहतर बनाना जारी रखें:"
   },
   "settings": {
     "title": "सेटिंग्स",
@@ -1785,7 +1786,9 @@
     "truncated": "वर्कस्पेस स्नैपशॉट बहुत बड़ा था, काट दिया गया",
     "notGit": "वर्तमान डायरेक्टरी Git वर्किंग ट्री नहीं है",
     "refresh": "रिफ्रेश",
-    "fileCount": "{{count}} फ़ाइलें"
+    "fileCount": "{{count}} फ़ाइलें",
+    "fileCount_one": "{{count}} फ़ाइल",
+    "fileCount_other": "{{count}} फ़ाइलें"
   },
   "codexModes": {
     "default": {

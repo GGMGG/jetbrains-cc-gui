@@ -55,6 +55,14 @@ export const OPERATION_KINDS = Object.freeze(['send', 'compact', 'review']);
 /** Total stop confirmation budget from cancelRequested (D3). */
 export const STOP_CONFIRMATION_BUDGET_MS = 10_000;
 
+/**
+ * Budget for an acked compaction to announce its native turn. Remote
+ * compaction captures step context first, which can outlast the 10s stop
+ * budget on large sessions, so a silent compaction only counts as wedged
+ * after this longer window.
+ */
+export const COMPACT_ANNOUNCEMENT_BUDGET_MS = 60_000;
+
 const TERMINAL_TURN_STATUSES = new Set(['completed', 'failed', 'interrupted']);
 
 export class CodexAppServerService extends EventEmitter {
@@ -81,6 +89,7 @@ export class CodexAppServerService extends EventEmitter {
     emitMarker = null,
     privacyIndex = null,
     stopBudgetMs = STOP_CONFIRMATION_BUDGET_MS,
+    compactAnnouncementBudgetMs = COMPACT_ANNOUNCEMENT_BUDGET_MS,
   } = {}) {
     super();
     // clientFactory may also be assigned right after construction (the daemon
@@ -135,6 +144,7 @@ export class CodexAppServerService extends EventEmitter {
     // Total stop/settings confirmation budget (D3). Production keeps the
     // 10s contract; tests may shorten it for deterministic coverage.
     this.stopBudgetMs = stopBudgetMs;
+    this.compactAnnouncementBudgetMs = compactAnnouncementBudgetMs;
 
     // Bootstrap bookkeeping: resume/start in flight whose outcome is unknown.
     this.bootstrapInFlight = false;
@@ -784,10 +794,12 @@ export class CodexAppServerService extends EventEmitter {
       threadId: operation.threadId,
       payload: { kind: operation.kind },
     }));
-    // Compact acknowledges submission before capture_step_context announces its turn.
+    // Compact acknowledges submission before capture_step_context announces its
+    // turn; that announcement gets its own longer budget instead of none at all.
     if (operation.kind === 'compact' && !operation.cancelRequested) {
       if (operation.cancelTimer) clearTimeout(operation.cancelTimer);
       operation.cancelTimer = null;
+      this.#armUncertaintyWatch(operation, this.compactAnnouncementBudgetMs);
       return;
     }
     this.#armUncertaintyWatch(operation);
@@ -824,7 +836,7 @@ export class CodexAppServerService extends EventEmitter {
    * from its exit (D3). No status probe exists for these methods, so an
    * unconfirmable dispatch is indistinguishable from a wedged child.
    */
-  #armUncertaintyWatch(operation) {
+  #armUncertaintyWatch(operation, budgetMs = this.stopBudgetMs) {
     if (operation.cancelTimer || operation.settled
         || (operation.nativeTurnId && !operation.cancelRequested)) {
       return;
@@ -837,7 +849,7 @@ export class CodexAppServerService extends EventEmitter {
       // an un-terminated known turn: the child is the only remaining source
       // of truth, so close it and settle from its exit.
       this.#terminateUncertainRuntime(operation);
-    }, Math.max(0, this.stopBudgetMs - (operation.cancelRequestedAt ? Date.now() - operation.cancelRequestedAt : 0)));
+    }, Math.max(0, budgetMs - (operation.cancelRequestedAt ? Date.now() - operation.cancelRequestedAt : 0)));
     operation.cancelTimer.unref?.();
   }
 

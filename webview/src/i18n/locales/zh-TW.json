@@ -143,7 +143,8 @@
     "codexReviewStarted": "Codex 正在審查工作區變更",
     "codexDiffUsage": "請直接使用 /diff，無需參數",
     "codexApprovalsUsage": "請直接使用 /approvals，無需參數",
-    "codexSandboxConflict": "Codex 自動審查不能使用 danger-full-access 沙箱，請改用 workspace-write 或請求批准模式。"
+    "codexSandboxConflict": "Codex 自動審查不能使用 danger-full-access 沙箱，請改用 workspace-write 或請求批准模式。",
+    "continueRefiningPlan": "繼續完善此計畫："
   },
   "settings": {
     "title": "設定",

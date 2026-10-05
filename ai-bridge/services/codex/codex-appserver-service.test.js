@@ -661,6 +661,28 @@ test('late compact acceptance clears dispatch uncertainty while keeping the FIFO
   } finally { await service.resetRuntime(); }
 });
 
+test('an acked compact that never announces its turn is recovered by its announcement budget', async () => {
+  const { service, getPeer, events } = makeService({
+    scenario: 'delayed-compact-start',
+    serviceOpts: { stopBudgetMs: 40, compactAnnouncementBudgetMs: 60 },
+  });
+  try {
+    await service.preconnect({ threadId: THREAD_ID });
+    const peer = getPeer();
+    // Acknowledge the submission but never announce a native turn or terminal.
+    peer.scenario = { ...peer.scenario, onCompactStart: async (_params, ctx) => {
+      ctx.reply(ctx.currentId, {});
+    } };
+    const operation = service.enqueueOperation({ kind: 'compact', threadId: THREAD_ID });
+    const result = await operation.promise;
+    assert.equal(result.outcome, 'failed', 'wedged compaction settles failed after the budget');
+    assert.equal(eventsOf(events, 'operationDone').length, 1);
+    assert.equal(eventsOf(events, 'runtimeUnhealthy').length >= 1, true,
+      'wedged compact surfaced as unhealthy');
+    assert.equal(service.busy, false, 'the FIFO drains after the recovery');
+  } finally { await service.resetRuntime(); }
+});
+
 test('a compact without acceptance still retires an unconfirmed dispatch', async () => {
   const { service, getClient, getPeer, events, dispatchCounts } = makeService({
     serviceOpts: { stopBudgetMs: 40 },

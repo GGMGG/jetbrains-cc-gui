@@ -168,33 +168,14 @@ public class DependencyManager {
 
     /**
      * Resolves the directory that satisfies an SDK dependency inside the given
-     * node_modules root: the current package first, then the packages accepted
-     * from earlier plugin versions (e.g. the CLI inside a legacy
-     * {@code @openai/codex-sdk} install), then the CLI nested under such a
-     * legacy package. Returns null when none exists.
+     * node_modules root. Returns null when none exists.
      */
     static Path findInstalledPackageDir(Path sdkNodeModulesDir, SdkDefinition sdk) {
         if (sdkNodeModulesDir == null || sdk == null) {
             return null;
         }
         Path mainDir = resolvePackagePath(sdkNodeModulesDir, sdk.getNpmPackage());
-        if (Files.exists(mainDir)) {
-            return mainDir;
-        }
-        for (String legacyPackage : sdk.getLegacyNpmPackages()) {
-            Path legacyDir = resolvePackagePath(sdkNodeModulesDir, legacyPackage);
-            if (Files.exists(legacyDir)) {
-                // The legacy TypeScript SDK bundles the CLI as a dependency;
-                // prefer the nested CLI package when npm placed it inside the SDK.
-                Path nestedCli = legacyDir.resolve("node_modules")
-                        .resolve(sdk.getNpmPackage());
-                if (Files.exists(nestedCli)) {
-                    return nestedCli;
-                }
-                return legacyDir;
-            }
-        }
-        return null;
+        return Files.exists(mainDir) ? mainDir : null;
     }
 
     private static Path resolvePackagePath(Path nodeModulesDir, String npmPackage) {

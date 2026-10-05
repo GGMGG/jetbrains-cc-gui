@@ -127,16 +127,32 @@ export function isCodexSdkAvailable(depsBaseOverride) {
     return getCodexCliStatus(depsBaseOverride).status === 'resolved';
 }
 
+/** Resolution involves synchronous PATH probes and can shell out; cache briefly. */
+const CLI_STATUS_TTL_MS = 30_000;
+const cliStatusCache = new Map();
+
 /**
  * Resolve the installed Codex CLI with read-only compatibility for old dependencies.
+ *
+ * Results are cached briefly per dependencies root: the resolution chain is
+ * synchronous daemon-loop work (PATH probes, and an interactive login shell
+ * when nothing is installed), while per-request callers only need recent
+ * truth.
  * @param {string} [depsBaseOverride] test-only override of the dependencies root
  * @returns {{status: string, source: string, kind?: string, command?: string[], version?: string|null, reason?: string}}
  */
 export function getCodexCliStatus(depsBaseOverride) {
-    return resolveCodexCli({
+    const cacheKey = depsBaseOverride ?? '';
+    const cached = cliStatusCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < CLI_STATUS_TTL_MS) {
+        return cached.status;
+    }
+    const status = resolveCodexCli({
         depsRoot: join(getSdkRootDir('codex-sdk', depsBaseOverride), 'node_modules'),
         ...(depsBaseOverride ? { discoverCli: () => null, env: {} } : {}),
     });
+    cliStatusCache.set(cacheKey, { status, at: Date.now() });
+    return status;
 }
 
 /**

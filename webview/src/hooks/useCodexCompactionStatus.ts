@@ -48,7 +48,10 @@ export function useCodexCompactionStatus({
       if (!result || typeof result !== 'object' || Array.isArray(result)) return;
       const response = result as Record<string, unknown>;
       if (!pendingRequest.current || response.requestType !== 'codex_compact'
-          || response.requestId !== pendingRequest.current || response.threadId !== threadId) return;
+          || response.requestId !== pendingRequest.current
+          // Java omits null fields on the wire; a threadless session's echo
+          // arrives as undefined and must still match the page's null.
+          || (response.threadId ?? null) !== threadId) return;
       if (response.outcome === 'interrupted' || response.outcome === 'cancelled'
           || response.success === true && !response.error) {
         finish();
