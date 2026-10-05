@@ -161,6 +161,14 @@ public class ClaudeSession {
         }
 
         /**
+         * Called when the native Codex app-server emits a structured runtime event.
+         *
+         * @param eventJson serialized event envelope
+         */
+        default void onCodexRuntimeEvent(String eventJson) {
+        }
+
+        /**
          * Called when Claude history page metadata is available (for pagination).
          * @param sessionId the session ID
          * @param fromTurn the first turn index in the current page
@@ -249,7 +257,8 @@ public class ClaudeSession {
                 new SessionMessageOrchestrator.SessionHistoryAccess() {
                     @Override
                     public List<JsonObject> getProviderSessionMessages(String provider, String sessionId, String cwd) {
-                        return providerRouter.getSessionMessages(provider, sessionId, cwd);
+                        return ClaudeSession.this.providerRouter.getSessionMessages(provider, sessionId, cwd,
+                                ClaudeSession.this.state.getChannelId());
                     }
 
                     @Override
@@ -272,6 +281,21 @@ public class ClaudeSession {
 
     public void setCallback(SessionCallback callback) {
         callbackFacade.setCallback(callback);
+    }
+
+    /** Creates a Codex control receiver for this session even before its first send. */
+    public com.github.claudecodegui.provider.common.MessageCallback createCodexControlCallback() {
+        return new CodexMessageHandler(this.state, this.callbackFacade.getCallbackHandler(), false);
+    }
+
+    /** Keeps manual compaction in the session's normal waiting state. */
+    public void setCodexControlWaiting(boolean waiting) {
+        this.state.setBusy(waiting);
+        this.state.setLoading(waiting);
+        if (waiting) {
+            this.state.setError(null);
+        }
+        this.callbackFacade.notifyStateChange(this.state.isBusy(), this.state.isLoading(), null);
     }
 
     public com.github.claudecodegui.session.EditorContextCollector getContextCollector() {
@@ -345,14 +369,20 @@ public class ClaudeSession {
      * Set session ID and working directory (used for session restoration).
      */
     public void setSessionInfo(String sessionId, String cwd) {
-        state.setSessionId(sessionId);
+        this.state.setCodexCwdExplicit(false);
+        this.state.setSessionId(sessionId);
         if (sessionId != null && !sessionId.trim().isEmpty()) {
-            callbackFacade.notifySessionIdReceived(sessionId);
+            // Restored controls already use this default route before a send exists.
+            // Keep Stop and the next send on that same runtime instead of claiming another writer.
+            if ("codex".equals(this.state.getProvider()) && this.state.getChannelId() == null) {
+                this.state.setChannelId("codex");
+            }
+            this.callbackFacade.notifySessionIdReceived(sessionId);
         }
         if (cwd != null) {
-            setCwd(cwd);
+            this.setCwd(cwd);
         } else {
-            state.setCwd(null);
+            this.state.setCwd(null);
         }
     }
 
@@ -521,6 +551,63 @@ public class ClaudeSession {
     }
 
     /**
+     * Send a message while preserving a frontend-generated client identity.
+     *
+     * @param input user input text
+     * @param agentPrompt application role instructions
+     * @param fileTagPaths selected file references
+     * @param requestedPermissionMode requested permission mode
+     * @param requestedReasoningEffort requested reasoning effort
+     * @param requestedCodexFastMode requested Codex service tier
+     * @param requestedDshPreset requested DSH preset
+     * @param clientMessageId frontend submission identity
+     * @return future completed after the provider turn
+     */
+    public CompletableFuture<Void> send(
+            String input,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedPermissionMode,
+            String requestedReasoningEffort,
+            String requestedCodexFastMode,
+            String requestedDshPreset,
+            String clientMessageId
+    ) {
+        return send(input, null, agentPrompt, fileTagPaths, requestedPermissionMode,
+                requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset, clientMessageId, null);
+    }
+
+    /**
+     * Send a text turn with a filtered native Codex settings snapshot.
+     *
+     * @param input user input text
+     * @param agentPrompt application role instructions
+     * @param fileTagPaths selected file references
+     * @param requestedPermissionMode legacy compatibility mode
+     * @param requestedReasoningEffort requested reasoning effort
+     * @param requestedCodexFastMode requested Codex service tier
+     * @param requestedDshPreset requested DSH preset
+     * @param clientMessageId frontend submission identity
+     * @param nativeCodexSettings filtered native Codex settings
+     * @return future completed after the provider turn
+     */
+    public CompletableFuture<Void> send(
+            String input,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedPermissionMode,
+            String requestedReasoningEffort,
+            String requestedCodexFastMode,
+            String requestedDshPreset,
+            String clientMessageId,
+            JsonObject nativeCodexSettings
+    ) {
+        return send(input, null, agentPrompt, fileTagPaths, requestedPermissionMode,
+                requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                clientMessageId, nativeCodexSettings);
+    }
+
+    /**
      * Send a message with attachments using global agent settings.
      *
      * @deprecated Use {@link #send(String, List, String)} with explicit agent prompt instead.
@@ -603,12 +690,78 @@ public class ClaudeSession {
             String requestedCodexFastMode,
             String requestedDshPreset
     ) {
+        return send(input, attachments, agentPrompt, fileTagPaths, requestedPermissionMode,
+                requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset, null);
+    }
+
+    /**
+     * Send an attachment-aware message with a stable frontend client identity.
+     *
+     * @param input user input text
+     * @param attachments user attachments
+     * @param agentPrompt application role instructions
+     * @param fileTagPaths selected file references
+     * @param requestedPermissionMode requested permission mode
+     * @param requestedReasoningEffort requested reasoning effort
+     * @param requestedCodexFastMode requested Codex service tier
+     * @param requestedDshPreset requested DSH preset
+     * @param requestedClientMessageId frontend submission identity
+     * @return future completed after the provider turn
+     */
+    public CompletableFuture<Void> send(
+            String input,
+            List<Attachment> attachments,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedPermissionMode,
+            String requestedReasoningEffort,
+            String requestedCodexFastMode,
+            String requestedDshPreset,
+            String requestedClientMessageId
+    ) {
+        return send(input, attachments, agentPrompt, fileTagPaths, requestedPermissionMode,
+                requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                requestedClientMessageId, null);
+    }
+
+    /**
+     * Send an attachment-aware turn with a filtered native Codex settings snapshot.
+     *
+     * @param input user input text
+     * @param attachments user attachments
+     * @param agentPrompt application role instructions
+     * @param fileTagPaths selected file references
+     * @param requestedPermissionMode legacy compatibility mode
+     * @param requestedReasoningEffort requested reasoning effort
+     * @param requestedCodexFastMode requested Codex service tier
+     * @param requestedDshPreset requested DSH preset
+     * @param requestedClientMessageId frontend submission identity
+     * @param nativeCodexSettings filtered native Codex settings
+     * @return future completed after the provider turn
+     */
+    public CompletableFuture<Void> send(
+            String input,
+            List<Attachment> attachments,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedPermissionMode,
+            String requestedReasoningEffort,
+            String requestedCodexFastMode,
+            String requestedDshPreset,
+            String requestedClientMessageId,
+            JsonObject nativeCodexSettings
+    ) {
         lastTurnStartedAtMillis = System.currentTimeMillis();
         // Reset the manual-interrupt flag at the start of a new turn so that
         // a fresh send is not mistaken for a user-initiated stop.
         manuallyInterrupted = false;
         String normalizedInput = (input != null) ? input.trim() : "";
         Message userMessage = contextService.buildUserMessage(normalizedInput, attachments);
+        String clientMessageId = requestedClientMessageId == null || requestedClientMessageId.trim().isEmpty()
+                ? "cm-" + UUID.randomUUID() : requestedClientMessageId;
+        if ("codex".equals(state.getProvider()) && userMessage.raw != null) {
+            userMessage.raw.addProperty("clientMessageId", clientMessageId);
+        }
         Object turnOwner = sendService.updateSessionStateForSend(userMessage, normalizedInput);
 
         final String finalAgentPrompt = agentPrompt;
@@ -632,7 +785,9 @@ public class ClaudeSession {
                             finalRequestedPermissionMode,
                             finalRequestedReasoningEffort,
                             finalRequestedCodexFastMode,
-                            finalRequestedDshPreset
+                            finalRequestedDshPreset,
+                            clientMessageId,
+                            nativeCodexSettings
                     )
             ).thenCompose(v -> syncUserMessageUuidsAfterSend());
         }).exceptionally(ex -> {
