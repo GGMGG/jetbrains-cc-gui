@@ -32,7 +32,7 @@ public record ClawBotProgressSettings(
     static final int MIN_MAX_NOTIFICATIONS = 0;
     static final int MAX_MAX_NOTIFICATIONS = 6;
     static final int MIN_EXCERPT_MAX_CHARACTERS = 100;
-    static final int MAX_EXCERPT_MAX_CHARACTERS = 1_500;
+    static final int MAX_EXCERPT_MAX_CHARACTERS = 3_500;
 
     public ClawBotProgressSettings(int textIntervalMinutes, int idleReminderMinutes, int waitReminderMinutes,
             int initialCheckDelaySeconds, int maxNotifications, int excerptMaxCharacters, int sessionIdleTimeoutMinutes) {

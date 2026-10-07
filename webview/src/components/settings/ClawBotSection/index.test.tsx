@@ -65,6 +65,7 @@ describe('ClawBotSection', () => {
       name: 'settings.clawBot.progressWaitReminderInterval',
     }), { target: { value: '12' } });
     fireEvent.click(screen.getByText('settings.clawBot.advancedProgress'));
+    expect(screen.getByText('settings.clawBot.advancedProgressDescription')).toBeTruthy();
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressInitialCheckDelay',
     }), { target: { value: '20' } });
@@ -73,14 +74,14 @@ describe('ClawBotSection', () => {
     }), { target: { value: '6' } });
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressExcerptMaxCharacters',
-    }), { target: { value: '1200' } });
+    }), { target: { value: '2000' } });
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.sessionIdleTimeout',
     }), { target: { value: '45' } });
     fireEvent.click(screen.getAllByRole('button', { name: 'settings.clawBot.saveProgressSettings' })[0]!);
 
     expect(window.sendToJava).toHaveBeenLastCalledWith(
-      'clawbot_update_progress_settings:{"textIntervalMinutes":2,"idleReminderMinutes":6,"waitReminderMinutes":12,"initialCheckDelaySeconds":20,"maxNotifications":6,"minSendIntervalSeconds":120,"excerptMaxCharacters":1200,"sessionIdleTimeoutMinutes":45}',
+      'clawbot_update_progress_settings:{"textIntervalMinutes":2,"idleReminderMinutes":6,"waitReminderMinutes":12,"initialCheckDelaySeconds":20,"maxNotifications":6,"minSendIntervalSeconds":120,"excerptMaxCharacters":2000,"sessionIdleTimeoutMinutes":45}',
     );
     act(() => {
       window.onClawBotOperation?.('{"operation":"update_progress_settings","ok":true}');
@@ -92,7 +93,7 @@ describe('ClawBotSection', () => {
         progressWaitReminderMinutes: 12,
         progressInitialCheckDelaySeconds: 20,
         progressMaxNotifications: 6,
-        progressExcerptMaxCharacters: 1200,
+        progressExcerptMaxCharacters: 2000,
         sessionIdleTimeoutMinutes: 45,
       }));
     });
@@ -114,7 +115,7 @@ describe('ClawBotSection', () => {
     }) as HTMLInputElement).value).toBe('6');
     expect((screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressExcerptMaxCharacters',
-    }) as HTMLInputElement).value).toBe('1200');
+    }) as HTMLInputElement).value).toBe('2000');
     expect((screen.getByRole('spinbutton', {
       name: 'settings.clawBot.sessionIdleTimeout',
     }) as HTMLInputElement).value).toBe('45');

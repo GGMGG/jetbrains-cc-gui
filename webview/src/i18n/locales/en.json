@@ -1155,7 +1155,7 @@
       "sendProtection": "Send protection",
       "sendProtectionDescription": "This protection reduces bursts that may trigger iLink limits. It allows up to 6 send attempts every 5 minutes, while ordinary progress updates use no more than 4 slots. Start, completion, and interaction messages keep delivery priority. The minimum interval for ordinary progress updates can be set from 120 to 3600 seconds (2 to 60 minutes). After an explicit rate-limit response, sending waits at least 5 minutes before retrying. These are local safeguards, not Weixin guarantees.",
       "advancedProgress": "Advanced settings",
-      "advancedProgressDescription": "Advanced settings control the initial check delay, progress summary length, and session-selection timeout.",
+      "advancedProgressDescription": "Advanced settings control the initial check after a task starts, the progress summary length, and the session-selection idle timeout. The ranges are 15–300 seconds, 100–3500 characters, and 1–1440 minutes respectively.",
       "reminderRangeHint": "Enter 0 to turn off a reminder. Otherwise, no-text reminders accept 5–60 minutes and IDE-wait reminders accept 10–120 minutes.",
       "outboundQueued": "Queued critical messages / chunks",
       "outboundNextAllowed": "Global send protection expires",

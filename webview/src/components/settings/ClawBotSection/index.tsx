@@ -44,7 +44,7 @@ const MAX_PROGRESS_INTERVAL_MINUTES = 24 * 60;
 const MAX_INITIAL_CHECK_DELAY_SECONDS = 5 * 60;
 const MAX_PROGRESS_NOTIFICATIONS = 6;
 const MIN_EXCERPT_MAX_CHARACTERS = 100;
-const MAX_EXCERPT_MAX_CHARACTERS = 1500;
+const MAX_EXCERPT_MAX_CHARACTERS = 3500;
 
 interface ClawBotProgressDraft {
   textIntervalMinutes: string;
@@ -847,8 +847,6 @@ export default function ClawBotSection() {
       <div className={styles.progressSubsection}>
         <div className={styles.subsectionHeader}>{t('settings.clawBot.advancedProgress')}</div>
         <div className={styles.subsectionBody}>
-
-
           <div className={styles.progressFields}>
           <label className={styles.progressField}>
             <span>{t('settings.clawBot.progressInitialCheckDelay')}</span>
@@ -901,6 +899,9 @@ export default function ClawBotSection() {
               }))}
             />
           </label>
+          </div>
+          <div className={styles.formHints}>
+            <p>{t('settings.clawBot.advancedProgressDescription')}</p>
           </div>
           <div className={styles.settingsActions}>
           <button type="button" className={styles.primaryButton} disabled={status === null || isBusy} onClick={saveProgressSettings}>

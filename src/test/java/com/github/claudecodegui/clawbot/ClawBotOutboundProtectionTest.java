@@ -101,7 +101,7 @@ public class ClawBotOutboundProtectionTest {
                 + "\"waitReminderMinutes\":1,\"maxNotifications\":100,\"excerptMaxCharacters\":4000,\"initialCheckDelaySeconds\":1}").getAsJsonObject();
         ClawBotProgressSettings migrated = ClawBotProgressSettings.fromJson(json);
         assertEquals(6, migrated.maxNotifications());
-        assertEquals(1500, migrated.excerptMaxCharacters());
+        assertEquals(3500, migrated.excerptMaxCharacters());
         assertEquals(15, migrated.initialCheckDelaySeconds());
         assertEquals(5, migrated.idleReminderMinutes());
         assertEquals(10, migrated.waitReminderMinutes());
