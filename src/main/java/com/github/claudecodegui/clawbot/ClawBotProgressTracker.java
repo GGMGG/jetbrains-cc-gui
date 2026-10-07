@@ -23,6 +23,9 @@ public final class ClawBotProgressTracker {
     private String phaseText = "";
     private long nextCheck;
     private long nextReminder;
+    private final long createdAt;
+    private long lastSentAt;
+    private boolean hasSent;
     private int notificationCount;
     private long sequence;
     private Response delivered = new Response(null, "");
@@ -45,8 +48,9 @@ public final class ClawBotProgressTracker {
         this.firstMessageIndex = firstMessageIndex;
         this.settingsSupplier = Objects.requireNonNull(settingsSupplier, "settingsSupplier");
         appliedSettings = currentSettings();
+        createdAt = now;
         nextCheck = now + appliedSettings.initialCheckDelayNanos();
-        nextReminder = nextCheck;
+        nextReminder = now + appliedSettings.idleReminderNanos();
     }
 
     /** Called after send synchronously publishes its user message and turn owner. */
@@ -83,9 +87,25 @@ public final class ClawBotProgressTracker {
         ClawBotProgressSettings settings = currentSettings();
         if (!settings.equals(appliedSettings)) {
             appliedSettings = settings;
-            nextCheck = now + (notificationCount == 0
-                    ? settings.initialCheckDelayNanos() : settings.textIntervalNanos());
-            nextReminder = now + reminderIntervalNanos(settings, phase);
+            nextCheck = (hasSent ? lastSentAt : createdAt) + (hasSent
+                    ? settings.textIntervalNanos() : settings.initialCheckDelayNanos());
+            nextReminder = (hasSent ? lastSentAt : createdAt) + reminderIntervalNanos(settings, phase);
+        }
+        boolean newQuestion = !"RUNNING".equals(currentPhase) && (!phase.equals(currentPhase) || !phaseText.equals(statusText));
+        // First delivery of a question remains available when ordinary reminders are disabled.
+        boolean important = newQuestion || (pending != null && pending.essential());
+        if (!important && notificationCount >= settings.maxNotifications()) {
+            if (!inFlight) {
+                pending = null;
+                pendingResponse = null;
+            }
+            return null;
+        }
+        if (inFlight) {
+            return null;
+        }
+        if (!important && hasSent && !ClawBotDeliveryRetryPolicy.isDue(now, lastSentAt + settings.minSendIntervalNanos())) {
+            return null;
         }
         boolean phaseChanged = !phase.equals(currentPhase)
                 || (!"RUNNING".equals(currentPhase) && !phaseText.equals(statusText));
@@ -104,7 +124,7 @@ public final class ClawBotProgressTracker {
             delivered = baseline;
             pendingResponse = baseline;
             pending = new Notification(++sequence, "RUNNING".equals(phase)
-                    ? "等待已结束（已回答、取消或超时），任务继续处理。" : statusText, true, true);
+                    ? "等待已结束（已回答、取消或超时），任务继续处理。" : statusText, true, !"RUNNING".equals(phase));
             retryAt = now;
             nextCheck = now;
             nextReminder = now;
@@ -128,6 +148,16 @@ public final class ClawBotProgressTracker {
             pendingResponse = null;
             return null;
         }
+        if (pending != null && !pending.essential() && !pending.reminder() && "RUNNING".equals(phase)
+                && !response.text().isBlank() && !response.equals(pendingResponse)) {
+            String text = response.text();
+            if (response.message() == delivered.message() && text.startsWith(delivered.text())) {
+                text = text.substring(delivered.text().length());
+            }
+            pendingResponse = response;
+            pending = new Notification(pending.sequence(), "【处理中 · 最新回复】\n\n"
+                    + latestExcerpt(text, settings.excerptMaxCharacters()), false, false);
+        }
         if (pending == null && notificationCount < settings.maxNotifications()) {
             boolean running = "RUNNING".equals(phase);
             if (running) {
@@ -141,12 +171,12 @@ public final class ClawBotProgressTracker {
                 pendingResponse = response;
                 pending = new Notification(++sequence, "【处理中 · 最新回复】\n\n"
                         + latestExcerpt(text, settings.excerptMaxCharacters()), false, false);
-            } else if (running && ClawBotDeliveryRetryPolicy.isDue(now, nextReminder)) {
+            } else if (running && settings.idleReminderMinutes() > 0 && ClawBotDeliveryRetryPolicy.isDue(now, nextReminder)) {
                 String text = response.text().isBlank() ? "任务仍在处理中，暂未产生可展示的回复。"
                         : "任务仍在执行，暂无新的文本回复。";
                 pendingResponse = delivered;
                 pending = new Notification(++sequence, text, true, false);
-            } else if (!running && ClawBotDeliveryRetryPolicy.isDue(now, nextReminder)) {
+            } else if (!running && settings.waitReminderMinutes() > 0 && ClawBotDeliveryRetryPolicy.isDue(now, nextReminder)) {
                 pendingResponse = delivered;
                 pending = new Notification(++sequence, statusText, true, false);
             }
@@ -198,6 +228,8 @@ public final class ClawBotProgressTracker {
             if (!notification.essential()) {
                 notificationCount++;
             }
+            lastSentAt = now;
+            hasSent = true;
             boolean running = "RUNNING".equals(phase);
             ClawBotProgressSettings settings = currentSettings();
             appliedSettings = settings;

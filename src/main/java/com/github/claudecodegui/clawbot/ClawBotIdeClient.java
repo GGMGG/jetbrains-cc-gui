@@ -342,6 +342,11 @@ public final class ClawBotIdeClient implements AutoCloseable {
 
     public boolean sendProgress(
             String sessionHandleId, String messageId, String eventId, String text) throws IOException {
+        return sendProgress(sessionHandleId, messageId, eventId, text, false);
+    }
+
+    public boolean sendProgress(
+            String sessionHandleId, String messageId, String eventId, String text, boolean important) throws IOException {
         synchronized (requestLock) {
             ensureOpen();
             JsonObject payload = ownerPayload(sessionHandleId);
@@ -349,6 +354,7 @@ public final class ClawBotIdeClient implements AutoCloseable {
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("eventId", requireBoundedValue(eventId, "eventId", 256));
             payload.addProperty("text", requireText(text));
+            payload.addProperty("important", important);
             JsonObject result = send("SESSION_PROGRESS", payload);
             // A concurrent attempt is still pending; retry the same event instead of advancing its cursor.
             return readAccepted(result) && (!result.has("deliveryStatus")

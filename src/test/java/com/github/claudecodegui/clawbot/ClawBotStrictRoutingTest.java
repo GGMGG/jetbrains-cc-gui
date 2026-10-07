@@ -107,7 +107,7 @@ public class ClawBotStrictRoutingTest {
         Store store = new Store();
         AtomicLong time = new AtomicLong();
         AtomicReference<ClawBotProgressSettings> settings = new AtomicReference<>(
-                new ClawBotProgressSettings(1, 5, 10, 15, 12, 800, 10));
+                new ClawBotProgressSettings(1, 5, 10, 15, 6, 800, 10));
         ClawBotMessageRouter router = new ClawBotMessageRouter(
                 store, sender -> true, time::get, settings::get);
         List<ClawBotSessionSnapshot> sessions = List.of(target("first", "g1", 0));
@@ -117,7 +117,7 @@ public class ClawBotStrictRoutingTest {
         router.sweep(List.of(target("first", "g1", TimeUnit.MINUTES.toMillis(5))));
         assertFalse(store.values.isEmpty());
 
-        settings.set(new ClawBotProgressSettings(1, 5, 10, 15, 12, 800, 5));
+        settings.set(new ClawBotProgressSettings(1, 5, 10, 15, 6, 800, 5));
         router.sweep(List.of(target("first", "g1", TimeUnit.MINUTES.toMillis(5))));
         assertTrue(store.values.isEmpty());
     }

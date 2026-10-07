@@ -28,6 +28,19 @@ final class ClawBotOutboundReceiptStore {
     private final Path stateFile;
     private final Map<String, Receipt> receipts = new LinkedHashMap<>();
     private boolean loaded;
+    private boolean reconcilePending = true;
+
+    synchronized void reload() throws IOException {
+        receipts.clear();
+        loaded = false;
+        loadIfNeeded();
+    }
+
+    synchronized StatusSnapshot readOnlyStatus() {
+        ClawBotOutboundReceiptStore reader = new ClawBotOutboundReceiptStore(stateFile.getParent());
+        reader.reconcilePending = false;
+        return reader.status();
+    }
 
     ClawBotOutboundReceiptStore(Path runtimeDirectory) {
         stateFile = Objects.requireNonNull(runtimeDirectory, "runtimeDirectory")
@@ -157,7 +170,7 @@ final class ClawBotOutboundReceiptStore {
         boolean changed = false;
         for (Map.Entry<String, Receipt> entry : receipts.entrySet()) {
             Receipt receipt = entry.getValue();
-            if ("PENDING".equals(receipt.status())) {
+            if (reconcilePending && "PENDING".equals(receipt.status())) {
                 entry.setValue(new Receipt(receipt.clientId(), "UNKNOWN", receipt.createdAt(),
                         Math.max(now, receipt.updatedAt()), "CLAWBOT_GATEWAY_RESTARTED"));
                 changed = true;

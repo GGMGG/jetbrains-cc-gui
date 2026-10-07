@@ -18,8 +18,8 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class ClawBotProgressTrackerTest {
-    private static final long FIRST_CHECK = TimeUnit.SECONDS.toNanos(15);
-    private static final long TEXT_INTERVAL = TimeUnit.MINUTES.toNanos(1);
+    private static final long FIRST_CHECK = TimeUnit.SECONDS.toNanos(30);
+    private static final long TEXT_INTERVAL = TimeUnit.MINUTES.toNanos(2);
     private static final long WAIT_INTERVAL = TimeUnit.MINUTES.toNanos(10);
 
     @Test
@@ -84,7 +84,8 @@ public class ClawBotProgressTrackerTest {
     public void sendsPeriodicReminderWhenNoNewAssistantTextExists() {
         Fixture fixture = startTurn();
 
-        ClawBotProgressTracker.Notification first = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK);
+        assertNull(fixture.tracker().prepare("RUNNING", "", FIRST_CHECK));
+        ClawBotProgressTracker.Notification first = fixture.tracker().prepare("RUNNING", "", TimeUnit.MINUTES.toNanos(5));
         assertNotNull(first);
         assertTrue(first.reminder());
         fixture.tracker().finish(first, true, FIRST_CHECK);
@@ -101,15 +102,16 @@ public class ClawBotProgressTrackerTest {
         AtomicReference<ClawBotProgressSettings> settings = new AtomicReference<>(
                 ClawBotProgressSettings.defaults());
         Fixture fixture = startTurn(settings::get);
+        fixture.session().getState().addMessage(new Message(Message.Type.ASSISTANT, "initial"));
         ClawBotProgressTracker.Notification first = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK);
         assertNotNull(first);
         fixture.tracker().finish(first, true, FIRST_CHECK);
 
-        settings.set(new ClawBotProgressSettings(1, 1, 1));
+        settings.set(new ClawBotProgressSettings(1, 10, 10));
         long changedAt = FIRST_CHECK + TimeUnit.SECONDS.toNanos(30);
         assertNull(fixture.tracker().prepare("RUNNING", "", changedAt));
         ClawBotProgressTracker.Notification reminder = fixture.tracker().prepare(
-                "RUNNING", "", changedAt + TimeUnit.MINUTES.toNanos(1));
+                "RUNNING", "", changedAt + TimeUnit.MINUTES.toNanos(10));
         assertNotNull(reminder);
         assertTrue(reminder.reminder());
     }
@@ -125,13 +127,13 @@ public class ClawBotProgressTrackerTest {
     }
 
     @Test
-    public void capsAllProgressNotificationsAtTwelvePerTurn() {
+    public void capsOrdinaryProgressNotificationsAtSixPerTurn() {
         Fixture fixture = startTurn();
         Message answer = new Message(Message.Type.ASSISTANT, "progress 0");
         fixture.session().getState().addMessage(answer);
         long now = FIRST_CHECK;
 
-        for (int index = 0; index < 12; index++) {
+        for (int index = 0; index < 6; index++) {
             answer.content = "progress " + index;
             ClawBotProgressTracker.Notification notification = fixture.tracker().prepare("RUNNING", "", now);
             assertNotNull(notification);
@@ -210,15 +212,15 @@ public class ClawBotProgressTrackerTest {
         fixture.tracker().finish(waitReminder, true, now + WAIT_INTERVAL);
 
         ClawBotProgressTracker.Notification resumed = fixture.tracker().prepare(
-                "RUNNING", "", now + WAIT_INTERVAL + 1);
+                "RUNNING", "", now + WAIT_INTERVAL + TEXT_INTERVAL);
         assertNotNull(resumed);
-        assertTrue(resumed.essential());
+        assertFalse(resumed.essential());
         assertTrue(resumed.text().contains("等待已结束"));
-        fixture.tracker().finish(resumed, true, now + WAIT_INTERVAL + 1);
+        fixture.tracker().finish(resumed, true, now + WAIT_INTERVAL + TEXT_INTERVAL);
 
         answer.content = "before question and post answer and another chunk";
         ClawBotProgressTracker.Notification progress = fixture.tracker().prepare(
-                "RUNNING", "", now + WAIT_INTERVAL + 2);
+                "RUNNING", "", now + WAIT_INTERVAL + 2 * TEXT_INTERVAL);
         assertNotNull(progress);
         assertFalse(progress.essential());
         assertTrue(progress.text().contains("another chunk"));
@@ -244,6 +246,33 @@ public class ClawBotProgressTrackerTest {
 
     private static Fixture startTurn() {
         return startTurn(ClawBotProgressSettings::defaults);
+    }
+
+    @Test
+    public void disablingProgressStillAllowsFirstQuestionButNotRepeatedReminders() {
+        Fixture fixture = startTurn(() -> new ClawBotProgressSettings(1, 0, 0, 30, 0, 800, 30));
+        fixture.session().getState().addMessage(new Message(Message.Type.ASSISTANT, "ordinary text"));
+        assertNull(fixture.tracker().prepare("RUNNING", "", FIRST_CHECK));
+        var question = fixture.tracker().prepare("WAITING:q1", "Choose a response", FIRST_CHECK);
+        assertNotNull(question);
+        assertTrue(question.essential());
+        fixture.tracker().finish(question, true, FIRST_CHECK);
+        assertNull(fixture.tracker().prepare("WAITING:q1", "Choose a response", FIRST_CHECK + WAIT_INTERVAL));
+    }
+
+    @Test
+    public void coalescesRejectedProgressToLatestTextWithoutCreatingAnotherEvent() {
+        Fixture fixture = startTurn();
+        Message answer = new Message(Message.Type.ASSISTANT, "old response");
+        fixture.session().getState().addMessage(answer);
+        var first = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK);
+        fixture.tracker().finish(first, false, FIRST_CHECK);
+        answer.content = "new response";
+        var retry = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK + TimeUnit.SECONDS.toNanos(1));
+        assertNotNull(retry);
+        assertEquals(first.sequence(), retry.sequence());
+        assertTrue(retry.text().contains("new response"));
+        assertFalse(retry.text().contains("old response"));
     }
 
     private static Fixture startTurn(java.util.function.Supplier<ClawBotProgressSettings> settingsSupplier) {

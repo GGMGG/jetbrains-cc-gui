@@ -25,7 +25,7 @@ const ACTIVE_PAIRING_STATES = new Set([
  */
 export class IlinkRuntime {
   constructor({
-    clientFactory = (options) => new IlinkClient({ enabled: true, ...options }),
+    clientFactory = (options) => new IlinkClient({ enabled: true, ...options, sendRetries: 0 }),
     clock = () => Date.now(),
     pairingTimeoutMs = DEFAULT_PAIRING_TIMEOUT_MS,
     maxQrRefreshes = DEFAULT_MAX_QR_REFRESHES,
@@ -203,6 +203,9 @@ export function publicErrorDetails(error) {
   }
   if (Number.isInteger(error.httpStatus)) {
     details.push(`http=${error.httpStatus}`);
+  }
+  if (Number.isSafeInteger(error.retryAfterMs) && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000) {
+    details.push(`retryAfterMs=${error.retryAfterMs}`);
   }
   return details.length === 0 ? undefined : details.join(';');
 }

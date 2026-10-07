@@ -3097,7 +3097,7 @@ public class ClaudeChatWindow {
                         LOG.debug("[ClawBot] Interaction route refresh failed; sending progress anyway");
                     }
                     return client.sendProgress(permissionServiceKey, turn.message().messageId(),
-                            turn.message().messageId() + ":progress:" + progress.sequence(), progress.text());
+                            turn.message().messageId() + ":progress:" + progress.sequence(), progress.text(), progress.essential());
                 }));
     }
 
@@ -3266,7 +3266,7 @@ public class ClaudeChatWindow {
             accepted = client.replyToCommand(permissionServiceKey, command.messageId(), reply);
             clawBotPendingControlReply = accepted ? null : pendingControlReply(command, reply, previousFailures);
         } catch (IOException | RuntimeException error) {
-            stale = isClawBotStaleDeliveryError(error);
+            stale = !isClawBotSessionRecoveryError(error) && isClawBotStaleDeliveryError(error);
             clawBotPendingControlReply = stale ? null : pendingControlReply(command, reply, previousFailures);
         } finally {
             clawBotControlActive.set(false);
@@ -3414,16 +3414,29 @@ public class ClaudeChatWindow {
         AppExecutorUtil.getAppExecutorService().execute(() -> {
             ClawBotActiveTurn turn = clawBotActiveTurn.get();
             if (disposed || turn == null || !turn.message().messageId().equals(message.messageId())
-                    || !"RUNNING".equals(clawBotProgressPhase())) {
+                    || (!"start".equals(phase) && !"RUNNING".equals(clawBotProgressPhase()))) {
                 return;
             }
-            try {
-                client.sendProgress(permissionServiceKey, message.messageId(),
-                        message.messageId() + ":" + phase, text);
-            } catch (IOException | RuntimeException error) {
-                LOG.debug("[ClawBot] Progress notification unavailable");
-            }
+            sendClawBotProgressAttempt(client, message, text, phase, 0);
         });
+    }
+
+    private void sendClawBotProgressAttempt(
+            ClawBotIdeClient client, ClawBotInboundMessage message, String text, String phase, int attempt) {
+        if (disposed || attempt > 3) {
+            return;
+        }
+        try {
+            client.sendProgress(permissionServiceKey, message.messageId(),
+                    message.messageId() + ":" + phase, text);
+        } catch (IOException | RuntimeException error) {
+            LOG.debug("[ClawBot] Progress notification unavailable", error);
+            if (!disposed) {
+                AppExecutorUtil.getAppScheduledExecutorService().schedule(
+                        () -> sendClawBotProgressAttempt(client, message, text, phase, attempt + 1),
+                        Math.min(30L, 1L << attempt), TimeUnit.SECONDS);
+            }
+        }
     }
 
     private String clawBotGeneration(ClaudeSession current) {
@@ -3557,7 +3570,7 @@ public class ClaudeChatWindow {
             accepted = client.replyToInbound(permissionServiceKey, message.messageId(), reply);
             clawBotPendingReply = accepted ? null : pendingReply(message, reply, restoreOnline, previousFailures);
         } catch (IOException | RuntimeException error) {
-            stale = isClawBotStaleDeliveryError(error);
+            stale = !isClawBotSessionRecoveryError(error) && isClawBotStaleDeliveryError(error);
             clawBotPendingReply = stale ? null : pendingReply(message, reply, restoreOnline, previousFailures);
         } finally {
             if (accepted || stale) {
@@ -3604,7 +3617,7 @@ public class ClaudeChatWindow {
     }
 
     private void invalidateClawBotRemoteState() {
-        clawBotPendingReply = null;
+        // Preserve an unsent final across owner recovery; the gateway validates its durable capability.
         clawBotPendingControlReply = null;
         clawBotInFlightControlMessageId = null;
     }

@@ -258,14 +258,14 @@ test('sendText accepts explicit success and rejects business errors without retr
   assert.equal(response.ok, true);
   assert.equal(calls, 1);
 
-  const failed = client(async () => jsonResponse({ ret: 1, errcode: 429, errmsg: 'too many requests' }));
+  const failed = client(async () => jsonResponse({ ret: 1, errcode: 403, errmsg: 'forbidden' }));
   await assert.rejects(failed.sendText({
     botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
   }), (error) => {
     assert.equal(error.code, 'ILINK_SEND_REJECTED');
     assert.equal(error.ret, 1);
-    assert.equal(error.errorCode, 429);
-    assert.equal(error.errorMessage, 'too many requests');
+    assert.equal(error.errorCode, 403);
+    assert.equal(error.errorMessage, 'forbidden');
     return true;
   });
 });
@@ -274,7 +274,8 @@ test('sendText retries explicit rate limits with exponential backoff', async () 
   let calls = 0;
   const instance = client(async () => {
     calls += 1;
-    return calls < 3 ? jsonResponse({ ret: -2, errcode: -2 }) : jsonResponse({ ret: 0 });
+    return calls < 3 ? jsonResponse({ ret: 1, errcode: 429, errmsg: 'too many requests' })
+      : jsonResponse({ ret: 0 });
   }, { rateLimitBackoffBaseMs: 1 });
 
   const result = await instance.sendText({
@@ -284,17 +285,52 @@ test('sendText retries explicit rate limits with exponential backoff', async () 
   assert.equal(calls, 3);
 });
 
-test('sendText does not retry stale-context style unknown errors', async () => {
+test('sendText does not retry parameter errors reported as ret -2', async () => {
   let calls = 0;
   const instance = client(async () => {
     calls += 1;
-    return jsonResponse({ ret: -2, errcode: -2, errmsg: 'unknown error' });
+    return jsonResponse({ ret: -2, errcode: -2, errmsg: 'parameter error' });
   }, { rateLimitBackoffBaseMs: 1 });
 
   await assert.rejects(instance.sendText({
     botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
   }), { code: 'ILINK_SEND_REJECTED', ret: -2, errorCode: -2 });
   assert.equal(calls, 1);
+});
+
+test('sendText retries HTTP 429 and preserves the status after exhaustion', async () => {
+  let calls = 0;
+  const instance = client(async () => {
+    calls += 1;
+    return jsonResponse({ error: 'busy' }, { status: 429 });
+  }, { rateLimitBackoffBaseMs: 1, sendRetries: 2 });
+
+  await assert.rejects(instance.sendText({
+    botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
+  }), { code: 'ILINK_SEND_RATE_LIMITED', httpStatus: 429 });
+  assert.equal(calls, 3);
+});
+
+test('sendText reports explicit rate limits and bounded retry-after without internal retry when disabled', async () => {
+  let calls = 0;
+  const instance = client(async () => {
+    calls += 1;
+    return jsonResponse({}, { status: 429, headers: { 'retry-after': '600' } });
+  }, { sendRetries: 0 });
+  await assert.rejects(instance.sendText({
+    botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
+  }), { code: 'ILINK_SEND_RATE_LIMITED', httpStatus: 429, retryAfterMs: 600_000 });
+  assert.equal(calls, 1);
+});
+
+test('bare ret -2 does not imply rate limiting but an explicit rate-limited message does', async () => {
+  for (const [errmsg, code] of [['prepare failed', 'ILINK_SEND_REJECTED'], ['unknown error', 'ILINK_SEND_REJECTED'],
+    ['rate limited', 'ILINK_SEND_RATE_LIMITED']]) {
+    const instance = client(async () => jsonResponse({ ret: -2, errmsg }), { sendRetries: 0 });
+    await assert.rejects(instance.sendText({
+      botToken: 'fixture-token', toUserId: 'fixture-user', clientId: 'id', text: 'x', contextToken: 'ctx',
+    }), { code, ret: -2 });
+  }
 });
 
 test('sendText accepts successful responses with omitted zero-valued status fields', async () => {

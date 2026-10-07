@@ -19,6 +19,22 @@ public class ClawBotOutboundReceiptStoreTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void followerDiagnosticsNeverRewritePendingAndTakeoverReloadsLatestReceipt() throws Exception {
+        Path directory = temporaryFolder.newFolder().toPath();
+        var leader = new ClawBotOutboundReceiptStore(directory);
+        var follower = new ClawBotOutboundReceiptStore(directory);
+        follower.status();
+        String id = UUID.randomUUID().toString();
+        leader.begin(id, 100L);
+        String before = Files.readString(directory.resolve("outbound-receipts.json"));
+        assertEquals(1, follower.readOnlyStatus().pendingCount());
+        assertEquals(before, Files.readString(directory.resolve("outbound-receipts.json")));
+        leader.complete(id, "SENT", null, 101L);
+        follower.reload();
+        assertEquals("SENT", follower.statusOf(id));
+    }
+
+    @Test
     public void recordsRedactedSendOutcomesAndCounts() throws Exception {
         Path runtimeDirectory = temporaryFolder.newFolder("outbound-receipts").toPath();
         ClawBotOutboundReceiptStore store = new ClawBotOutboundReceiptStore(runtimeDirectory);

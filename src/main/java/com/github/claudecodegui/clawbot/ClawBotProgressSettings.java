@@ -14,23 +14,31 @@ public record ClawBotProgressSettings(
         int initialCheckDelaySeconds,
         int maxNotifications,
         int excerptMaxCharacters,
-        int sessionIdleTimeoutMinutes) {
+        int sessionIdleTimeoutMinutes,
+        int minSendIntervalSeconds) {
 
     static final int DEFAULT_TEXT_INTERVAL_MINUTES = 1;
     static final int DEFAULT_IDLE_REMINDER_MINUTES = 5;
     static final int DEFAULT_WAIT_REMINDER_MINUTES = 10;
-    static final int DEFAULT_INITIAL_CHECK_DELAY_SECONDS = 15;
-    static final int DEFAULT_MAX_NOTIFICATIONS = 12;
+    static final int DEFAULT_INITIAL_CHECK_DELAY_SECONDS = 30;
+    static final int DEFAULT_MAX_NOTIFICATIONS = 6;
+    static final int DEFAULT_MIN_SEND_INTERVAL_SECONDS = 120;
     static final int DEFAULT_EXCERPT_MAX_CHARACTERS = 800;
     static final int DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES = 30;
     static final int MIN_INTERVAL_MINUTES = 1;
     static final int MAX_INTERVAL_MINUTES = 24 * 60;
-    static final int MIN_INITIAL_CHECK_DELAY_SECONDS = 1;
+    static final int MIN_INITIAL_CHECK_DELAY_SECONDS = 15;
     static final int MAX_INITIAL_CHECK_DELAY_SECONDS = 5 * 60;
-    static final int MIN_MAX_NOTIFICATIONS = 1;
-    static final int MAX_MAX_NOTIFICATIONS = 100;
+    static final int MIN_MAX_NOTIFICATIONS = 0;
+    static final int MAX_MAX_NOTIFICATIONS = 6;
     static final int MIN_EXCERPT_MAX_CHARACTERS = 100;
-    static final int MAX_EXCERPT_MAX_CHARACTERS = 4_000;
+    static final int MAX_EXCERPT_MAX_CHARACTERS = 1_500;
+
+    public ClawBotProgressSettings(int textIntervalMinutes, int idleReminderMinutes, int waitReminderMinutes,
+            int initialCheckDelaySeconds, int maxNotifications, int excerptMaxCharacters, int sessionIdleTimeoutMinutes) {
+        this(textIntervalMinutes, idleReminderMinutes, waitReminderMinutes, initialCheckDelaySeconds,
+                maxNotifications, excerptMaxCharacters, sessionIdleTimeoutMinutes, DEFAULT_MIN_SEND_INTERVAL_SECONDS);
+    }
 
     public ClawBotProgressSettings(int textIntervalMinutes, int idleReminderMinutes, int waitReminderMinutes) {
         this(textIntervalMinutes, idleReminderMinutes, waitReminderMinutes,
@@ -39,9 +47,9 @@ public record ClawBotProgressSettings(
     }
 
     public ClawBotProgressSettings {
-        textIntervalMinutes = validateMinutes(textIntervalMinutes, "textIntervalMinutes");
-        idleReminderMinutes = validateMinutes(idleReminderMinutes, "idleReminderMinutes");
-        waitReminderMinutes = validateMinutes(waitReminderMinutes, "waitReminderMinutes");
+        textIntervalMinutes = validateRange(textIntervalMinutes, 1, 60, "textIntervalMinutes");
+        idleReminderMinutes = idleReminderMinutes == 0 ? 0 : validateRange(idleReminderMinutes, 5, 60, "idleReminderMinutes");
+        waitReminderMinutes = waitReminderMinutes == 0 ? 0 : validateRange(waitReminderMinutes, 10, 120, "waitReminderMinutes");
         initialCheckDelaySeconds = validateRange(initialCheckDelaySeconds,
                 MIN_INITIAL_CHECK_DELAY_SECONDS, MAX_INITIAL_CHECK_DELAY_SECONDS, "initialCheckDelaySeconds");
         maxNotifications = validateRange(maxNotifications,
@@ -49,6 +57,7 @@ public record ClawBotProgressSettings(
         excerptMaxCharacters = validateRange(excerptMaxCharacters,
                 MIN_EXCERPT_MAX_CHARACTERS, MAX_EXCERPT_MAX_CHARACTERS, "excerptMaxCharacters");
         sessionIdleTimeoutMinutes = validateMinutes(sessionIdleTimeoutMinutes, "sessionIdleTimeoutMinutes");
+        minSendIntervalSeconds = validateRange(minSendIntervalSeconds, 120, 3600, "minSendIntervalSeconds");
     }
 
     public static ClawBotProgressSettings defaults() {
@@ -66,17 +75,26 @@ public record ClawBotProgressSettings(
         if (object == null) {
             throw new IOException("CLAWBOT_PROGRESS_SETTINGS_INVALID");
         }
+        // Migrate previously valid settings field by field, preserving unrelated values.
+        object = object.deepCopy();
+        migrateInteger(object, "maxNotifications", 0, 100, 0, MAX_MAX_NOTIFICATIONS);
+        migrateInteger(object, "excerptMaxCharacters", 100, 4000, 100, MAX_EXCERPT_MAX_CHARACTERS);
+        migrateInteger(object, "initialCheckDelaySeconds", 1, 300, MIN_INITIAL_CHECK_DELAY_SECONDS, 300);
+        migrateInteger(object, "textIntervalMinutes", 1, MAX_INTERVAL_MINUTES, 1, 60);
+        migrateReminder(object, "idleReminderMinutes", 5, 60);
+        migrateReminder(object, "waitReminderMinutes", 10, 120);
         return new ClawBotProgressSettings(
                 readMinutes(object, "textIntervalMinutes", DEFAULT_TEXT_INTERVAL_MINUTES),
-                readMinutes(object, "idleReminderMinutes", DEFAULT_IDLE_REMINDER_MINUTES),
-                readMinutes(object, "waitReminderMinutes", DEFAULT_WAIT_REMINDER_MINUTES),
+                readInteger(object, "idleReminderMinutes", DEFAULT_IDLE_REMINDER_MINUTES, 0, 60),
+                readInteger(object, "waitReminderMinutes", DEFAULT_WAIT_REMINDER_MINUTES, 0, 120),
                 readInteger(object, "initialCheckDelaySeconds", DEFAULT_INITIAL_CHECK_DELAY_SECONDS,
                         MIN_INITIAL_CHECK_DELAY_SECONDS, MAX_INITIAL_CHECK_DELAY_SECONDS),
                 readInteger(object, "maxNotifications", DEFAULT_MAX_NOTIFICATIONS,
                         MIN_MAX_NOTIFICATIONS, MAX_MAX_NOTIFICATIONS),
                 readInteger(object, "excerptMaxCharacters", DEFAULT_EXCERPT_MAX_CHARACTERS,
                         MIN_EXCERPT_MAX_CHARACTERS, MAX_EXCERPT_MAX_CHARACTERS),
-                readMinutes(object, "sessionIdleTimeoutMinutes", DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES));
+                readMinutes(object, "sessionIdleTimeoutMinutes", DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES),
+                readInteger(object, "minSendIntervalSeconds", DEFAULT_MIN_SEND_INTERVAL_SECONDS, 120, 3600));
     }
 
     static ClawBotProgressSettings fromUpdatePayload(JsonObject object) throws IOException {
@@ -90,17 +108,23 @@ public record ClawBotProgressSettings(
             throw new IOException("CLAWBOT_PROGRESS_SETTINGS_INVALID");
         }
         ClawBotProgressSettings safeFallback = fallback == null ? defaults() : fallback;
+        int idle = readInteger(object, "idleReminderMinutes", -1, 0, 60);
+        int wait = readInteger(object, "waitReminderMinutes", -1, 0, 120);
+        if ((idle != 0 && idle < 5) || (wait != 0 && wait < 10)) {
+            throw new IOException("CLAWBOT_PROGRESS_SETTINGS_INVALID");
+        }
         return new ClawBotProgressSettings(
-                readRequiredMinutes(object, "textIntervalMinutes"),
-                readRequiredMinutes(object, "idleReminderMinutes"),
-                readRequiredMinutes(object, "waitReminderMinutes"),
+                readInteger(object, "textIntervalMinutes", -1, 1, 60),
+                idle,
+                wait,
                 readInteger(object, "initialCheckDelaySeconds", safeFallback.initialCheckDelaySeconds(),
                         MIN_INITIAL_CHECK_DELAY_SECONDS, MAX_INITIAL_CHECK_DELAY_SECONDS),
                 readInteger(object, "maxNotifications", safeFallback.maxNotifications(),
                         MIN_MAX_NOTIFICATIONS, MAX_MAX_NOTIFICATIONS),
                 readInteger(object, "excerptMaxCharacters", safeFallback.excerptMaxCharacters(),
                         MIN_EXCERPT_MAX_CHARACTERS, MAX_EXCERPT_MAX_CHARACTERS),
-                readMinutes(object, "sessionIdleTimeoutMinutes", safeFallback.sessionIdleTimeoutMinutes()));
+                readMinutes(object, "sessionIdleTimeoutMinutes", safeFallback.sessionIdleTimeoutMinutes()),
+                readInteger(object, "minSendIntervalSeconds", safeFallback.minSendIntervalSeconds(), 120, 3600));
     }
 
     JsonObject toJson() {
@@ -112,11 +136,30 @@ public record ClawBotProgressSettings(
         object.addProperty("maxNotifications", maxNotifications);
         object.addProperty("excerptMaxCharacters", excerptMaxCharacters);
         object.addProperty("sessionIdleTimeoutMinutes", sessionIdleTimeoutMinutes);
+        object.addProperty("minSendIntervalSeconds", minSendIntervalSeconds);
         return object;
     }
 
     long textIntervalNanos() {
         return TimeUnit.MINUTES.toNanos(textIntervalMinutes);
+    }
+
+    long minSendIntervalNanos() {
+        return TimeUnit.SECONDS.toNanos(minSendIntervalSeconds);
+    }
+
+    private static void migrateInteger(JsonObject object, String name, int oldMin, int oldMax, int min, int max) throws IOException {
+        if (object.has(name)) {
+            int value = readInteger(object, name, min, oldMin, oldMax);
+            object.addProperty(name, Math.max(min, Math.min(max, value)));
+        }
+    }
+
+    private static void migrateReminder(JsonObject object, String name, int min, int max) throws IOException {
+        if (object.has(name)) {
+            int value = readInteger(object, name, min, 0, MAX_INTERVAL_MINUTES);
+            object.addProperty(name, value == 0 ? 0 : Math.max(min, Math.min(max, value)));
+        }
     }
 
     long idleReminderNanos() {

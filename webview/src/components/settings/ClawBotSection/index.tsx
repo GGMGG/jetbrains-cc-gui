@@ -34,16 +34,17 @@ const DEFAULT_PROGRESS_SETTINGS = {
   textIntervalMinutes: 1,
   idleReminderMinutes: 5,
   waitReminderMinutes: 10,
-  initialCheckDelaySeconds: 15,
-  maxNotifications: 12,
+  initialCheckDelaySeconds: 30,
+  maxNotifications: 6,
   excerptMaxCharacters: 800,
   sessionIdleTimeoutMinutes: 30,
+  minSendIntervalSeconds: 120,
 } as const;
 const MAX_PROGRESS_INTERVAL_MINUTES = 24 * 60;
 const MAX_INITIAL_CHECK_DELAY_SECONDS = 5 * 60;
-const MAX_PROGRESS_NOTIFICATIONS = 100;
+const MAX_PROGRESS_NOTIFICATIONS = 6;
 const MIN_EXCERPT_MAX_CHARACTERS = 100;
-const MAX_EXCERPT_MAX_CHARACTERS = 4000;
+const MAX_EXCERPT_MAX_CHARACTERS = 1500;
 
 interface ClawBotProgressDraft {
   textIntervalMinutes: string;
@@ -53,6 +54,7 @@ interface ClawBotProgressDraft {
   maxNotifications: string;
   excerptMaxCharacters: string;
   sessionIdleTimeoutMinutes: string;
+  minSendIntervalSeconds: string;
 }
 
 interface ClawBotPairing {
@@ -99,6 +101,9 @@ interface ClawBotStatus {
   progressIdleReminderMinutes: number;
   progressWaitReminderMinutes: number;
   progressInitialCheckDelaySeconds: number;
+  progressMinSendIntervalSeconds: number;
+  outboundQueuedCount: number;
+  outboundNextAllowedAt: number;
   progressMaxNotifications: number;
   progressExcerptMaxCharacters: number;
   sessionIdleTimeoutMinutes: number;
@@ -260,18 +265,19 @@ function parseStatus(json: string): ClawBotStatus | null {
     const outboundFailedCount = readNonNegativeInteger(value.outboundFailedCount ?? 0);
     const outboundLatestStatus = value.outboundLatestStatus ?? '';
     const outboundLatestError = value.outboundLatestError ?? '';
-    const progressTextIntervalMinutes = readProgressMinutes(
-      value.progressTextIntervalMinutes, DEFAULT_PROGRESS_SETTINGS.textIntervalMinutes);
-    const progressIdleReminderMinutes = readProgressMinutes(
-      value.progressIdleReminderMinutes, DEFAULT_PROGRESS_SETTINGS.idleReminderMinutes);
-    const progressWaitReminderMinutes = readProgressMinutes(
-      value.progressWaitReminderMinutes, DEFAULT_PROGRESS_SETTINGS.waitReminderMinutes);
+    const progressTextIntervalMinutes = readProgressInteger(
+      value.progressTextIntervalMinutes, DEFAULT_PROGRESS_SETTINGS.textIntervalMinutes, 1, 60);
+    const progressIdleReminderMinutes = readProgressInteger(
+      value.progressIdleReminderMinutes, DEFAULT_PROGRESS_SETTINGS.idleReminderMinutes, 0, 60);
+    const progressWaitReminderMinutes = readProgressInteger(
+      value.progressWaitReminderMinutes, DEFAULT_PROGRESS_SETTINGS.waitReminderMinutes, 0, 120);
     const progressInitialCheckDelaySeconds = readProgressInteger(
       value.progressInitialCheckDelaySeconds, DEFAULT_PROGRESS_SETTINGS.initialCheckDelaySeconds,
-      1, MAX_INITIAL_CHECK_DELAY_SECONDS);
+      15, MAX_INITIAL_CHECK_DELAY_SECONDS);
+    const progressMinSendIntervalSeconds = readProgressInteger(value.progressMinSendIntervalSeconds, 120, 120, 3600);
     const progressMaxNotifications = readProgressInteger(
       value.progressMaxNotifications, DEFAULT_PROGRESS_SETTINGS.maxNotifications,
-      1, MAX_PROGRESS_NOTIFICATIONS);
+      0, MAX_PROGRESS_NOTIFICATIONS);
     const progressExcerptMaxCharacters = readProgressInteger(
       value.progressExcerptMaxCharacters, DEFAULT_PROGRESS_SETTINGS.excerptMaxCharacters,
       MIN_EXCERPT_MAX_CHARACTERS, MAX_EXCERPT_MAX_CHARACTERS);
@@ -294,6 +300,7 @@ function parseStatus(json: string): ClawBotStatus | null {
       || progressIdleReminderMinutes === null
       || progressWaitReminderMinutes === null
       || progressInitialCheckDelaySeconds === null
+      || progressMinSendIntervalSeconds === null
       || progressMaxNotifications === null
       || progressExcerptMaxCharacters === null
       || sessionIdleTimeoutMinutes === null) return null;
@@ -336,6 +343,9 @@ function parseStatus(json: string): ClawBotStatus | null {
       progressWaitReminderMinutes,
       progressInitialCheckDelaySeconds,
       progressMaxNotifications,
+      progressMinSendIntervalSeconds,
+      outboundQueuedCount: readNonNegativeInteger(value.outboundQueuedCount) ?? 0,
+      outboundNextAllowedAt: readNonNegativeInteger(value.outboundNextAllowedAt) ?? 0,
       progressExcerptMaxCharacters,
       sessionIdleTimeoutMinutes,
     };
@@ -407,13 +417,14 @@ export default function ClawBotSection() {
   const [busyOperation, setBusyOperation] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [statusExpanded, setStatusExpanded] = useState(false);
-  const [progressExpanded, setProgressExpanded] = useState(true);
+  const [progressExpanded, setProgressExpanded] = useState(false);
   const [progressDraft, setProgressDraft] = useState<ClawBotProgressDraft>({
     textIntervalMinutes: String(DEFAULT_PROGRESS_SETTINGS.textIntervalMinutes),
     idleReminderMinutes: String(DEFAULT_PROGRESS_SETTINGS.idleReminderMinutes),
     waitReminderMinutes: String(DEFAULT_PROGRESS_SETTINGS.waitReminderMinutes),
     initialCheckDelaySeconds: String(DEFAULT_PROGRESS_SETTINGS.initialCheckDelaySeconds),
     maxNotifications: String(DEFAULT_PROGRESS_SETTINGS.maxNotifications),
+    minSendIntervalSeconds: String(DEFAULT_PROGRESS_SETTINGS.minSendIntervalSeconds),
     excerptMaxCharacters: String(DEFAULT_PROGRESS_SETTINGS.excerptMaxCharacters),
     sessionIdleTimeoutMinutes: String(DEFAULT_PROGRESS_SETTINGS.sessionIdleTimeoutMinutes),
   });
@@ -440,19 +451,23 @@ export default function ClawBotSection() {
       waitReminderMinutes: Number(progressDraft.waitReminderMinutes),
       initialCheckDelaySeconds: Number(progressDraft.initialCheckDelaySeconds),
       maxNotifications: Number(progressDraft.maxNotifications),
+      minSendIntervalSeconds: Number(progressDraft.minSendIntervalSeconds),
       excerptMaxCharacters: Number(progressDraft.excerptMaxCharacters),
       sessionIdleTimeoutMinutes: Number(progressDraft.sessionIdleTimeoutMinutes),
     };
-    if (!Number.isInteger(values.textIntervalMinutes)
-      || values.textIntervalMinutes < 1 || values.textIntervalMinutes > MAX_PROGRESS_INTERVAL_MINUTES
+    if (Object.values(progressDraft).some((value) => value.trim() === '')
+      || !Number.isInteger(values.minSendIntervalSeconds)
+      || values.minSendIntervalSeconds < 120 || values.minSendIntervalSeconds > 3600
+      || !Number.isInteger(values.textIntervalMinutes)
+      || values.textIntervalMinutes < 1 || values.textIntervalMinutes > 60
       || !Number.isInteger(values.idleReminderMinutes)
-      || values.idleReminderMinutes < 1 || values.idleReminderMinutes > MAX_PROGRESS_INTERVAL_MINUTES
+      || (values.idleReminderMinutes !== 0 && values.idleReminderMinutes < 5) || values.idleReminderMinutes > 60
       || !Number.isInteger(values.waitReminderMinutes)
-      || values.waitReminderMinutes < 1 || values.waitReminderMinutes > MAX_PROGRESS_INTERVAL_MINUTES
+      || (values.waitReminderMinutes !== 0 && values.waitReminderMinutes < 10) || values.waitReminderMinutes > 120
       || !Number.isInteger(values.initialCheckDelaySeconds)
-      || values.initialCheckDelaySeconds < 1 || values.initialCheckDelaySeconds > MAX_INITIAL_CHECK_DELAY_SECONDS
+      || values.initialCheckDelaySeconds < 15 || values.initialCheckDelaySeconds > MAX_INITIAL_CHECK_DELAY_SECONDS
       || !Number.isInteger(values.maxNotifications)
-      || values.maxNotifications < 1 || values.maxNotifications > MAX_PROGRESS_NOTIFICATIONS
+      || values.maxNotifications < 0 || values.maxNotifications > MAX_PROGRESS_NOTIFICATIONS
       || !Number.isInteger(values.excerptMaxCharacters)
       || values.excerptMaxCharacters < MIN_EXCERPT_MAX_CHARACTERS
       || values.excerptMaxCharacters > MAX_EXCERPT_MAX_CHARACTERS
@@ -515,12 +530,13 @@ export default function ClawBotSection() {
       waitReminderMinutes: String(status.progressWaitReminderMinutes),
       initialCheckDelaySeconds: String(status.progressInitialCheckDelaySeconds),
       maxNotifications: String(status.progressMaxNotifications),
+      minSendIntervalSeconds: String(status.progressMinSendIntervalSeconds),
       excerptMaxCharacters: String(status.progressExcerptMaxCharacters),
       sessionIdleTimeoutMinutes: String(status.sessionIdleTimeoutMinutes),
     });
   }, [status?.progressTextIntervalMinutes, status?.progressIdleReminderMinutes,
     status?.progressWaitReminderMinutes, status?.progressInitialCheckDelaySeconds,
-    status?.progressMaxNotifications, status?.progressExcerptMaxCharacters,
+    status?.progressMaxNotifications, status?.progressMinSendIntervalSeconds, status?.progressExcerptMaxCharacters,
     status?.sessionIdleTimeoutMinutes]);
 
   useEffect(() => {
@@ -711,29 +727,25 @@ export default function ClawBotSection() {
       </div>
 
       <div className={styles.progressSettings}>
-        <button
-          type="button"
-          className={styles.cardHeader}
-          aria-expanded={progressExpanded}
-          aria-label={t(progressExpanded
-            ? 'settings.clawBot.collapseProgressSettings'
-            : 'settings.clawBot.expandProgressSettings')}
-          onClick={() => setProgressExpanded((expanded) => !expanded)}
-        >
+        <button type="button" className={styles.cardHeader} aria-expanded={progressExpanded}
+          aria-label={t(progressExpanded ? 'settings.clawBot.collapseProgressSettings' : 'settings.clawBot.expandProgressSettings')}
+          onClick={() => setProgressExpanded((expanded) => !expanded)}>
           <span className={styles.cardHeaderTitle}>{t('settings.clawBot.progressSettings')}</span>
-          <span className={styles.cardHeaderSummary}>
+          <span className={styles.cardHeaderSummary} aria-hidden="true">
             <span className={`codicon ${progressExpanded ? 'codicon-chevron-down' : 'codicon-chevron-right'}`} />
           </span>
         </button>
         {progressExpanded && <div className={styles.cardBody}>
-        <p>{t('settings.clawBot.progressSettingsDescription')}</p>
+      <div className={styles.progressSubsection}>
+        <div className={styles.subsectionHeader}>{t('settings.clawBot.progressSettings')}</div>
+        <div className={styles.subsectionBody}>
         <div className={styles.progressFields}>
           <label className={styles.progressField}>
             <span>{t('settings.clawBot.progressTextInterval')}</span>
             <input
               type="number"
               min={1}
-              max={MAX_PROGRESS_INTERVAL_MINUTES}
+              max={60}
               step={1}
               inputMode="numeric"
               aria-label={t('settings.clawBot.progressTextInterval')}
@@ -749,8 +761,8 @@ export default function ClawBotSection() {
             <span>{t('settings.clawBot.progressIdleReminderInterval')}</span>
             <input
               type="number"
-              min={1}
-              max={MAX_PROGRESS_INTERVAL_MINUTES}
+              min={0}
+              max={60}
               step={1}
               inputMode="numeric"
               aria-label={t('settings.clawBot.progressIdleReminderInterval')}
@@ -766,8 +778,8 @@ export default function ClawBotSection() {
             <span>{t('settings.clawBot.progressWaitReminderInterval')}</span>
             <input
               type="number"
-              min={1}
-              max={MAX_PROGRESS_INTERVAL_MINUTES}
+              min={0}
+              max={120}
               step={1}
               inputMode="numeric"
               aria-label={t('settings.clawBot.progressWaitReminderInterval')}
@@ -780,27 +792,10 @@ export default function ClawBotSection() {
             />
           </label>
           <label className={styles.progressField}>
-            <span>{t('settings.clawBot.progressInitialCheckDelay')}</span>
-            <input
-              type="number"
-              min={1}
-              max={MAX_INITIAL_CHECK_DELAY_SECONDS}
-              step={1}
-              inputMode="numeric"
-              aria-label={t('settings.clawBot.progressInitialCheckDelay')}
-              value={progressDraft.initialCheckDelaySeconds}
-              disabled={status === null || isBusy}
-              onChange={(event) => setProgressDraft((current) => ({
-                ...current,
-                initialCheckDelaySeconds: event.target.value,
-              }))}
-            />
-          </label>
-          <label className={styles.progressField}>
             <span>{t('settings.clawBot.progressMaxNotifications')}</span>
             <input
               type="number"
-              min={1}
+              min={0}
               max={MAX_PROGRESS_NOTIFICATIONS}
               step={1}
               inputMode="numeric"
@@ -810,6 +805,65 @@ export default function ClawBotSection() {
               onChange={(event) => setProgressDraft((current) => ({
                 ...current,
                 maxNotifications: event.target.value,
+              }))}
+            />
+          </label>
+        </div>
+        <div className={styles.formHints}>
+          <p>{t('settings.clawBot.progressSettingsDescription')}</p>
+          <p>{t('settings.clawBot.reminderRangeHint')}</p>
+          <p>{t('settings.clawBot.progressProtectionHint')}</p>
+        </div>
+        </div>
+      </div>
+
+      <div className={styles.progressSubsection}>
+        <div className={styles.subsectionHeader}>{t('settings.clawBot.sendProtection')}</div>
+        <div className={styles.subsectionBody}>
+          <div className={styles.row}>
+            <span>{t('settings.clawBot.outboundQueued')}</span><span>{status?.outboundQueuedCount ?? 0}</span>
+          </div>
+          <div className={styles.row}>
+            <span>{t('settings.clawBot.outboundNextAllowed')}</span>
+            <span>{status && status.outboundNextAllowedAt > Date.now()
+              ? new Date(status.outboundNextAllowedAt).toLocaleTimeString() : '—'}</span>
+          </div>
+          <div className={styles.formHints}>
+            <p>{t('settings.clawBot.sendProtectionDescription')}</p>
+            <p>{t('settings.clawBot.progressMigrated')}</p>
+          </div>
+          <div className={styles.progressFields}>
+          <label className={styles.progressField}>
+            <span>{t('settings.clawBot.progressMinSendInterval')}</span>
+            <input type="number" min={120} max={3600} step={1} inputMode="numeric"
+              aria-label={t('settings.clawBot.progressMinSendInterval')}
+              value={progressDraft.minSendIntervalSeconds} disabled={status === null || isBusy}
+              onChange={(event) => setProgressDraft((current) => ({ ...current, minSendIntervalSeconds: event.target.value }))} />
+          </label>
+          </div>
+        </div>
+      </div>
+
+      <div className={styles.progressSubsection}>
+        <div className={styles.subsectionHeader}>{t('settings.clawBot.advancedProgress')}</div>
+        <div className={styles.subsectionBody}>
+
+
+          <div className={styles.progressFields}>
+          <label className={styles.progressField}>
+            <span>{t('settings.clawBot.progressInitialCheckDelay')}</span>
+            <input
+              type="number"
+              min={15}
+              max={MAX_INITIAL_CHECK_DELAY_SECONDS}
+              step={1}
+              inputMode="numeric"
+              aria-label={t('settings.clawBot.progressInitialCheckDelay')}
+              value={progressDraft.initialCheckDelaySeconds}
+              disabled={status === null || isBusy}
+              onChange={(event) => setProgressDraft((current) => ({
+                ...current,
+                initialCheckDelaySeconds: event.target.value,
               }))}
             />
           </label>
@@ -847,16 +901,16 @@ export default function ClawBotSection() {
               }))}
             />
           </label>
+          </div>
+          <div className={styles.settingsActions}>
+          <button type="button" className={styles.primaryButton} disabled={status === null || isBusy} onClick={saveProgressSettings}>
+            <span className="codicon codicon-save" aria-hidden="true" />
+            <span>{t('settings.clawBot.saveProgressSettings')}</span>
+          </button>
+          </div>
         </div>
-        <button
-          type="button"
-          className={styles.primaryButton}
-          disabled={status === null || isBusy}
-          onClick={saveProgressSettings}
-        >
-          <span className="codicon codicon-save" />
-          <span>{t('settings.clawBot.saveProgressSettings')}</span>
-        </button>
+      </div>
+
         </div>}
       </div>
 

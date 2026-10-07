@@ -20,10 +20,12 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 const DEFAULT_SEND_RETRIES = 4;
 const DEFAULT_RATE_LIMIT_BACKOFF_BASE_MS = 1_000;
 const MAX_RATE_LIMIT_BACKOFF_MS = 60_000;
-const RATE_LIMIT_ERROR_CODE = -2;
+const RATE_LIMIT_ERROR_CODE = 429;
+const RATE_LIMIT_HTTP_STATUS = 429;
+const RATE_LIMIT_MESSAGE = /(?:rate.?limit|too many requests|request frequency exceeded|\u9650\u6d41|\u9891\u7387\u8d85\u9650|\u8bf7\u6c42\u8fc7\u4e8e\u9891\u7e41)/i;
 
 export class IlinkClientError extends Error {
-  constructor(code, { httpStatus, ret, errorCode, errorMessage } = {}) {
+  constructor(code, { httpStatus, ret, errorCode, errorMessage, retryAfterMs } = {}) {
     super(code);
     this.name = 'IlinkClientError';
     this.code = code;
@@ -31,6 +33,7 @@ export class IlinkClientError extends Error {
     this.ret = ret;
     this.errorCode = errorCode;
     this.errorMessage = errorMessage;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -227,7 +230,16 @@ export class IlinkClient {
         fromUserId,
         runId,
       });
-      const response = await this.#requestJson(request, { signal, operation: 'SEND' });
+      let response;
+      try {
+        response = await this.#requestJson(request, { signal, operation: 'SEND' });
+      } catch (error) {
+        if (!isRetryableSendError(error) || attempt >= this.sendRetries) {
+          throw error;
+        }
+        await waitForRetry(this.rateLimitBackoffBaseMs, attempt, signal);
+        continue;
+      }
       let result;
       try {
         result = parseBusinessResponse(response);
@@ -237,7 +249,7 @@ export class IlinkClient {
       if (result.ok) {
         return result;
       }
-      const error = new IlinkClientError('ILINK_SEND_REJECTED', {
+      const error = new IlinkClientError(isRateLimitResult(result) ? 'ILINK_SEND_RATE_LIMITED' : 'ILINK_SEND_REJECTED', {
         ret: result.ret,
         errorCode: result.errorCode,
         errorMessage: result.errorMessage,
@@ -286,10 +298,10 @@ export class IlinkClient {
       if (!response.ok) {
         throw new IlinkClientError(
           operation === 'SEND'
-            ? 'ILINK_SEND_RESULT_UNKNOWN'
+            ? (response.status === 429 ? 'ILINK_SEND_RATE_LIMITED' : 'ILINK_SEND_RESULT_UNKNOWN')
             : (response.status === 401 || response.status === 403
               ? 'ILINK_AUTH_REJECTED' : 'ILINK_HTTP_STATUS'),
-          { httpStatus: response.status },
+          { httpStatus: response.status, retryAfterMs: parseRetryAfter(response.headers.get('retry-after')) },
         );
       }
       const contentType = response.headers.get('content-type') || '';
@@ -308,7 +320,7 @@ export class IlinkClient {
       }
     } catch (error) {
       if (error instanceof IlinkClientError) {
-        if (operation === 'SEND' && error.code !== 'ILINK_SEND_RESULT_UNKNOWN') {
+        if (operation === 'SEND' && error.code !== 'ILINK_SEND_RESULT_UNKNOWN' && error.code !== 'ILINK_SEND_RATE_LIMITED') {
           throw new IlinkClientError('ILINK_SEND_RESULT_UNKNOWN', { httpStatus: error.httpStatus });
         }
         throw error;
@@ -334,8 +346,20 @@ export class IlinkClient {
 }
 
 function isRateLimitResult(result) {
-  return (result.ret === RATE_LIMIT_ERROR_CODE || result.errorCode === RATE_LIMIT_ERROR_CODE)
-    && !/^unknown error$/i.test(result.errorMessage || '');
+  return result.ret === RATE_LIMIT_ERROR_CODE
+    || result.errorCode === RATE_LIMIT_ERROR_CODE
+    || RATE_LIMIT_MESSAGE.test(result.errorMessage || '');
+}
+
+function parseRetryAfter(value) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const trimmed = value.trim();
+  const delay = /^\d+$/.test(trimmed) ? Number(trimmed) * 1000 : Date.parse(trimmed) - Date.now();
+  return Number.isFinite(delay) && delay >= 0 ? Math.min(86_400_000, Math.ceil(delay)) : undefined;
+}
+
+function isRetryableSendError(error) {
+  return error instanceof IlinkClientError && error.httpStatus === RATE_LIMIT_HTTP_STATUS;
 }
 
 function waitForRetry(baseDelayMs, attempt, signal) {

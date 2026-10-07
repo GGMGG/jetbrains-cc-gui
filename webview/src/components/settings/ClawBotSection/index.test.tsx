@@ -52,6 +52,9 @@ describe('ClawBotSection', () => {
       }));
     });
 
+    const progressToggle = screen.getByRole('button', { name: 'settings.clawBot.expandProgressSettings' });
+    expect(progressToggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(progressToggle);
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressTextInterval',
     }), { target: { value: '2' } });
@@ -61,22 +64,23 @@ describe('ClawBotSection', () => {
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressWaitReminderInterval',
     }), { target: { value: '12' } });
+    fireEvent.click(screen.getByText('settings.clawBot.advancedProgress'));
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressInitialCheckDelay',
     }), { target: { value: '20' } });
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressMaxNotifications',
-    }), { target: { value: '20' } });
+    }), { target: { value: '6' } });
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressExcerptMaxCharacters',
     }), { target: { value: '1200' } });
     fireEvent.change(screen.getByRole('spinbutton', {
       name: 'settings.clawBot.sessionIdleTimeout',
     }), { target: { value: '45' } });
-    fireEvent.click(screen.getByRole('button', { name: 'settings.clawBot.saveProgressSettings' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'settings.clawBot.saveProgressSettings' })[0]!);
 
     expect(window.sendToJava).toHaveBeenLastCalledWith(
-      'clawbot_update_progress_settings:{"textIntervalMinutes":2,"idleReminderMinutes":6,"waitReminderMinutes":12,"initialCheckDelaySeconds":20,"maxNotifications":20,"excerptMaxCharacters":1200,"sessionIdleTimeoutMinutes":45}',
+      'clawbot_update_progress_settings:{"textIntervalMinutes":2,"idleReminderMinutes":6,"waitReminderMinutes":12,"initialCheckDelaySeconds":20,"maxNotifications":6,"minSendIntervalSeconds":120,"excerptMaxCharacters":1200,"sessionIdleTimeoutMinutes":45}',
     );
     act(() => {
       window.onClawBotOperation?.('{"operation":"update_progress_settings","ok":true}');
@@ -87,7 +91,7 @@ describe('ClawBotSection', () => {
         progressIdleReminderMinutes: 6,
         progressWaitReminderMinutes: 12,
         progressInitialCheckDelaySeconds: 20,
-        progressMaxNotifications: 20,
+        progressMaxNotifications: 6,
         progressExcerptMaxCharacters: 1200,
         sessionIdleTimeoutMinutes: 45,
       }));
@@ -107,7 +111,7 @@ describe('ClawBotSection', () => {
     }) as HTMLInputElement).value).toBe('20');
     expect((screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressMaxNotifications',
-    }) as HTMLInputElement).value).toBe('20');
+    }) as HTMLInputElement).value).toBe('6');
     expect((screen.getByRole('spinbutton', {
       name: 'settings.clawBot.progressExcerptMaxCharacters',
     }) as HTMLInputElement).value).toBe('1200');

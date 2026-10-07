@@ -61,8 +61,8 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals(1, defaults.get("progressTextIntervalMinutes").getAsInt());
             assertEquals(5, defaults.get("progressIdleReminderMinutes").getAsInt());
             assertEquals(10, defaults.get("progressWaitReminderMinutes").getAsInt());
-            assertEquals(15, defaults.get("progressInitialCheckDelaySeconds").getAsInt());
-            assertEquals(12, defaults.get("progressMaxNotifications").getAsInt());
+            assertEquals(30, defaults.get("progressInitialCheckDelaySeconds").getAsInt());
+            assertEquals(6, defaults.get("progressMaxNotifications").getAsInt());
             assertEquals(800, defaults.get("progressExcerptMaxCharacters").getAsInt());
             assertEquals(30, defaults.get("sessionIdleTimeoutMinutes").getAsInt());
 
@@ -72,7 +72,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             update.addProperty("idleReminderMinutes", 6);
             update.addProperty("waitReminderMinutes", 12);
             update.addProperty("initialCheckDelaySeconds", 20);
-            update.addProperty("maxNotifications", 20);
+            update.addProperty("maxNotifications", 6);
             update.addProperty("excerptMaxCharacters", 1200);
             update.addProperty("sessionIdleTimeoutMinutes", 45);
             JsonObject updated = service.control("UPDATE_PROGRESS_SETTINGS", update);
@@ -80,7 +80,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals(6, updated.get("progressIdleReminderMinutes").getAsInt());
             assertEquals(12, updated.get("progressWaitReminderMinutes").getAsInt());
             assertEquals(20, updated.get("progressInitialCheckDelaySeconds").getAsInt());
-            assertEquals(20, updated.get("progressMaxNotifications").getAsInt());
+            assertEquals(6, updated.get("progressMaxNotifications").getAsInt());
             assertEquals(1200, updated.get("progressExcerptMaxCharacters").getAsInt());
             assertEquals(45, updated.get("sessionIdleTimeoutMinutes").getAsInt());
 
@@ -104,7 +104,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals(6, persisted.get("progressIdleReminderMinutes").getAsInt());
             assertEquals(12, persisted.get("progressWaitReminderMinutes").getAsInt());
             assertEquals(20, persisted.get("progressInitialCheckDelaySeconds").getAsInt());
-            assertEquals(20, persisted.get("progressMaxNotifications").getAsInt());
+            assertEquals(6, persisted.get("progressMaxNotifications").getAsInt());
             assertEquals(1200, persisted.get("progressExcerptMaxCharacters").getAsInt());
             assertEquals(45, persisted.get("sessionIdleTimeoutMinutes").getAsInt());
         } finally {
@@ -397,6 +397,7 @@ public class ClawBotGatewayRuntimeServiceTest {
                 assertEquals("reply-message", fixture.pending().messageId());
 
                 fixture.transport.errorCode = null;
+                clearDeliveryDelay(fixture.service);
                 assertTrue(fixture.reply());
                 assertEquals(2, fixture.transport.requestCount);
                 assertEquals(fixture.eventId, fixture.transport.lastParams.get("clientId").getAsString());
@@ -417,6 +418,7 @@ public class ClawBotGatewayRuntimeServiceTest {
                 assertEquals("reply-message", fixture.pending().messageId());
 
                 setField(fixture.service, "transportActive", true);
+                clearDeliveryDelay(fixture.service);
                 assertTrue(fixture.reply());
                 assertEquals(1, fixture.transport.requestCount);
                 assertEquals("SENT", fixture.receiptStatus());
@@ -577,7 +579,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             update.addProperty("idleReminderMinutes", 7);
             update.addProperty("waitReminderMinutes", 11);
             update.addProperty("initialCheckDelaySeconds", 18);
-            update.addProperty("maxNotifications", 9);
+            update.addProperty("maxNotifications", 5);
             update.addProperty("excerptMaxCharacters", 1000);
             update.addProperty("sessionIdleTimeoutMinutes", 60);
             JsonObject result = follower.control("UPDATE_PROGRESS_SETTINGS", update);
@@ -587,7 +589,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertEquals(7, follower.progressSettings().idleReminderMinutes());
             assertEquals(11, follower.progressSettings().waitReminderMinutes());
             assertEquals(18, follower.progressSettings().initialCheckDelaySeconds());
-            assertEquals(9, follower.progressSettings().maxNotifications());
+            assertEquals(5, follower.progressSettings().maxNotifications());
             assertEquals(1000, follower.progressSettings().excerptMaxCharacters());
             assertEquals(60, follower.progressSettings().sessionIdleTimeoutMinutes());
         } finally {
@@ -665,10 +667,158 @@ public class ClawBotGatewayRuntimeServiceTest {
         return (ClawBotSessionRegistry) field.get(service);
     }
 
+    private static void clearDeliveryDelay(ClawBotGatewayRuntimeService service) throws Exception {
+        Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("deliveryRetryAt");
+        field.setAccessible(true);
+        ((Map<?, ?>) field.get(service)).clear();
+    }
+
     private static void setField(Object target, String name, Object value) throws ReflectiveOperationException {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         field.set(target, value);
+    }
+
+    @Test
+    public void pollingDoesNotShortenRejectedDeliveryDeadline() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            fixture.transport.errorCode = "ILINK_SEND_REJECTED";
+            assertThrows(IOException.class, fixture::reply);
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("deliveryRetryAt");
+            field.setAccessible(true);
+            java.util.Map<?, ?> deadlines = (java.util.Map<?, ?>) field.get(fixture.service);
+            Object deadline = deadlines.get(fixture.eventId);
+            assertTrue((Long) deadline > System.currentTimeMillis() + 290_000L);
+            Method retry = ClawBotGatewayRuntimeService.class.getDeclaredMethod("retryPendingDeliveries");
+            retry.setAccessible(true);
+            retry.invoke(fixture.service);
+            assertEquals("CLAWBOT_SEND_DEFERRED", assertThrows(IOException.class, fixture::reply).getMessage());
+            assertEquals(deadline, deadlines.get(fixture.eventId));
+            assertEquals(1, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void ambiguousStartDoesNotConsumeUnattemptedProgress() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false)) {
+            fixture.transport.errorCode = "ILINK_SEND_RESULT_UNKNOWN";
+            assertThrows(IOException.class, () -> fixture.client.sendProgress(
+                    "session-1", "reply-message", "reply-message:start", "Started"));
+            fixture.transport.errorCode = null;
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "progress-after-unknown", "New progress"));
+            assertEquals(2, fixture.transport.requestCount);
+            assertEquals("New progress", fixture.transport.lastParams.get("text").getAsString());
+        }
+    }
+
+    @Test
+    public void staleDeliverySnapshotCannotAcquireNewGeneration() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            fixture.transport.errorCode = "ILINK_SEND_REJECTED";
+            assertThrows(IOException.class, fixture::reply);
+            var delivery = new ClawBotPendingDeliveryStore(fixture.runtime).pending("fixture-token").get(0);
+            Field generation = ClawBotGatewayRuntimeService.class.getDeclaredField("outboundGeneration");
+            generation.setAccessible(true);
+            long oldGeneration = generation.getLong(fixture.service);
+            Method clear = ClawBotGatewayRuntimeService.class.getDeclaredMethod("clearOutboundDeliveryState");
+            clear.setAccessible(true);
+            clear.invoke(fixture.service);
+            fixture.transport.errorCode = null;
+            Method deliver = ClawBotGatewayRuntimeService.class.getDeclaredMethod("deliverPending",
+                    ClawBotPendingDeliveryStore.Delivery.class, long.class);
+            deliver.setAccessible(true);
+            var error = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> deliver.invoke(fixture.service, delivery, oldGeneration));
+            assertEquals("CLAWBOT_OUTBOUND_CANCELLED", error.getCause().getMessage());
+            assertEquals(1, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void durableReplyCapabilitySurvivesLossOfVolatileInboundQueue() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            sessionRegistry(fixture.service).clearPendingMessages();
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("replyCapabilities");
+            field.setAccessible(true);
+            ((ClawBotPendingDeliveryStore) field.get(fixture.service)).reload();
+            assertTrue(fixture.reply());
+            assertEquals(1, fixture.transport.requestCount);
+            assertEquals("Final answer", fixture.transport.lastParams.get("text").getAsString());
+            assertTrue(new ClawBotPendingDeliveryStore(fixture.runtime, "reply-capabilities.enc")
+                    .pending("fixture-token").isEmpty());
+        }
+    }
+
+    @Test
+    public void revokedSenderCannotRecoverDurableReplyCapability() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            JsonObject request = new JsonObject();
+            request.addProperty("senderId", "sender");
+            fixture.service.control("REVOKE_SENDER", request);
+            assertThrows(IOException.class, fixture::reply);
+            assertEquals(0, fixture.transport.requestCount);
+            assertTrue(new ClawBotPendingDeliveryStore(fixture.runtime, "reply-capabilities.enc")
+                    .pending("fixture-token").isEmpty());
+        }
+    }
+
+    @Test
+    public void replacedSessionGenerationCannotRecoverOldFinal() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            sessionRegistry(fixture.service).clearPendingMessages();
+            assertTrue(fixture.client.register(new ClawBotSessionRegistration(
+                    "session-1", "ide-instance", "project", "Project", "codex",
+                    Set.of("INBOUND", "CONTROL"), ClawBotSessionStatus.ONLINE, 4, "Chat", "generation-2")));
+            assertEquals("CLAWBOT_SESSION_MESSAGE_NOT_PENDING", assertThrows(IOException.class, fixture::reply).getMessage());
+            assertEquals(0, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void newGatewayAcceptsFinalForSurvivingIdeTaskWithoutReexecution() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            fixture.service.stop();
+            ClawBotBindingHandoff handoff = testHandoff();
+            ClawBotGatewayRuntimeService replacement = new ClawBotGatewayRuntimeService(fixture.runtime, "replacement", handoff);
+            try {
+                assertTrue(replacement.start());
+                handoff.accept("fixture-bot", "https://ilinkai.weixin.qq.com", null, "fixture-token");
+                RecordingTransport transport = new RecordingTransport();
+                setField(replacement, "ilinkProcess", transport.bridge);
+                setField(replacement, "transportActive", true);
+                JsonObject authorization = new JsonObject();
+                authorization.addProperty("senderId", "sender");
+                replacement.control("ALLOW_SENDER", authorization);
+                try (ClawBotIdeClient surviving = new ClawBotIdeClient(replacement.endpoint(), "ide-instance", 4)) {
+                    assertTrue(surviving.register(new ClawBotSessionRegistration(
+                            "session-1", "ide-instance", "project", "Project", "codex",
+                            Set.of("INBOUND", "CONTROL"), ClawBotSessionStatus.ONLINE, 4, "Chat", "generation-1")));
+                    assertEquals(null, surviving.pollInbound("session-1"));
+                    assertTrue(surviving.replyToInbound("session-1", "reply-message", "Recovered final"));
+                    assertEquals(1, transport.requestCount);
+                    assertEquals("Recovered final", transport.lastParams.get("text").getAsString());
+                }
+            } finally {
+                replacement.stop();
+            }
+        }
+    }
+
+    @Test
+    public void ambiguousChunkCannotBecomeSuccessfulFinal() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            fixture.transport.errorCode = "ILINK_SEND_RESULT_UNKNOWN";
+            assertThrows(IOException.class, () -> fixture.client.replyToInbound(
+                    "session-1", "reply-message", "x".repeat(9000)));
+            fixture.transport.errorCode = null;
+            Method retry = ClawBotGatewayRuntimeService.class.getDeclaredMethod("retryPendingDeliveries");
+            retry.setAccessible(true);
+            retry.invoke(fixture.service);
+            assertEquals("UNKNOWN", fixture.receiptStatus());
+            assertEquals(1, fixture.transport.requestCount);
+            assertTrue(new ClawBotPendingDeliveryStore(fixture.runtime).pending("fixture-token")
+                    .stream().allMatch(ClawBotPendingDeliveryStore.Delivery::unknown));
+        }
     }
 
     /** Exercises real local IPC and receipt persistence using an in-memory daemon boundary. */
@@ -682,12 +832,23 @@ public class ClawBotGatewayRuntimeServiceTest {
         private final String eventId;
 
         private ReplyFixture(boolean control) throws Exception {
+            this(control, true);
+        }
+
+        private ReplyFixture(boolean control, boolean sendStart) throws Exception {
             this.control = control;
             eventId = UUID.nameUUIDFromBytes(((control ? "control" : "terminal") + ":reply-message")
                     .getBytes(StandardCharsets.UTF_8)).toString();
             assertTrue(service.start());
+            Field bindingField = ClawBotGatewayRuntimeService.class.getDeclaredField("bindingHandoff");
+            bindingField.setAccessible(true);
+            ((ClawBotBindingHandoff) bindingField.get(service)).accept(
+                    "fixture-bot", "https://ilinkai.weixin.qq.com", null, "fixture-token");
             setField(service, "ilinkProcess", transport.bridge);
             setField(service, "transportActive", true);
+            Field retryTask = ClawBotGatewayRuntimeService.class.getDeclaredField("deliveryRetryTask");
+            retryTask.setAccessible(true);
+            ((java.util.concurrent.ScheduledFuture<?>) retryTask.get(service)).cancel(false);
             JsonObject authorization = new JsonObject();
             authorization.addProperty("senderId", "sender");
             service.control("ALLOW_SENDER", authorization);
@@ -705,6 +866,11 @@ public class ClawBotGatewayRuntimeServiceTest {
             } else {
                 assertTrue(registry.enqueueInbound("session-1", message));
                 assertTrue(registry.markInboundDispatched("session-1", "ide-instance", 4, message.messageId()));
+                if (sendStart) {
+                    assertTrue(client.sendProgress("session-1", "reply-message", "reply-message:start", "Started"));
+                    transport.requestCount = 0;
+                    transport.entered = new CountDownLatch(1);
+                }
             }
         }
 
@@ -734,10 +900,55 @@ public class ClawBotGatewayRuntimeServiceTest {
         }
     }
 
+    @Test
+    public void lifecycleMessagesRemainEnabledWithZeroProgressAndFastCompletion() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false)) {
+            JsonObject settings = ClawBotProgressSettings.defaults().toJson();
+            settings.addProperty("maxNotifications", 0);
+            fixture.service.control("UPDATE_PROGRESS_SETTINGS", settings);
+            assertEquals("CLAWBOT_SEND_DEFERRED", assertThrows(IOException.class, fixture::reply).getMessage());
+            assertEquals(1, fixture.transport.requestCount);
+            clearDeliveryDelay(fixture.service);
+            assertTrue(fixture.reply());
+            assertEquals(2, fixture.transport.requestCount);
+            assertEquals("Final answer", fixture.transport.lastParams.get("text").getAsString());
+            assertEquals(0, fixture.service.statusSnapshot().get("outboundQueuedCount").getAsInt());
+            assertTrue(fixture.reply());
+            assertEquals(2, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void exhaustedWindowRetainsFinalAndBackgroundDeliveryDoesNotDuplicateIt() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("outboundProtection");
+            field.setAccessible(true);
+            ClawBotOutboundProtection protection = (ClawBotOutboundProtection) field.get(fixture.service);
+            while (protection.acquire(System.currentTimeMillis(), false)) {
+                // Fill the window without making a transport request.
+            }
+            IOException error = assertThrows(IOException.class, fixture::reply);
+            assertEquals("CLAWBOT_SEND_DEFERRED", error.getMessage());
+            assertEquals(0, fixture.transport.requestCount);
+            assertEquals(1, fixture.service.statusSnapshot().get("outboundQueuedCount").getAsInt());
+            Field attempts = ClawBotOutboundProtection.class.getDeclaredField("attempts");
+            attempts.setAccessible(true);
+            ((java.util.Deque<?>) attempts.get(protection)).clear();
+            clearDeliveryDelay(fixture.service);
+            Method retry = ClawBotGatewayRuntimeService.class.getDeclaredMethod("retryPendingDeliveries");
+            retry.setAccessible(true);
+            retry.invoke(fixture.service);
+            assertEquals(1, fixture.transport.requestCount);
+            assertEquals("SENT", fixture.receiptStatus());
+            assertTrue(fixture.reply());
+            assertEquals(1, fixture.transport.requestCount);
+        }
+    }
+
     /** Never starts Node or contacts WeChat; replies through the real daemon response parser. */
     private static final class RecordingTransport extends Process {
         private final ClawBotIlinkProcess bridge = new ClawBotIlinkProcess();
-        private final CountDownLatch entered = new CountDownLatch(1);
+        private volatile CountDownLatch entered = new CountDownLatch(1);
         private volatile CountDownLatch release;
         private volatile String errorCode;
         private volatile int requestCount;
