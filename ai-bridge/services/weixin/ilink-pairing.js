@@ -302,7 +302,6 @@ function createDeadlineSignal(parentSignal, deadline, clock) {
     deadlineExpired = true;
     controller.abort();
   }, remainingMs);
-  timer.unref?.();
   return {
     signal: controller.signal,
     get deadlineExpired() {

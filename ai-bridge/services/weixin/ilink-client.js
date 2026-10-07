@@ -279,7 +279,6 @@ export class IlinkClient {
       requestTimedOut = true;
       controller.abort();
     }, timeoutMs);
-    timeout.unref?.();
     const abortFromCaller = () => controller.abort(signal.reason);
     if (signal?.aborted) {
       abortFromCaller();
