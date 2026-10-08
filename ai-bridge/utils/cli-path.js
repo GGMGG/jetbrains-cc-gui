@@ -228,7 +228,7 @@ function pathExists(candidate) {
  * Shells allowed for login-env probing: `$SHELL` is attacker-influenced, so only
  * standard system/Homebrew shell binaries may be invoked.
  */
-const ALLOWED_LOGIN_SHELLS = new Set([
+export const ALLOWED_LOGIN_SHELLS = new Set([
   '/bin/zsh', '/bin/bash', '/bin/sh',
   '/usr/bin/zsh', '/usr/bin/bash', '/usr/bin/sh',
   '/usr/local/bin/zsh', '/usr/local/bin/bash',
