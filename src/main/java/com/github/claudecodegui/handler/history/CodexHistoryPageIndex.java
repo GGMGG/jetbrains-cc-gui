@@ -51,7 +51,8 @@ final class CodexHistoryPageIndex implements AutoCloseable {
         Path source = reader.resolveSessionFile(sessionId);
         Snapshot snapshot = Snapshot.read(source);
         Entry entry = entries.get(source);
-        if (entry != null && !entry.snapshot.equals(snapshot) && !entry.canAppend(source, snapshot)) {
+        if (entry != null && !(entry.snapshot.equals(snapshot)
+                ? entry.matchesSamples(source) : entry.canAppend(source, snapshot))) {
             remove(source);
             entry = null;
         }
@@ -249,6 +250,12 @@ final class CodexHistoryPageIndex implements AutoCloseable {
             if (snapshot == null || !terminated || next.size <= snapshot.size || !snapshot.sameFile(next)) {
                 return false;
             }
+            return matchesSamples(source);
+        }
+
+        // Windows file replacement can preserve metadata. Check bounded content
+        // samples even when the snapshot appears unchanged before reusing pages.
+        private boolean matchesSamples(Path source) throws IOException {
             try (RandomAccessFile input = new RandomAccessFile(source.toFile(), "r")) {
                 return Arrays.equals(head, sample(input, 0, head.length))
                         && Arrays.equals(tail, sample(input, snapshot.size - tail.length, tail.length));
