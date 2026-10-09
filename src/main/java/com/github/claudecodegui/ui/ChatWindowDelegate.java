@@ -8,6 +8,9 @@ import com.github.claudecodegui.handler.ClawBotControlHandler;
 import com.github.claudecodegui.handler.ClawBotStatusHandler;
 import com.github.claudecodegui.handler.ClipboardHandler;
 import com.github.claudecodegui.handler.ContextHandler;
+import com.github.claudecodegui.handler.CodexInteractionHandler;
+import com.github.claudecodegui.handler.CodexNativeDataHandler;
+import com.github.claudecodegui.handler.CodexWorkspaceDiffHandler;
 import com.github.claudecodegui.handler.CodexMcpServerHandler;
 import com.github.claudecodegui.handler.CodexPetHandler;
 import com.github.claudecodegui.handler.CliModelsHandler;
@@ -384,6 +387,9 @@ public class ChatWindowDelegate {
         messageDispatcher.registerHandler(new NodeProcessHandler(handlerContext));
         messageDispatcher.registerHandler(new ClawBotStatusHandler(handlerContext));
         messageDispatcher.registerHandler(new ClawBotControlHandler(handlerContext));
+        messageDispatcher.registerHandler(new CodexInteractionHandler(handlerContext));
+        messageDispatcher.registerHandler(new CodexNativeDataHandler(handlerContext));
+        messageDispatcher.registerHandler(new CodexWorkspaceDiffHandler(handlerContext));
 
         messageDispatcher.registerHandler(new WindowEventHandler(handlerContext, new WindowEventHandler.Callback() {
             @Override public void onHeartbeat(String content) { host.getWebviewWatchdog().handleHeartbeat(content); }

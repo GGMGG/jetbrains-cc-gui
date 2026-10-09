@@ -40,7 +40,7 @@ revocation, binding changes and the explicit confirmation flow.
 
 ## Validation boundary
 
-Validation on the PR branch:
+Validation before synchronizing the official target branch:
 
 - 208 ClawBot Java tests pass with test instrumentation enabled, including all
   48 gateway tests, three reply-store tests and six status-handler tests.
@@ -56,6 +56,28 @@ Validation on the PR branch:
 - Full Webview checks expose failures in the unchanged Markdown copy and chat
   input callback tests. Both failures also reproduce in an isolated worktree at
   the previous PR head, `72423411`, before the ClawBot update.
+- The same isolated previous-head worktree reproduces the Windows history-index
+  replacement failure.
+
+Validation after merging official `feature/v0.6.0` at `d5b153f8`:
+
+- All 208 ClawBot Java tests and 51 Codex message-handler/send-service tests
+  pass with test instrumentation enabled. The merged handler preserves native
+  client-message identity together with remote-turn completion; regression
+  assertions cover startup errors and final replies through that combined path.
+- Full Java validation runs 1,888 tests: 1,874 pass, 10 skip and four configuration
+  tests fail. The failing commit-AI/prompt-enhancer tests and their settings
+  implementation are unchanged from the official target branch. The earlier
+  history-index failure no longer occurs after synchronization.
+- A controlled full Webview run using two workers and a 15-second test timeout
+  passes 2,224 of 2,226 tests. Only the two previously reproduced Markdown and
+  chat-input failures remain; all ClawBot settings tests pass in this run.
+  Production build and test TypeScript checks pass.
+- The full bridge run has 1,165 passes, three skips and one timeout cancellation
+  in the official Codex privacy-index process test, with no assertion failures.
+  Running that test file separately passes all 18 tests.
+- The combined QR-code/native TOML dependency lock installs successfully with
+  `npm ci`; the PR diff against the official target passes `git diff --check`.
 
 The full repository test suites are therefore not reported as passing. These
 results distinguish the current ClawBot regressions from the separate history
