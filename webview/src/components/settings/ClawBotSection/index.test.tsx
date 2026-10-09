@@ -15,6 +15,28 @@ describe('ClawBotSection', () => {
     window.onClawBotOperation = undefined;
   });
 
+  it('loads recovery through explicit controls and resends only after confirmation', () => {
+    render(<ClawBotSection />);
+    act(() => {
+      window.onClawBotStatus?.('{"state":"LEADER","transport":"ILINK","sessionCount":1,"bindingState":"BOUND","bindingRevision":1}');
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clawBot.recovery.load' }));
+    expect(window.sendToJava).toHaveBeenLastCalledWith('clawbot_list_reply_recovery:{}');
+    act(() => {
+      window.onClawBotOperation?.(JSON.stringify({ operation: 'list_reply_recovery', ok: true,
+        replyRecoveryAvailable: true, replyRecoveryBindingRevision: 1,
+        replyRecoveryItems: [{ eventId: '00000000-0000-4000-8000-000000000001', status: 'UNKNOWN',
+          updatedAt: 1000, expiresAt: 2000, kind: 'FINAL_REPLY', reason: 'READY', retryStatus: '' }],
+      }));
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clawBot.recovery.retry' }));
+    expect(window.sendToJava).toHaveBeenLastCalledWith('clawbot_list_reply_recovery:{}');
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clawBot.recovery.confirm' }));
+    expect(window.sendToJava).toHaveBeenLastCalledWith(
+      'clawbot_retry_reply:{"eventId":"00000000-0000-4000-8000-000000000001","bindingRevision":1,"confirmed":true}',
+    );
+  });
+
   it('requests and renders sanitized gateway status', () => {
     render(<ClawBotSection />);
 

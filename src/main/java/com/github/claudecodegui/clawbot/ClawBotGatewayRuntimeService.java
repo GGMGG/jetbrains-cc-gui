@@ -57,6 +57,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private final ClawBotOutboundProtection outboundProtection;
     private final ClawBotPendingDeliveryStore pendingDeliveries;
     private final ClawBotPendingDeliveryStore replyCapabilities;
+    private final ClawBotReplyRecoveryStore replyRecovery;
     private final Set<String> deliveriesInFlight = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> deliveryRetryAt = new ConcurrentHashMap<>();
     private ScheduledFuture<?> deliveryRetryTask;
@@ -131,6 +132,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         this.outboundProtection = new ClawBotOutboundProtection(this.runtimeDirectory);
         this.pendingDeliveries = new ClawBotPendingDeliveryStore(this.runtimeDirectory);
         this.replyCapabilities = new ClawBotPendingDeliveryStore(this.runtimeDirectory, "reply-capabilities.enc");
+        this.replyRecovery = new ClawBotReplyRecoveryStore(this.runtimeDirectory);
         this.progressSettings = loadProgressSettings();
         this.messageRouter = new ClawBotMessageRouter(
                 Objects.requireNonNull(routeStore, "routeStore"), new ClawBotMessageRouter.SenderUsageRecorder() {
@@ -476,6 +478,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             outboundProtection.reload();
             pendingDeliveries.reload();
             replyCapabilities.reload();
+            replyRecovery.reload();
             executionJournal.load();
             messageRouter.clear();
             String authToken = secretStore.loadOrCreate();
@@ -621,6 +624,10 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     return controlResponse(request, "LIST_SENDERS", payload);
                 case "CLAWBOT_UPDATE_PROGRESS_SETTINGS":
                     return controlResponse(request, "UPDATE_PROGRESS_SETTINGS", payload);
+                case "CLAWBOT_LIST_REPLY_RECOVERY":
+                    return controlResponse(request, "LIST_REPLY_RECOVERY", payload);
+                case "CLAWBOT_RETRY_REPLY":
+                    return controlResponse(request, "RETRY_REPLY", payload);
                 case "CLAWBOT_STATUS":
                     return response(request, "CLAWBOT_STATUS_RESULT", localStatusSnapshot());
                 case "SESSION_POLL":
@@ -803,9 +810,15 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 String senderId = readBoundedString(
                         payload, "senderId", ClawBotInboundMessage.MAX_USER_ID_LENGTH, false);
                 senderAccessStore.revoke(senderId);
-                if (transportActive) {
-                    pendingDeliveries.removeRecipient(senderId, deliveryToken());
-                    replyCapabilities.removeRecipient(senderId, deliveryToken());
+                var revocationCredentials = bindingHandoff.runtimeCredentials();
+                if (revocationCredentials.isPresent()) {
+                    String token = revocationCredentials.get().botToken();
+                    replyRecovery.removeRecipient(senderId, token);
+                    pendingDeliveries.removeRecipient(senderId, token);
+                    replyCapabilities.removeRecipient(senderId, token);
+                } else {
+                    // Without the decryption key, discard the recovery cache so restoring credentials cannot resurrect revoked answers.
+                    replyRecovery.clear();
                 }
                 previewMailbox.cancelSender(senderId);
                 sessionRegistry.clearPendingMessagesFromSender(senderId);
@@ -827,11 +840,144 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 return result;
             case "UPDATE_PROGRESS_SETTINGS":
                 return updateProgressSettings(payload);
+            case "LIST_REPLY_RECOVERY":
+                return listReplyRecovery();
+            case "RETRY_REPLY":
+                return retryReply(payload);
             case "STATUS":
                 return localStatusSnapshot();
             default:
                 throw new IllegalArgumentException("Unsupported Claw Bot control operation");
         }
+    }
+
+    private JsonObject listReplyRecovery() throws IOException {
+        JsonObject result = localStatusSnapshot();
+        com.google.gson.JsonArray items = new com.google.gson.JsonArray();
+        List<ClawBotReplyRecoveryStore.Reply> retained = List.of();
+        boolean available = false;
+        try {
+            retained = replyRecovery.replies(System.currentTimeMillis(), deliveryToken());
+            available = true;
+        } catch (IOException | RuntimeException ignored) {
+            // Redacted receipt diagnostics remain usable when the encrypted body store cannot be opened.
+        }
+        Set<String> parts = new java.util.HashSet<>();
+        for (var candidate : retained) {
+            int chunkCount = splitDeliveryText(candidate.text()).size();
+            for (int index = 0; index < chunkCount - 1; index++) {
+                parts.add(stableEventId(candidate.eventId() + ":" + index, "chunk"));
+                if (!candidate.retryId().isEmpty()) {
+                    parts.add(stableEventId(candidate.retryId() + ":" + index, "chunk"));
+                }
+            }
+            if (!candidate.retryId().isEmpty()) {
+                parts.add(candidate.retryId());
+            }
+        }
+        for (var receipt : outboundReceiptStore.recent()) {
+            if (!"UNKNOWN".equals(receipt.status()) && !"FAILED".equals(receipt.status())) {
+                continue;
+            }
+            var reply = retained.stream().filter(value -> value.eventId().equals(receipt.clientId())).findFirst().orElse(null);
+            // Suppress individual chunks of a retained reply; the group receipt describes the whole answer.
+            if (parts.contains(receipt.clientId())) {
+                continue;
+            }
+            JsonObject item = new JsonObject();
+            item.addProperty("eventId", receipt.clientId());
+            item.addProperty("status", receipt.status());
+            item.addProperty("updatedAt", receipt.updatedAt());
+            item.addProperty("kind", reply == null ? "OTHER" : "FINAL_REPLY");
+            item.addProperty("expiresAt", reply == null ? 0 : reply.expiresAt());
+            item.addProperty("reason", available ? replyRecoveryReason(reply, receipt.status()) : "STORE_UNAVAILABLE");
+            item.addProperty("retryStatus", reply == null || reply.retryId().isEmpty() ? "" : recoveryRetryStatus(reply.retryId()));
+            items.add(item);
+            if (items.size() == 8) {
+                break;
+            }
+        }
+        result.addProperty("replyRecoveryAvailable", available);
+        result.addProperty("replyRecoveryBindingRevision", bindingHandoff.status().revision());
+        result.add("replyRecoveryItems", items);
+        return result;
+    }
+
+    private String replyRecoveryReason(ClawBotReplyRecoveryStore.Reply reply, String status) {
+        if (reply == null) {
+            return "BODY_UNAVAILABLE";
+        }
+        if (reply.bindingRevision() != bindingHandoff.status().revision()) {
+            return "BINDING_CHANGED";
+        }
+        if (!senderAccessStore.isAllowed(reply.recipient())) {
+            return "SENDER_REVOKED";
+        }
+        if (System.currentTimeMillis() >= reply.expiresAt()) {
+            return "EXPIRED";
+        }
+        if (sessionRegistry.snapshot().stream().noneMatch(reply.target()::matches)) {
+            return "TARGET_CHANGED";
+        }
+        if (!reply.retryId().isEmpty()) {
+            return "RETRY_STARTED";
+        }
+        if (!transportActive || ilinkProcess == null) {
+            return "TRANSPORT_NOT_READY";
+        }
+        return "UNKNOWN".equals(status) ? "READY" : "AUTO_RETRY";
+    }
+
+    private String recoveryRetryStatus(String id) {
+        String status = knownStableDeliveryStatus(id);
+        if (!status.isEmpty()) {
+            return status;
+        }
+        try {
+            if (pendingDeliveries.pending(deliveryToken()).stream().anyMatch(value -> id.equals(value.groupId()))) {
+                return "QUEUED";
+            }
+        } catch (IOException ignored) {
+            // A persisted claim without a verifiable queue must never be recreated automatically.
+        }
+        return "UNAVAILABLE";
+    }
+
+    private JsonObject retryReply(JsonObject payload) throws IOException {
+        JsonElement confirmation = payload.get("confirmed");
+        if (confirmation == null || !confirmation.isJsonPrimitive() || !confirmation.getAsJsonPrimitive().isBoolean()
+                || !confirmation.getAsBoolean()) {
+            throw new IOException("CLAWBOT_REPLY_CONFIRMATION_REQUIRED");
+        }
+        long revision = readNonNegativeLong(payload, "bindingRevision");
+        if (revision != bindingHandoff.status().revision()) {
+            throw new IOException("CLAWBOT_REPLY_BINDING_CHANGED");
+        }
+        String eventId = readBoundedString(payload, "eventId", 64, false);
+        ClawBotReplyRecoveryStore.Reply reply = replyRecovery.replies(System.currentTimeMillis(), deliveryToken()).stream()
+                .filter(value -> value.eventId().equals(eventId)).findFirst()
+                .orElseThrow(() -> new IOException("CLAWBOT_REPLY_BODY_UNAVAILABLE"));
+        String reason = replyRecoveryReason(reply, knownStableDeliveryStatus(eventId));
+        if (!"READY".equals(reason) && !"RETRY_STARTED".equals(reason)) {
+            throw new IOException("CLAWBOT_REPLY_" + reason);
+        }
+        if (reply.retryId().isEmpty()) {
+            String retryId = UUID.randomUUID().toString();
+            List<String> chunks = splitDeliveryText(reply.text());
+            java.util.ArrayList<ClawBotPendingDeliveryStore.Delivery> batch = new java.util.ArrayList<>();
+            String previous = null;
+            for (int index = 0; index < chunks.size(); index++) {
+                String id = index == chunks.size() - 1 ? retryId : stableEventId(retryId + ":" + index, "chunk");
+                batch.add(new ClawBotPendingDeliveryStore.Delivery(id, reply.recipient(), reply.context(), chunks.get(index),
+                        true, previous, false, retryId, eventId));
+                previous = id;
+            }
+            // Persist the claim first. A crash between claim and queue admission fails closed rather than risking another send.
+            replyRecovery.claim(reply, retryId, deliveryToken());
+            pendingDeliveries.putAll(batch, deliveryToken());
+            deliveryExecutor.execute(this::retryPendingDeliveries);
+        }
+        return listReplyRecovery();
     }
 
     private JsonObject updateProgressSettings(JsonObject payload) throws IOException {
@@ -955,6 +1101,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             outboundReceiptStore.clear();
             pendingDeliveries.clear();
             replyCapabilities.clear();
+            replyRecovery.clear();
         } catch (IOException error) {
             if (cleanupError == null) {
                 cleanupError = error;
@@ -1056,6 +1203,18 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     }
                 }
                 markExecutionCompleted(messageId);
+                synchronized (this) {
+                    ensureOutboundGeneration(replyGeneration);
+                    if (message.action() == ClawBotInboundAction.MESSAGE && senderAccessStore.isAllowed(message.fromUserId())) {
+                        try {
+                            replyRecovery.retain(eventId, message, text, bindingHandoff.status().revision(),
+                                    System.currentTimeMillis(), deliveryToken());
+                        } catch (IOException | RuntimeException error) {
+                            // Retention failure must not discard the original final reply; manual recovery stays unavailable.
+                            LOG.warn("[ClawBot] Complete reply retention unavailable: CLAWBOT_REPLY_STORE_UNAVAILABLE");
+                        }
+                    }
+                }
                 try {
                     String predecessor = null;
                     if ("SESSION_REPLY".equals(request.type()) && message.action() == ClawBotInboundAction.MESSAGE) {
@@ -1472,28 +1631,29 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                                     stableEventId(message.fromUserId() + ":" + message.contextToken(), "conversation"),
                                     stableEventId(message.messageId(), "inbound"));
                         }
-                    }
-                    messageRouter.handle(
-                            message,
-                            sessionRegistry.snapshot(),
-                            channelReplySender(),
-                            sessionRegistry::enqueueInbound,
-                            sessionRegistry::enqueueCommand,
-                            messageIds -> transportStateStore.save(
-                                    cursor, messageIds, messageRouter.uncertainMessageIdsSnapshot()),
-                            new ClawBotMessageRouter.ExecutionRecorder() {
-                                @Override
-                                public boolean recordAccepted(
-                                        String sessionHandleId, ClawBotInboundMessage acceptedMessage)
-                                        throws IOException {
-                                    return recordExecutionAccepted(sessionHandleId, acceptedMessage);
-                                }
+                        // Router callbacks acquire this monitor, so always enter gateway before router.
+                        messageRouter.handle(
+                                message,
+                                sessionRegistry.snapshot(),
+                                channelReplySender(),
+                                sessionRegistry::enqueueInbound,
+                                sessionRegistry::enqueueCommand,
+                                messageIds -> transportStateStore.save(
+                                        cursor, messageIds, messageRouter.uncertainMessageIdsSnapshot()),
+                                new ClawBotMessageRouter.ExecutionRecorder() {
+                                    @Override
+                                    public boolean recordAccepted(
+                                            String sessionHandleId, ClawBotInboundMessage acceptedMessage)
+                                            throws IOException {
+                                        return recordExecutionAccepted(sessionHandleId, acceptedMessage);
+                                    }
 
-                                @Override
-                                public void rollbackAccepted(String messageId) throws IOException {
-                                    rollbackExecutionAccepted(messageId);
-                                }
-                            });
+                                    @Override
+                                    public void rollbackAccepted(String messageId) throws IOException {
+                                        rollbackExecutionAccepted(messageId);
+                                    }
+                                });
+                    }
                 } catch (IllegalArgumentException error) {
                     incrementInboundDroppedCount();
                     LOG.warn("[ClawBot] Dropped malformed inbound message: " + error.getMessage());
@@ -1763,6 +1923,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 archiveUnknownDelivery(current);
                 throw new IOException("CLAWBOT_OUTBOUND_UNKNOWN");
             }
+            validateRecoveryDelivery(current);
         }
         if (delivery.unknown()) {
             throw new IOException("CLAWBOT_OUTBOUND_UNKNOWN");
@@ -1819,6 +1980,24 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             throw error;
         } finally {
             deliveriesInFlight.remove(delivery.id());
+        }
+    }
+
+    private void validateRecoveryDelivery(ClawBotPendingDeliveryStore.Delivery delivery) throws IOException {
+        if (delivery.recoverySource() == null) {
+            return;
+        }
+        var reply = replyRecovery.replies(System.currentTimeMillis(), deliveryToken()).stream()
+                .filter(value -> value.eventId().equals(delivery.recoverySource())).findFirst().orElse(null);
+        String reason = replyRecoveryReason(reply, "UNKNOWN");
+        if (reply == null || !"RETRY_STARTED".equals(reason) || !reply.retryId().equals(delivery.groupId())
+                || !reply.recipient().equals(delivery.recipient()) || !reply.context().equals(delivery.context())) {
+            for (var queued : pendingDeliveries.pending(deliveryToken())) {
+                if (Objects.equals(queued.groupId(), delivery.groupId())) {
+                    pendingDeliveries.remove(queued.id(), deliveryToken());
+                }
+            }
+            throw new IOException("CLAWBOT_REPLY_" + reason);
         }
     }
 
@@ -1966,6 +2145,12 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 ensureOutboundGeneration(generation);
                 if (stableEvent && requireAuthorizedSender && !senderAccessStore.isAllowed(toUserId)) {
                     throw new IOException("CLAWBOT_SENDER_NOT_AUTHORIZED");
+                }
+                for (var queued : pendingDeliveries.pending(deliveryToken())) {
+                    if (queued.id().equals(clientId)) {
+                        validateRecoveryDelivery(queued);
+                        break;
+                    }
                 }
                 if (ordinary && pendingDeliveries.pending(deliveryToken()).stream().anyMatch(
                         value -> value.requireAuthorization() && !isStableDeliveryState(outboundReceiptStore.statusOf(value.id())))) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatClawBotError } from './formatError';
+import ReplyRecoveryPanel, { parseReplyRecoveryItems, type ReplyRecoveryItem } from './ReplyRecoveryPanel';
 import styles from './style.module.less';
 
 type ClawBotState = 'STOPPED' | 'FOLLOWER' | 'LEADER';
@@ -118,6 +119,9 @@ interface ClawBotOperationResult {
   senderHasMore?: boolean;
   senderTotalCount?: number;
   senderLastUsedAt?: Record<string, number>;
+  replyRecoveryItems?: ReplyRecoveryItem[];
+  replyRecoveryAvailable?: boolean;
+  replyRecoveryBindingRevision?: number;
 }
 
 const PAIRING_STATES: readonly ClawBotPairingState[] = [
@@ -359,6 +363,11 @@ function parseOperation(json: string): ClawBotOperationResult | null {
     const value: unknown = JSON.parse(json);
     if (!isRecord(value)) return null;
     const authorizedSenders = value.authorizedSenders;
+    const replyRecoveryItems = value.replyRecoveryItems === undefined ? undefined : parseReplyRecoveryItems(value.replyRecoveryItems);
+    const replyRecoveryBindingRevision = value.replyRecoveryBindingRevision === undefined
+      ? undefined : readNonNegativeInteger(value.replyRecoveryBindingRevision);
+    if (replyRecoveryItems === null || replyRecoveryBindingRevision === null
+      || (value.replyRecoveryAvailable !== undefined && typeof value.replyRecoveryAvailable !== 'boolean')) return null;
     if (authorizedSenders !== undefined && (!Array.isArray(authorizedSenders)
       || authorizedSenders.length > 8
       || authorizedSenders.some((sender) => typeof sender !== 'string'
@@ -391,6 +400,9 @@ function parseOperation(json: string): ClawBotOperationResult | null {
       ...(value.senderHasMore === undefined ? {} : { senderHasMore: value.senderHasMore as boolean }),
       ...(senderTotalCount === undefined ? {} : { senderTotalCount }),
       ...(rawLastUsedAt === undefined ? {} : { senderLastUsedAt }),
+      ...(replyRecoveryItems === undefined ? {} : { replyRecoveryItems }),
+      ...(replyRecoveryBindingRevision === undefined ? {} : { replyRecoveryBindingRevision }),
+      ...(value.replyRecoveryAvailable === undefined ? {} : { replyRecoveryAvailable: value.replyRecoveryAvailable as boolean }),
     };
   } catch {
     return null;
@@ -418,6 +430,9 @@ export default function ClawBotSection() {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [statusExpanded, setStatusExpanded] = useState(false);
   const [progressExpanded, setProgressExpanded] = useState(false);
+  const [replyRecoveryItems, setReplyRecoveryItems] = useState<ReplyRecoveryItem[] | null>(null);
+  const [replyRecoveryAvailable, setReplyRecoveryAvailable] = useState(false);
+  const [replyRecoveryBindingRevision, setReplyRecoveryBindingRevision] = useState<number | null>(null);
   const [progressDraft, setProgressDraft] = useState<ClawBotProgressDraft>({
     textIntervalMinutes: String(DEFAULT_PROGRESS_SETTINGS.textIntervalMinutes),
     idleReminderMinutes: String(DEFAULT_PROGRESS_SETTINGS.idleReminderMinutes),
@@ -433,7 +448,7 @@ export default function ClawBotSection() {
     window.sendToJava?.('get_clawbot_status:');
   }, []);
 
-  const sendOperation = useCallback((type: string, payload: Record<string, string | number> = {}) => {
+  const sendOperation = useCallback((type: string, payload: Record<string, string | number | boolean> = {}) => {
     if (busyOperation !== null) return;
     if (window.sendToJava === undefined) {
       setErrorCode('CLAWBOT_BRIDGE_UNAVAILABLE');
@@ -495,6 +510,11 @@ export default function ClawBotSection() {
         setErrorCode(result.errorCode ?? 'CLAWBOT_OPERATION_FAILED');
       } else {
         setErrorCode(null);
+        if ((result.operation === 'list_reply_recovery' || result.operation === 'retry_reply') && result.replyRecoveryItems !== undefined) {
+          setReplyRecoveryItems(result.replyRecoveryItems);
+          setReplyRecoveryAvailable(result.replyRecoveryAvailable ?? false);
+          setReplyRecoveryBindingRevision(result.replyRecoveryBindingRevision ?? null);
+        }
         if (result.operation === 'allow_sender' || result.operation === 'revoke_sender') {
           setSenderId('');
           setShowAuthorizedSenders(true);
@@ -725,6 +745,11 @@ export default function ClawBotSection() {
         )}
         </div>
       </div>
+
+      <ReplyRecoveryPanel items={replyRecoveryItems} available={replyRecoveryAvailable}
+        bindingRevision={replyRecoveryBindingRevision} currentBindingRevision={status?.bindingRevision ?? null} busy={isBusy}
+        onRefresh={() => sendOperation('clawbot_list_reply_recovery')}
+        onRetry={(eventId, bindingRevision) => sendOperation('clawbot_retry_reply', { eventId, bindingRevision, confirmed: true })} />
 
       <div className={styles.progressSettings}>
         <button type="button" className={styles.cardHeader} aria-expanded={progressExpanded}

@@ -23,7 +23,9 @@ public final class ClawBotControlHandler extends BaseMessageHandler {
             "clawbot_allow_sender",
             "clawbot_revoke_sender",
             "clawbot_list_senders",
-            "clawbot_update_progress_settings"
+            "clawbot_update_progress_settings",
+            "clawbot_list_reply_recovery",
+            "clawbot_retry_reply"
     };
 
     public ClawBotControlHandler(HandlerContext context) {
@@ -45,7 +47,8 @@ public final class ClawBotControlHandler extends BaseMessageHandler {
         try {
             payload = parsePayload(content);
         } catch (RuntimeException error) {
-            publish(operation, false, "CLAWBOT_REQUEST_INVALID", currentStatus());
+            CompletableFuture.runAsync(() -> publish(operation, false, "CLAWBOT_REQUEST_INVALID", currentStatus()),
+                    AppExecutorUtil.getAppExecutorService());
             return true;
         }
         CompletableFuture.runAsync(() -> execute(operation, payload), AppExecutorUtil.getAppExecutorService());
@@ -80,6 +83,14 @@ public final class ClawBotControlHandler extends BaseMessageHandler {
             safeStatus.remove("senderHasMore");
             safeStatus.remove("senderTotalCount");
             safeStatus.remove("senderLastUsedAt");
+        }
+        if ("LIST_REPLY_RECOVERY".equals(operation) || "RETRY_REPLY".equals(operation)) {
+            copyListResult(status, result, "replyRecoveryItems");
+            copyListResult(status, result, "replyRecoveryAvailable");
+            copyListResult(status, result, "replyRecoveryBindingRevision");
+            safeStatus.remove("replyRecoveryItems");
+            safeStatus.remove("replyRecoveryAvailable");
+            safeStatus.remove("replyRecoveryBindingRevision");
         }
         String operationJson = result.toString();
         String statusJson = safeStatus.toString();

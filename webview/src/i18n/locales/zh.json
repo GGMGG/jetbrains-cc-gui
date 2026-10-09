@@ -1076,6 +1076,43 @@
       "collapse": "折叠侧边栏"
     },
     "clawBot": {
+      "recovery": {
+        "title": "回复投递恢复",
+        "load": "加载最近结果",
+        "description": "显示最近最多 8 条未确认或被拒绝的投递。完整最终回复加密保留 24 小时，并受容量限制。重发前请先检查微信收件。",
+        "empty": "没有最近未确认或被拒绝的投递。",
+        "retry": "重发已保存回复",
+        "retryStatus": "恢复投递状态",
+        "expires": "回复保留截止时间",
+        "confirmTitle": "确认重发这条已保存回复？",
+        "confirm": "确认重发",
+        "cancel": "取消",
+        "confirmDescription": "原回复可能已送达微信，请先检查收件会话。确认后将完整答案重新发送，已收到的分段可能重复；不会重新执行 AI 任务。每条已保存回复仅允许一次确认恢复。",
+        "kinds": {
+          "FINAL_REPLY": "最终回复",
+          "OTHER": "其他投递／完整回复不可用"
+        },
+        "statuses": {
+          "UNKNOWN": "投递未确认",
+          "FAILED": "明确拒绝",
+          "UNAVAILABLE": "恢复队列不可用，请检查 IDE 结果并手动恢复",
+          "QUEUED": "等待发送",
+          "PENDING": "发送中",
+          "SENT": "已发送"
+        },
+        "reasons": {
+          "READY": "已保存完整答案，可确认后恢复投递。",
+          "BODY_UNAVAILABLE": "完整答案未保留或已过期，请检查 IDE 结果并手动恢复。",
+          "STORE_UNAVAILABLE": "无法读取已保存回复，请恢复绑定或存储访问后刷新。",
+          "BINDING_CHANGED": "绑定已变化，不能通过当前绑定重发原回复。",
+          "SENDER_REVOKED": "收件人的发送者授权已被撤销。",
+          "EXPIRED": "已保存回复已过期，请从 IDE 恢复答案。",
+          "TARGET_CHANGED": "原 IDE 会话已离线或发生变化，请在 IDE 核查结果。",
+          "RETRY_STARTED": "已记录一次恢复，请检查其结果；重复点击不会创建新的投递。",
+          "TRANSPORT_NOT_READY": "请启动已绑定的传输后刷新。",
+          "AUTO_RETRY": "这是明确失败，现有受保护队列会处理重试，请勿重新执行 AI 任务。"
+        }
+      },
       "refresh": "刷新",
       "title": "微信 Claw Bot",
       "description": "查看本地 gateway 状态和会话诊断信息。",
@@ -1211,7 +1248,15 @@
         "CLAWBOT_SENDER_STORE_UNAVAILABLE": "发送者授权存储不可用",
         "CLAWBOT_ROUTE_STORE_UNAVAILABLE": "会话绑定存储不可用",
         "CLAWBOT_OUTBOX_STORE_UNAVAILABLE": "发送回执存储不可用",
-        "CLAWBOT_PROGRESS_SETTINGS_INVALID": "配置超出允许范围，请检查各项输入限制"
+        "CLAWBOT_PROGRESS_SETTINGS_INVALID": "配置超出允许范围，请检查各项输入限制",
+        "CLAWBOT_REPLY_CONFIRMATION_REQUIRED": "请先确认可能重复收件的风险",
+        "CLAWBOT_REPLY_BINDING_CHANGED": "绑定已变化，请重新加载恢复结果",
+        "CLAWBOT_REPLY_BODY_UNAVAILABLE": "完整回复未保留或已过期，请检查 IDE 结果",
+        "CLAWBOT_REPLY_TARGET_CHANGED": "原会话已变化或离线，请检查对应 IDE 结果",
+        "CLAWBOT_REPLY_SENDER_REVOKED": "收件人的发送者授权已撤销",
+        "CLAWBOT_REPLY_EXPIRED": "已保存回复已过期，请从 IDE 恢复答案",
+        "CLAWBOT_REPLY_TRANSPORT_NOT_READY": "请先启动已绑定的传输",
+        "CLAWBOT_REPLY_AUTO_RETRY": "明确失败由现有受保护队列自动重试"
       },
       "states": { "leader": "主节点", "follower": "跟随节点", "stopped": "已停止", "unknown": "未知" },
       "pairingStates": { "idle": "空闲", "waiting_scan": "等待扫码", "scanned": "已扫码", "need_verify_code": "需要验证码", "redirecting": "跳转中", "bound": "已绑定", "already_bound": "已经绑定", "expired": "已过期", "verify_code_blocked": "验证码被阻止", "timeout": "已超时", "cancelled": "已取消", "error": "错误" }

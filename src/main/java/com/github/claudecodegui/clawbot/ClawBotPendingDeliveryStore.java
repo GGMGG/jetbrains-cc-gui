@@ -28,6 +28,7 @@ final class ClawBotPendingDeliveryStore {
     private static final int MAX_BYTES = 24 * 1024 * 1024;
     private static final byte[] DOMAIN = "CCGUI ClawBot pending delivery v1".getBytes(StandardCharsets.UTF_8);
     private final Path file;
+    private final int maxTextLength;
     private final Map<String, Delivery> entries = new LinkedHashMap<>();
     private boolean loaded;
 
@@ -36,7 +37,12 @@ final class ClawBotPendingDeliveryStore {
     }
 
     ClawBotPendingDeliveryStore(Path directory, String name) {
+        this(directory, name, ClawBotInboundMessage.MAX_TEXT_LENGTH);
+    }
+
+    ClawBotPendingDeliveryStore(Path directory, String name, int maxTextLength) {
         file = directory.resolve(name);
+        this.maxTextLength = maxTextLength;
     }
 
     synchronized void reload() {
@@ -99,6 +105,21 @@ final class ClawBotPendingDeliveryStore {
         return List.copyOf(entries.values());
     }
 
+    synchronized void replace(Delivery delivery, String token) throws IOException {
+        load(token);
+        Delivery previous = entries.get(delivery.id());
+        if (previous == null) {
+            throw new IOException("CLAWBOT_REPLY_BODY_UNAVAILABLE");
+        }
+        entries.put(delivery.id(), delivery);
+        try {
+            save(token);
+        } catch (IOException error) {
+            entries.put(delivery.id(), previous);
+            throw error;
+        }
+    }
+
     synchronized void remove(String id, String token) throws IOException {
         load(token);
         Map<String, Delivery> snapshot = new LinkedHashMap<>(entries);
@@ -106,7 +127,8 @@ final class ClawBotPendingDeliveryStore {
         if (previous != null) {
             try {
                 entries.replaceAll((key, value) -> id.equals(value.predecessor())
-                        ? new Delivery(value.id(), value.recipient(), value.context(), value.text(), value.requireAuthorization(), null, value.unknown(), value.groupId()) : value);
+                        ? new Delivery(value.id(), value.recipient(), value.context(), value.text(), value.requireAuthorization(), null,
+                                value.unknown(), value.groupId(), value.recoverySource()) : value);
                 save(token);
             } catch (IOException error) {
                 entries.clear();
@@ -130,7 +152,7 @@ final class ClawBotPendingDeliveryStore {
             entries.replaceAll((key, entry) -> key.equals(id)
                     || (value.groupId() != null && value.groupId().equals(entry.groupId()))
                     ? new Delivery(entry.id(), entry.recipient(), entry.context(), entry.text(),
-                            entry.requireAuthorization(), entry.predecessor(), true, entry.groupId()) : entry);
+                            entry.requireAuthorization(), entry.predecessor(), true, entry.groupId(), entry.recoverySource()) : entry);
             try {
                 trimArchived();
                 save(token);
@@ -165,7 +187,7 @@ final class ClawBotPendingDeliveryStore {
                 for (var element : array) {
                     Delivery value = gson.fromJson(element, Delivery.class);
                     if (value == null || value.id() == null || value.text() == null || value.recipient() == null
-                            || value.context() == null || value.text().length() > ClawBotInboundMessage.MAX_TEXT_LENGTH) {
+                            || value.context() == null || value.text().length() > maxTextLength) {
                         throw new IllegalArgumentException("Invalid delivery");
                     }
                     entries.put(value.id(), value);
@@ -188,6 +210,9 @@ final class ClawBotPendingDeliveryStore {
                     .doFinal(new Gson().toJson(entries.values()).getBytes(StandardCharsets.UTF_8));
             byte[] envelope = Arrays.copyOf(iv, iv.length + encrypted.length);
             System.arraycopy(encrypted, 0, envelope, iv.length, encrypted.length);
+            if (envelope.length > MAX_BYTES) {
+                throw new IOException("CLAWBOT_DELIVERY_QUEUE_FULL");
+            }
             Files.write(temporary, envelope);
             try {
                 Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -210,7 +235,11 @@ final class ClawBotPendingDeliveryStore {
         return cipher;
     }
 
-    record Delivery(String id, String recipient, String context, String text, boolean requireAuthorization, String predecessor, boolean unknown, String groupId) {
+    record Delivery(String id, String recipient, String context, String text, boolean requireAuthorization, String predecessor,
+                    boolean unknown, String groupId, String recoverySource) {
+        Delivery(String id, String recipient, String context, String text, boolean requireAuthorization, String predecessor, boolean unknown, String groupId) {
+            this(id, recipient, context, text, requireAuthorization, predecessor, unknown, groupId, null);
+        }
         Delivery(String id, String recipient, String context, String text, boolean requireAuthorization, String predecessor, boolean unknown) {
             this(id, recipient, context, text, requireAuthorization, predecessor, unknown, null);
         }

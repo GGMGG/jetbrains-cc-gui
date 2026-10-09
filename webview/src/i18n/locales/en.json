@@ -1071,6 +1071,43 @@
       "collapse": "Collapse Sidebar"
     },
     "clawBot": {
+      "recovery": {
+        "title": "Reply delivery recovery",
+        "load": "Load recent outcomes",
+        "description": "Shows up to 8 recent uncertain or rejected sends. Complete final replies are retained encrypted for 24 hours, subject to capacity. Check WeChat before resending.",
+        "empty": "No recent uncertain or rejected sends.",
+        "retry": "Resend saved reply",
+        "retryStatus": "Recovery delivery",
+        "expires": "Saved reply expires",
+        "confirmTitle": "Resend this saved reply?",
+        "confirm": "Confirm resend",
+        "cancel": "Cancel",
+        "confirmDescription": "The original reply may already be in WeChat. Check the recipient conversation first. This sends the complete saved answer again, possibly repeating already received parts. It does not run the AI task again. One confirmed recovery is allowed per saved reply.",
+        "kinds": {
+          "FINAL_REPLY": "Final reply",
+          "OTHER": "Other send / unavailable reply"
+        },
+        "statuses": {
+          "UNKNOWN": "Delivery unconfirmed",
+          "FAILED": "Rejected",
+          "UNAVAILABLE": "Recovery queue unavailable; check the IDE result and restore manually",
+          "QUEUED": "Queued",
+          "PENDING": "Sending",
+          "SENT": "Sent"
+        },
+        "reasons": {
+          "READY": "A saved answer is available for confirmed recovery.",
+          "BODY_UNAVAILABLE": "No complete saved answer is available. Check the IDE result and recover it manually.",
+          "STORE_UNAVAILABLE": "Saved replies cannot be read. Restore binding or storage access, then refresh.",
+          "BINDING_CHANGED": "The binding changed. This reply cannot be sent through the current binding.",
+          "SENDER_REVOKED": "The recipient is no longer authorized.",
+          "EXPIRED": "The saved reply expired. Recover the answer from the IDE.",
+          "TARGET_CHANGED": "The original IDE session is offline or has changed. Check its result in the IDE.",
+          "RETRY_STARTED": "A recovery was already recorded. Check its outcome; repeated clicks do not create another send.",
+          "TRANSPORT_NOT_READY": "Start the bound transport, then refresh.",
+          "AUTO_RETRY": "This is a definite failure. The existing protected queue handles retry; do not rerun the AI task."
+        }
+      },
       "refresh": "Refresh",
       "title": "Claw Bot",
       "description": "Local gateway status and session diagnostics.",
@@ -1206,7 +1243,15 @@
         "CLAWBOT_SENDER_STORE_UNAVAILABLE": "Sender authorization store is unavailable",
         "CLAWBOT_ROUTE_STORE_UNAVAILABLE": "Session routing store is unavailable",
         "CLAWBOT_OUTBOX_STORE_UNAVAILABLE": "Delivery receipt store is unavailable",
-        "CLAWBOT_PROGRESS_SETTINGS_INVALID": "A setting is outside its allowed range; check the input limits"
+        "CLAWBOT_PROGRESS_SETTINGS_INVALID": "A setting is outside its allowed range; check the input limits",
+        "CLAWBOT_REPLY_CONFIRMATION_REQUIRED": "Confirm the duplicate-delivery risk before resending",
+        "CLAWBOT_REPLY_BINDING_CHANGED": "The binding changed; reload recovery outcomes",
+        "CLAWBOT_REPLY_BODY_UNAVAILABLE": "No complete saved answer is available; check the IDE result",
+        "CLAWBOT_REPLY_TARGET_CHANGED": "The original session changed or went offline; check its IDE result",
+        "CLAWBOT_REPLY_SENDER_REVOKED": "The recipient authorization was revoked",
+        "CLAWBOT_REPLY_EXPIRED": "The saved answer expired; recover it from the IDE",
+        "CLAWBOT_REPLY_TRANSPORT_NOT_READY": "Start the bound transport before recovering a reply",
+        "CLAWBOT_REPLY_AUTO_RETRY": "A definite failure is handled by the existing protected retry queue"
       },
       "states": { "leader": "Leader", "follower": "Follower", "stopped": "Stopped", "unknown": "Unknown" },
       "pairingStates": { "idle": "Idle", "waiting_scan": "Waiting for scan", "scanned": "Scanned", "need_verify_code": "Verification required", "redirecting": "Redirecting", "bound": "Bound", "already_bound": "Already bound", "expired": "Expired", "verify_code_blocked": "Verification blocked", "timeout": "Timed out", "cancelled": "Cancelled", "error": "Error" }

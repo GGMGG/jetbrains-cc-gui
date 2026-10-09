@@ -546,3 +546,112 @@
 .settingsActions .primaryButton {
   margin: 0;
 }
+
+.recoveryCard {
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.recoveryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+
+.recoveryHeader h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.recoveryCard .secondaryButton {
+  font-size: 12px;
+}
+
+.recoveryCard .secondaryButton:focus-visible {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.recoveryDescription {
+  margin: 10px 0 0;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.recoveryEmpty {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  background: var(--bg-primary);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.recoveryEmpty > :global(.codicon) {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.recoveryUnavailable {
+  color: var(--warning-color, #d7ba7d);
+}
+
+.recoveryItem {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.recoveryItemHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--text-primary);
+}
+
+.recoveryEventId,
+.recoveryMeta {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.recoveryEventId {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-primary);
+}
+
+.recoveryMeta {
+  margin-top: 4px;
+}
+
+.recoveryMeta .error {
+  margin: 0;
+  font-size: inherit;
+}
+
+.recoveryReason {
+  margin: 8px 0;
+}
+
+.recoveryItem > .secondaryButton {
+  margin-top: 10px;
+}

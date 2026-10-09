@@ -130,6 +130,11 @@ final class ClawBotOutboundReceiptStore {
         }
     }
 
+    synchronized List<Receipt> recent() throws IOException {
+        loadIfNeeded();
+        return receipts.values().stream().sorted(java.util.Comparator.comparingLong(Receipt::updatedAt).reversed()).toList();
+    }
+
     synchronized void clear() throws IOException {
         if (Files.exists(stateFile, LinkOption.NOFOLLOW_LINKS)
                 && !Files.isRegularFile(stateFile, LinkOption.NOFOLLOW_LINKS)) {
@@ -305,7 +310,7 @@ final class ClawBotOutboundReceiptStore {
         return value == null ? "" : value;
     }
 
-    private record Receipt(String clientId, String status, long createdAt, long updatedAt, String errorCode) {
+    record Receipt(String clientId, String status, long createdAt, long updatedAt, String errorCode) {
     }
 
     record StatusSnapshot(boolean available, int pendingCount, int sentCount, int unknownCount,
