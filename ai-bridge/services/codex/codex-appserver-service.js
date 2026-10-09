@@ -76,6 +76,10 @@ export class CodexAppServerService extends EventEmitter {
    *        ({authMode, apiKey, baseUrl, codexHome, ...}); see
    *        computeCodexRuntimeFingerprint.
    * @param {string} [opts.runtimeFingerprint] precomputed fingerprint.
+   * @param {number} [opts.stopBudgetMs]
+   * @param {number} [opts.startupAttempts] bounded runtime-start attempts; >1 lets
+   *        the daemon fall back to the next resolved CLI when the chosen binary
+   *        dies before READY (nothing was dispatched, so a retry replays nothing).
    * @param {(operation, event) => void} [opts.emitMarker] legacy marker emitter
    *        captured per operation (D4: background events must not impersonate
    *        the active request).
@@ -90,6 +94,7 @@ export class CodexAppServerService extends EventEmitter {
     privacyIndex = null,
     stopBudgetMs = STOP_CONFIRMATION_BUDGET_MS,
     compactAnnouncementBudgetMs = COMPACT_ANNOUNCEMENT_BUDGET_MS,
+    startupAttempts = 1,
   } = {}) {
     super();
     // clientFactory may also be assigned right after construction (the daemon
@@ -101,6 +106,15 @@ export class CodexAppServerService extends EventEmitter {
     this.runtimeFingerprint = runtimeFingerprint;
     this.emitMarker = emitMarker;
     this.privacyIndex = privacyIndex;
+    // One attempt per resolved CLI candidate. Attempt 1 is the normal path;
+    // extra attempts only exist when the daemon found alternatives.
+    this.startupAttempts = Math.max(1, Math.trunc(Number(startupAttempts) || 1));
+    // True while ensureRuntime owns the start; transport events are deferred to
+    // the startup loop so a failed candidate can fall back instead of failing.
+    this.startupInFlight = false;
+    // Per-candidate startup failures of the current ensureRuntime() call, used
+    // to explain which CLI was tried and why it refused to start.
+    this.startupFailures = [];
 
     this.state = 'stopped';
     this.runtimeGeneration = 0;
@@ -190,36 +204,91 @@ export class CodexAppServerService extends EventEmitter {
     if (typeof this.clientFactory !== 'function') {
       throw new ClassifiedError('CONFIG', 'CodexAppServerService requires a clientFactory');
     }
-    this.runtimeGeneration += 1;
-    const generation = this.runtimeGeneration;
-    this.#setState('starting');
+    const attempts = Math.max(1, this.startupAttempts);
+    this.startupFailures = [];
+    // Transport events observed while this flag is set are owned by the loop
+    // below, which either falls back to the next CLI or finalizes the failure.
+    this.startupInFlight = true;
     try {
-      if (this.privacyIndex?.load) await this.privacyIndex.load();
-      const candidate = await this.clientFactory();
-      if (this.runtimeGeneration !== generation || this.state !== 'starting') {
-        candidate.close();
-        throw new ClassifiedError('RUNTIME_RESET', 'Codex runtime was released during client preparation');
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        this.runtimeGeneration += 1;
+        const generation = this.runtimeGeneration;
+        this.#setState('starting');
+        try {
+          if (this.privacyIndex?.load) await this.privacyIndex.load();
+          const candidate = await this.clientFactory();
+          if (this.runtimeGeneration !== generation || this.state !== 'starting') {
+            candidate.close();
+            throw new ClassifiedError('RUNTIME_RESET', 'Codex runtime was released during client preparation');
+          }
+          this.client = candidate;
+          this.#attachClientHandlers(this.client);
+          this.#setState('initializing');
+          await this.client.ensureInitialized();
+          const configuration = await this.client.request('config/read', {
+            includeLayers: false, cwd: this.desiredSettings?.cwd ?? this.launchOptions?.cwd ?? undefined,
+          });
+          const fallbackNames = configuration?.config?.project_doc_fallback_filenames;
+          this.launchOptions = { ...this.launchOptions, nativeConfig: buildProjectDocFallbackConfig({
+            ...this.launchOptions?.nativeConfig,
+            project_doc_fallback_filenames: Array.isArray(fallbackNames) ? fallbackNames : [],
+          }, this.launchOptions?.nativeConfig?.project_doc_fallback_filenames) };
+          this.#setState('ready');
+          this.bootstrapInFlight = false;
+          // Startup diagnostics belong to this attempt chain only: a later
+          // mid-turn crash must not be explained by a CLI that already recovered.
+          this.startupFailures = [];
+          return;
+        } catch (err) {
+          if (this.runtimeGeneration !== generation || ['draining', 'stopped'].includes(this.state)) {
+            // Superseded or released: never fail or retry a runtime this call
+            // no longer owns.
+            throw err;
+          }
+          this.startupFailures.push({
+            label: (this.client?.command ?? []).join(' ') || 'codex',
+            message: err?.message || String(err),
+            stderr: err?.details?.stderr ?? null,
+          });
+          if (this.#advanceToFallbackCli(attempt, attempts, err)) {
+            continue;
+          }
+          this.#failRuntime(err);
+          throw err;
+        }
       }
-      this.client = candidate;
-      this.#attachClientHandlers(this.client);
-      this.#setState('initializing');
-      await this.client.ensureInitialized();
-      const configuration = await this.client.request('config/read', {
-        includeLayers: false, cwd: this.desiredSettings?.cwd ?? this.launchOptions?.cwd ?? undefined,
-      });
-      const fallbackNames = configuration?.config?.project_doc_fallback_filenames;
-      this.launchOptions = { ...this.launchOptions, nativeConfig: buildProjectDocFallbackConfig({
-        ...this.launchOptions?.nativeConfig,
-        project_doc_fallback_filenames: Array.isArray(fallbackNames) ? fallbackNames : [],
-      }, this.launchOptions?.nativeConfig?.project_doc_fallback_filenames) };
-      this.#setState('ready');
-      this.bootstrapInFlight = false;
-    } catch (err) {
-      if (this.runtimeGeneration === generation && !['draining', 'stopped'].includes(this.state)) {
-        this.#failRuntime(err);
-      }
-      throw err;
+    } finally {
+      this.startupInFlight = false;
     }
+  }
+
+  /**
+   * Swaps in the next CLI candidate after a start that died before READY.
+   * The dead generation is detached first so its exit/error handlers (which
+   * guard on identity) cannot fail the runtime we are about to start.
+   *
+   * @returns {boolean} true when another candidate took over
+   */
+  #advanceToFallbackCli(attempt, attempts, err) {
+    if (attempt >= attempts || typeof this.clientFactory?.advance !== 'function') {
+      return false;
+    }
+    const from = (this.client?.command ?? []).join(' ') || 'codex';
+    const failed = this.client;
+    this.client = null;
+    const next = this.clientFactory.advance();
+    if (!next) {
+      this.client = failed;
+      return false;
+    }
+    try { failed?.close(); } catch { /* the candidate is already gone */ }
+    this.emit('runtimeFallback', {
+      attempt,
+      from,
+      to: next.label ?? (next.command ?? []).join(' ') ?? null,
+      reason: err?.message || String(err),
+    });
+    return true;
   }
 
   #attachClientHandlers(client) {
@@ -227,13 +296,13 @@ export class CodexAppServerService extends EventEmitter {
       if (this.client === client) this.#handleNotification(method, params);
     });
     client.on('exited', (err) => {
-      if (this.client === client) this.#handleClientExit(err);
+      if (this.client === client) this.#transportFailure(err);
     });
     client.on('processError', (err) => {
-      if (this.client === client) this.#failRuntime(err);
+      if (this.client === client) this.#transportFailure(err);
     });
     client.on('stdinError', (err) => {
-      if (this.client === client) this.#failRuntime(err);
+      if (this.client === client) this.#transportFailure(err);
     });
     client.on('stderrLine', (line) => this.emit('stderrLine', line));
     client.on('protocolError', (err) => this.emit('protocolError', err));
@@ -296,10 +365,11 @@ export class CodexAppServerService extends EventEmitter {
     }
     this.failureSettled = true;
     this.#setState('failed');
+    const message = this.#runtimeFailureMessage(err);
     for (const operation of this.operations.values()) {
       this.#settleOperation(operation, {
         outcome: 'failed',
-        error: `codex runtime failure: ${err?.message || err}`,
+        error: message,
       });
     }
     this.operations.clear();
@@ -322,11 +392,62 @@ export class CodexAppServerService extends EventEmitter {
     this.emit('runtimeFailed', { message: err?.message || String(err) });
   }
 
+  /**
+   * Failure text shown in the chat error card. The client's canonical message
+   * stays the prefix (history fallback and other consumers match on it); the
+   * per-CLI diagnostics and an actionable hint are appended so a broken or
+   * wrong CLI install is identifiable without reading idea.log.
+   */
+  #runtimeFailureMessage(err) {
+    const base = `codex runtime failure: ${err?.message || err}`;
+    const attempts = this.startupFailures ?? [];
+    const details = attempts.map((attempt) => {
+      const stderr = typeof attempt.stderr === 'string'
+        ? attempt.stderr.replace(/\s+/g, ' ').trim().slice(0, 400) : '';
+      return `- ${attempt.label}: ${attempt.message}${stderr ? ` - ${stderr}` : ''}`;
+    });
+    if (details.length === 0 && Array.isArray(err?.details?.command)) {
+      // The client attached its own launch facts (a start that died before the
+      // handshake); report them even when no attempt bookkeeping was recorded.
+      const stderr = typeof err.details.stderr === 'string'
+        ? err.details.stderr.replace(/\s+/g, ' ').trim().slice(0, 400) : '';
+      details.push(`- ${err.details.command.join(' ')}: ${err?.message || err}${stderr ? ` - ${stderr}` : ''}`);
+    }
+    if (details.length === 0) {
+      return base;
+    }
+    // Blank line + bullets so the markdown error card keeps the canonical exit
+    // line as its own paragraph and lists which CLI failed and how.
+    return [
+      base,
+      '',
+      ...details,
+      '- Codex CLI check: run "codex --version"; reinstall the CLI with'
+        + ' "npm install -g @openai/codex@latest" after removing a stale global install,'
+        + ' or point CODEX_BIN at a working binary (Settings > Provider Management > CLI).',
+    ].join('\n');
+  }
+
   #handleClientExit(err) {
     if (this.state === 'draining' || this.state === 'stopped') {
       return;
     }
     this.#failRuntime(err || new Error('codex app-server exited'));
+  }
+
+  /**
+   * Transport death reported by the client's own events.
+   *
+   * A start that died before READY is finalized by the startup loop, which may
+   * still swap in another CLI candidate - the client's `exited`/`processError`
+   * events fire synchronously, before the pending handshake promise rejects, so
+   * failing here would pre-empt the fallback (and report a bare exit code).
+   */
+  #transportFailure(err) {
+    if (this.startupInFlight) {
+      return;
+    }
+    this.#handleClientExit(err);
   }
 
   // ==========================================================================

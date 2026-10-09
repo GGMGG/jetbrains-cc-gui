@@ -248,6 +248,94 @@ test('environment override is authoritative and an invalid override never select
   assert.equal(result.source, 'explicit');
 });
 
+
+/** A global npm install of @openai/codex with the platform package missing. */
+function installBrokenLauncher(root, { triple = TRIPLE, platform = 'win32' } = {}) {
+  const pkg = join(root, 'lib', 'node_modules', '@openai', 'codex');
+  writePackageJson(pkg, '0.130.0');
+  mkdirSync(join(pkg, 'bin'), { recursive: true });
+  writeFileSync(join(pkg, 'bin', 'codex.js'), '#!/usr/bin/env node\n', 'utf8');
+  // The platform package directory exists but holds no binary, exactly like a
+  // partially synced registry or a half-removed global install.
+  mkdirSync(join(pkg, 'node_modules', '@openai', `codex-${platform === 'win32' ? 'win32' : 'linux'}-x64`,
+    'vendor', triple), { recursive: true });
+  return join(pkg, 'bin', 'codex.js');
+}
+
+test('a launcher without its platform binary is rejected instead of shadowing a working install', () => {
+  const root = makeDepsRoot();
+  try {
+    const broken = installBrokenLauncher(root);
+    const working = join(root, 'manual', 'codex.exe');
+    mkdirSync(join(root, 'manual'), { recursive: true });
+    writeFileSync(working, 'fixture', 'utf8');
+    const result = resolveCodexCli({
+      platform: 'win32',
+      arch: 'x64',
+      env: {},
+      discoverCli: () => broken,
+      discoverCliCandidates: () => [broken, working],
+    });
+    assert.equal(result.status, 'resolved');
+    assert.deepEqual(result.command, [working]);
+    // The unconfirmed install keeps a demoted slot: it is never preferred, but
+    // also never removed from a user whose layout this heuristic cannot model.
+    assert.deepEqual(result.candidates.map((entry) => entry.command[0]), [working, broken]);
+    assert.equal(result.candidates[0].suspect, undefined);
+    assert.equal(result.candidates[1].suspect, true);
+    assert.match(result.candidates[1].reason, /platform binary/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a launcher whose platform binary is present stays the preferred candidate', () => {
+  const root = makeDepsRoot();
+  try {
+    const mainPkg = join(root, '@openai', 'codex');
+    writePackageJson(mainPkg);
+    mkdirSync(join(mainPkg, 'bin'), { recursive: true });
+    writeFileSync(join(mainPkg, 'bin', 'codex.js'), '#!/usr/bin/env node\n', 'utf8');
+    const binaryDir = join(mainPkg, 'node_modules', '@openai', 'codex-win32-x64', 'vendor', TRIPLE, 'codex');
+    mkdirSync(binaryDir, { recursive: true });
+    writeFileSync(join(binaryDir, 'codex.exe'), 'fixture', 'utf8');
+    const launcher = join(mainPkg, 'bin', 'codex.js');
+    const later = join(root, 'later', 'codex.exe');
+    mkdirSync(join(root, 'later'), { recursive: true });
+    writeFileSync(later, 'fixture', 'utf8');
+    const result = resolveCodexCli({ platform: 'win32', arch: 'x64', env: {},
+      discoverCliCandidates: () => [launcher, later] });
+    assert.equal(result.status, 'resolved');
+    assert.deepEqual(result.command, [launcher]);
+    assert.deepEqual(result.candidates.map((entry) => entry.command[0]), [launcher, later]);
+    assert.deepEqual(result.rejected, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a lone unconfirmed launcher still resolves as a demoted candidate', () => {
+  const root = makeDepsRoot();
+  try {
+    const broken = installBrokenLauncher(root);
+    const result = resolveCodexCli({ platform: 'win32', arch: 'x64', env: {},
+      discoverCliCandidates: () => [broken] });
+    assert.equal(result.status, 'resolved');
+    assert.deepEqual(result.command, [broken]);
+    assert.equal(result.candidates[0].suspect, true);
+    assert.match(result.candidates[0].reason, /platform binary/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('unresolved discovery reports candidates that cannot be a CLI at all', () => {
+  const root = makeDepsRoot();
+  try {
+    const missing = join(root, 'gone', 'codex.exe');
+    const result = resolveCodexCli({ platform: 'win32', arch: 'x64', env: {},
+      discoverCliCandidates: () => [missing] });
+    assert.equal(result.status, 'unresolved');
+    assert.match(result.reason, /Provider Management > CLI/);
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /not a file|does not exist/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('an SDK metadata directory alone is unavailable while an original SDK vendor binary remains reusable', () => {
   const root = makeDepsRoot();
   try {

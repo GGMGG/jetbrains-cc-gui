@@ -114,6 +114,72 @@ test('process exit drains final frames before close settles the transport exactl
   }
 });
 
+test('a pre-handshake exit keeps a sanitized stderr tail and marks the failure as startup', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const stderr = new PassThrough();
+  const child = new EventEmitter();
+  Object.assign(child, { stdin: input, stdout: output, stderr, pid: -1, kill: () => true });
+  const client = new CodexAppServerClient({
+    command: ['fixture-codex', 'app-server'],
+    env: { OPENAI_API_KEY: 'synthetic-startup-secret' },
+    spawnFn: () => child,
+  });
+  try {
+    const initialize = client.ensureInitialized();
+    const exited = new Promise((resolve) => client.on('exited', resolve));
+    stderr.write('Error: spawn vendor/codex ENOENT synthetic-startup-secret\n');
+    stderr.write('launcher: incomplete install\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    child.emit('exit', 1, null);
+    output.end();
+    stderr.end();
+    await new Promise((resolve) => setImmediate(resolve));
+    child.emit('close', 1, null);
+
+    const failure = await exited;
+    await assert.rejects(initialize, (error) => error.code === 'CHILD_EXITED');
+    // The canonical message stays byte-identical for existing consumers; the
+    // launch facts travel out of band.
+    assert.equal(failure.message, 'codex app-server exited (code=1, signal=null)');
+    assert.equal(failure.startupFailure, true);
+    assert.deepEqual(failure.details.command, ['fixture-codex', 'app-server']);
+    assert.match(failure.details.stderr, /ENOENT/);
+    assert.ok(!failure.details.stderr.includes('synthetic-startup-secret'));
+    assert.ok(client.stderrTail().length >= 1);
+  } finally {
+    client.close();
+    input.end();
+  }
+});
+
+test('a runtime that was ready before the exit is not reported as a startup failure', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const stderr = new PassThrough();
+  const child = new EventEmitter();
+  Object.assign(child, { stdin: input, stdout: output, stderr, pid: -1, kill: () => true });
+  const client = new CodexAppServerClient({ command: ['in-process-peer'], spawnFn: () => child });
+  const peer = startPeerWithStreams({ scenario: 'early-notification', input, output, stderr, onExit: () => {} });
+  try {
+    await client.ensureInitialized();
+    const exited = new Promise((resolve) => client.on('exited', resolve));
+    child.emit('exit', 0, null);
+    output.end();
+    stderr.end();
+    await new Promise((resolve) => setImmediate(resolve));
+    child.emit('close', 0, null);
+    const failure = await exited;
+    assert.equal(failure.startupFailure, undefined);
+    assert.equal(failure.details, undefined);
+    assert.equal(failure.message, 'codex app-server exited (code=0, signal=null)');
+    assert.ok(peer);
+  } finally {
+    client.close();
+    input.end();
+  }
+});
+
 test('a post-spawn process error keeps its exit lease until the owned child actually closes', async () => {
   const client = makeClient('native-read-only', { env: { ...process.env, TEST_API_KEY: 'synthetic-token' } });
   const failures = [];

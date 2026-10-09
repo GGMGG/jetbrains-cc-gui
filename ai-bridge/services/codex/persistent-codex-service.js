@@ -122,6 +122,36 @@ function resolveCliCommand(stdinData) {
 }
 
 /**
+ * Ordered CLI launch plan for one chat host: the resolved candidates, most
+ * preferred first, with installs whose completeness could not be confirmed
+ * demoted to the end. The service falls back to the next candidate when one
+ * dies before its handshake completes.
+ */
+function resolveCliPlan(stdinData) {
+  if (Array.isArray(stdinData?.codexCommandPrefix) && stdinData.codexCommandPrefix.length > 0) {
+    return {
+      candidates: [{ command: stdinData.codexCommandPrefix, label: stdinData.codexCommandPrefix.join(' '), source: 'injected' }],
+      rejected: [],
+      source: 'injected',
+    };
+  }
+  const resolution = resolveCliCommand(stdinData);
+  // Support-visible: skipped/demoted installs never surface as a runtime
+  // failure, so their reason has to be logged here.
+  if (resolution.rejected?.length) {
+    console.error('[CODEX-SERVER] unusable Codex CLI ignored: '
+      + resolution.rejected.map((entry) => `${entry.path} (${entry.reason})`).join('; '));
+  }
+  const suspects = (resolution.candidates ?? []).filter((entry) => entry.suspect);
+  if (suspects.length > 0) {
+    console.error('[CODEX-SERVER] unconfirmed Codex CLI kept as last resort: '
+      + suspects.map((entry) => `${entry.label} (${entry.reason})`).join('; '));
+  }
+  return { candidates: resolution.candidates ?? [{ command: resolution.command, label: resolution.command.join(' '), source: resolution.source }],
+    rejected: resolution.rejected ?? [], source: resolution.source };
+}
+
+/**
  * Get (or create) the persistent service for this chat host. A launch-config
  * fingerprint change rebuilds the service at the service's idle boundary.
  */
@@ -165,16 +195,20 @@ function ensureSessionService(stdinData, { nativeEnvironmentDependencies = {} } 
     return { sessionKey, service: existing.service };
   }
 
-  const commandPrefix = Array.isArray(stdinData?.codexCommandPrefix)
-    ? stdinData.codexCommandPrefix
-    : stdinData?.codexCliPath ? resolveCliCommand(stdinData).command
-      : existing?.commandPrefix ?? resolveCliCommand(stdinData).command;
+  // An explicit override re-resolves on every call; otherwise the host keeps
+  // the plan captured when it was created.
+  const cliPlan = (!existing || stdinData?.codexCliPath || Array.isArray(stdinData?.codexCommandPrefix))
+    ? resolveCliPlan(stdinData)
+    : existing.cliPlan;
+  const commandPrefix = cliPlan.candidates[0].command;
   const launchData = Object.fromEntries([
     'authMode', 'apiKey', 'baseUrl', 'providerLabel', 'httpHeaders', 'codexHome',
     'developerInstructions', 'providerRevision', 'projectDocFallbackFilenames', 'codexCliPath',
     'codexCommandPrefix', 'pluginVersion',
   ].filter((key) => Object.hasOwn(stdinData, key)).map((key) => [key, stdinData[key]]));
+  let candidateIndex = 0;
   const createClient = async () => {
+    const candidate = cliPlan.candidates[candidateIndex] ?? cliPlan.candidates[0];
     let sensitiveEnvNames = [];
     const env = await prepareCodexRuntimeEnvironment({ authMode, baseEnv, codexHome: launchInputs.codexHome,
       onCredentialNames: names => { sensitiveEnvNames = names; },
@@ -187,7 +221,7 @@ function ensureSessionService(stdinData, { nativeEnvironmentDependencies = {} } 
     return new CodexAppServerClient({
       // CodexAppServerClient appends the transport arguments itself. Keeping
       // only the executable prefix here prevents spawning app-server twice.
-      command: commandPrefix,
+      command: candidate.command,
       cwd: stdinData?.cwd || undefined,
       env, sensitiveEnvNames,
       clientInfo: {
@@ -197,16 +231,29 @@ function ensureSessionService(stdinData, { nativeEnvironmentDependencies = {} } 
       },
     });
   };
+  /** Called by the service after a start that died before READY. */
+  createClient.advance = () => {
+    if (candidateIndex + 1 >= cliPlan.candidates.length) {
+      return null;
+    }
+    candidateIndex += 1;
+    return cliPlan.candidates[candidateIndex];
+  };
+  /** The candidate currently in use, for auxiliary CLI work (titles, text). */
+  createClient.currentCommand = () => (cliPlan.candidates[candidateIndex] ?? cliPlan.candidates[0]).command;
 
   if (existing) {
     // Propagate launch-config changes; the service rebuilds when idle.
     existing.fingerprint = fingerprint;
     existing.launchOptions = launchOptions;
     existing.launchData = launchData;
+    existing.cliPlan = cliPlan;
+    existing.currentCliCommand = createClient.currentCommand;
     existing.commandPrefix = commandPrefix;
     existing.nativeRuntime = runtime;
     existing.titleAbort?.abort();
     existing.service.clientFactory = createClient;
+    existing.service.startupAttempts = cliPlan.candidates.length;
     existing.service.notifyLaunchConfigChange(launchOptions, fingerprint);
     return { sessionKey, service: existing.service };
   }
@@ -216,6 +263,9 @@ function ensureSessionService(stdinData, { nativeEnvironmentDependencies = {} } 
     channelId: String(stdinData?.channelId ?? stdinData?.sessionId ?? 'codex'),
     launchOptions,
     runtimeFingerprint: fingerprint,
+    // One attempt per resolved CLI: a broken install must not fail the turn
+    // while a working CLI for the same config is already known.
+    startupAttempts: cliPlan.candidates.length,
     privacyIndex: new CodexPrivacyIndex({
       rootDir: join(getCodemossDir(), 'codex-privacy'),
       scope: String(stdinData?.codexHome || process.env.CODEX_HOME || 'default'),
@@ -242,8 +292,12 @@ function ensureSessionService(stdinData, { nativeEnvironmentDependencies = {} } 
   service.on('stderrLine', (line) => {
     console.error(`[CODEX-SERVER] ${line}`);
   });
+  service.on('runtimeFallback', ({ attempt, from, to, reason }) => {
+    console.error(`[CODEX-SERVER] CLI fallback #${attempt}: ${from} failed (${reason}); retrying with ${to}`);
+  });
 
-  sessionServices.set(sessionKey, { service, launchOptions, launchData, commandPrefix, nativeRuntime: runtime,
+  sessionServices.set(sessionKey, { service, launchOptions, launchData, commandPrefix, cliPlan,
+    currentCliCommand: createClient.currentCommand, nativeRuntime: runtime,
     fingerprint, createdAt: Date.now() });
   return { sessionKey, service };
 }
@@ -397,7 +451,7 @@ export async function codexSendPersistent(stdinData, { titleDependencies = {}, n
     entry.titleTask = settleCodexSessionTitle({ service, threadId, userMessage: stdinData.message, canApply,
       generateText: input => generateCodexText({ ...input, model: stdinData.model }, {
         runtimeState: () => ({ access: entry.launchOptions.authMode }),
-        resolveCli: () => ({ status: 'resolved', command: entry.commandPrefix }),
+        resolveCli: () => ({ status: 'resolved', command: entry.currentCliCommand?.() ?? entry.commandPrefix }),
         nativeRuntime: { ...entry.nativeRuntime, env: { ...entry.nativeRuntime.env,
           ...(entry.launchOptions.codexHome ? { CODEX_HOME: entry.launchOptions.codexHome } : {}) } },
         baseEnv: pristineBaseEnv ?? process.env, nativeEnvironmentDependencies,

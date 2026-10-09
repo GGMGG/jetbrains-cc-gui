@@ -2597,6 +2597,23 @@
           "step1": "2. Open Dependency Management and reinstall the latest SDK:"
         }
       }
+    },
+    "codexCliUnavailable": {
+      "title": "Codex CLI could not start",
+      "intro": "The Codex CLI runtime exited before it could answer. The failed CLI path and its own output are listed in the error above. This is usually an incomplete Codex CLI installation rather than a plugin bug.",
+      "reason": "The plugin starts \"codex app-server\" from the Codex CLI found on your machine. A half-installed copy - for example a global npm install whose platform binary is missing - exits with code 1 and takes the turn down with it.",
+      "solutions": {
+        "reinstallCodexCli": {
+          "title": "Option 1: Remove the broken install and reinstall the official CLI",
+          "step0": "1. Remove the stale global install (having two copies is the most common cause):",
+          "step1": "2. Install the official CLI again, from the official npm registry rather than a mirror:",
+          "step2": "3. Check that the CLI answers before sending again:"
+        },
+        "pointCodexBin": {
+          "title": "Option 2: Point the plugin at a working binary",
+          "step0": "List every codex on your PATH (on Windows: where codex). If the working one is not first, set the CODEX_BIN environment variable to its full path and restart the IDE. The plugin also falls back to later installs automatically."
+        }
+      }
     }
   },
   "codex": {

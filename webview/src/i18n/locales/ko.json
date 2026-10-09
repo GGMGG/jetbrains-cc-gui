@@ -2135,6 +2135,23 @@
           "step1": "2. '종속성 관리'를 열고 최신 SDK를 재설치:"
         }
       }
+    },
+    "codexCliUnavailable": {
+      "title": "Codex CLI를 시작할 수 없습니다",
+      "intro": "Codex CLI 런타임이 응답하기 전에 종료되었습니다. 실패한 CLI 경로와 CLI가 출력한 내용은 위 오류에 표시됩니다. 대부분 Codex CLI 설치가 불완전한 것이 원인이며 플러그인 버그가 아닙니다.",
+      "reason": "플러그인은 컴퓨터에서 찾은 Codex CLI로 codex app-server를 시작합니다. 절반만 설치된 복사본(예: 플랫폼 바이너리가 없는 전역 npm 설치)은 종료 코드 1로 종료되며 해당 턴도 함께 실패합니다.",
+      "solutions": {
+        "reinstallCodexCli": {
+          "title": "방법 1: 손상된 설치를 제거하고 공식 CLI 재설치",
+          "step0": "1. 먼저 남아 있는 전역 설치를 제거하세요(복사본이 두 개인 경우가 가장 흔한 원인입니다):",
+          "step1": "2. 공식 CLI를 다시 설치하세요(미러가 아닌 공식 npm 레지스트리를 사용하세요):",
+          "step2": "3. CLI가 버전을 출력하는지 확인한 뒤 다시 보내세요:"
+        },
+        "pointCodexBin": {
+          "title": "방법 2: 동작하는 바이너리를 플러그인에 지정",
+          "step0": "PATH에 있는 모든 codex를 확인하세요(Windows: where codex). 동작하는 것이 첫 번째가 아니면 CODEX_BIN 환경 변수를 전체 경로로 설정하고 IDE를 다시 시작하세요. 플러그인은 뒤의 설치로도 자동 폴백합니다."
+        }
+      }
     }
   },
   "codex": {

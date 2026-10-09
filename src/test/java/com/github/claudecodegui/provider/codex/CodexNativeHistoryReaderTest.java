@@ -49,5 +49,12 @@ public class CodexNativeHistoryReaderTest {
         assertFalse(CodexNativeHistoryReader.permitsOfflineFallback("Authentication failed: codex app-server exited"));
         assertFalse(CodexNativeHistoryReader.permitsOfflineFallback("codex app-server exited unexpectedly"));
         assertFalse(CodexNativeHistoryReader.permitsOfflineFallback("codex app-server exited (code=writer, signal=null)"));
+        // The runtime layer wraps the exit line with a prefix, per-CLI diagnostics
+        // and a remediation hint; the transport outage still permits the
+        // read-only fallback.
+        assertTrue(CodexNativeHistoryReader.permitsOfflineFallback("codex runtime failure: codex app-server exited (code=1, signal=null)"));
+        assertTrue(CodexNativeHistoryReader.permitsOfflineFallback("codex runtime failure: codex app-server exited (code=1, signal=null)\n"
+                + "  \u00b7 /usr/local/bin/codex \u2192 codex app-server exited (code=1, signal=null) \u2014 spawn ENOENT\n"
+                + "  \u00b7 Codex CLI check: run `codex --version`"));
     }
 }

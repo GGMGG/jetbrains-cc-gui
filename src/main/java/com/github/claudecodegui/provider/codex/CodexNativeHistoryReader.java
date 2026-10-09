@@ -63,8 +63,16 @@ public final class CodexNativeHistoryReader {
         return text.contains("runtime access is inactive") || text.contains("daemon is unavailable")
                 || text.contains("cli not found") || text.contains("no codex cli")
                 || text.contains("app-server child exited") || text.contains("app-server client closed")
-                || text.matches("codex app-server exited \\(code=(?:-?\\d+|null), signal=(?:sig[a-z0-9]+|null)\\)");
+                // Prefix-tolerant: the runtime layer appends per-CLI diagnostics
+                // (and a "codex runtime failure: " prefix) to the same exit line,
+                // and a transport outage must keep the legacy read-only fallback
+                // available no matter which wrapper produced the text.
+                || EXIT_LINE.matcher(text).find();
     }
+
+    /** `codex app-server exited (code=1, signal=null)` anywhere in the message. */
+    private static final java.util.regex.Pattern EXIT_LINE = java.util.regex.Pattern.compile(
+            "codex app-server exited \\(code=(?:-?\\d+|null), signal=(?:sig[a-z0-9]+|null)\\)");
 
     /** Counts visible blocks so grouped wrapper commands are compared individually. */
     public static long countBlocks(List<JsonObject> messages, String type) {

@@ -36,6 +36,9 @@ import { redactCodexDiagnostic } from './codex-diagnostics.js';
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const DEFAULT_EXIT_DRAIN_TIMEOUT_MS = 5_000;
 
+/** Truncated/sanitized stderr lines kept to explain a startup death. */
+export const DEFAULT_STDERR_TAIL_LINES = 5;
+
 export const CLIENT_STATES = Object.freeze([
   'idle',
   'starting',
@@ -49,6 +52,10 @@ export class CodexAppServerClient extends EventEmitter {
   #readerCleanup = null;
   #shutdownTimer = null;
   #drainTimer = null;
+  // Bounded, sanitized tail of the child's stderr. The CLI reports its own
+  // startup failures there (e.g. a broken launcher printing `spawn … ENOENT`),
+  // and without it a startup death is only an exit code.
+  #stderrTail = [];
   /**
    * @param {object} opts
    * @param {string[]} opts.command  argv prefix for the transport, e.g.
@@ -59,6 +66,7 @@ export class CodexAppServerClient extends EventEmitter {
    * @param {string[]} [opts.sensitiveEnvNames] native provider credential names for diagnostic redaction
    * @param {{name: string, title: string|null, version: string}} [opts.clientInfo]
    * @param {number} [opts.requestTimeoutMs] default short-RPC budget
+   * @param {number} [opts.stderrTailLines] sanitized stderr lines retained for diagnostics
    * @param {(method: string, params: object, ctx: {id: any}) => Promise<object>} [opts.onServerRequest]
    *        non-blocking reverse-request handler. The promise may settle much
    *        later (e.g. waiting on UI); the reader loop never awaits it.
@@ -71,6 +79,7 @@ export class CodexAppServerClient extends EventEmitter {
     clientInfo = null,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     exitDrainTimeoutMs = DEFAULT_EXIT_DRAIN_TIMEOUT_MS,
+    stderrTailLines = DEFAULT_STDERR_TAIL_LINES,
     onServerRequest = null,
     spawnFn = null,
   } = {}) {
@@ -88,6 +97,7 @@ export class CodexAppServerClient extends EventEmitter {
     // Grace period for stdio to drain after the child's exit event; if a
     // grandchild inherited the pipes, 'close' never fires without teardown.
     this.exitDrainTimeoutMs = exitDrainTimeoutMs;
+    this.stderrTailLines = Math.max(0, Math.trunc(Number(stderrTailLines) || 0));
     this.onServerRequest = onServerRequest;
     // Test-only injection: spawnFn(argv) returns a child-like object with
     // {stdin, stdout, stderr, pid, on, kill}. Production never sets this.
@@ -118,6 +128,16 @@ export class CodexAppServerClient extends EventEmitter {
   /** Wait for process exit and drained stdio, including a close already in progress. */
   waitForExit() {
     return this.exitPromise;
+  }
+
+  /**
+   * Sanitized stderr tail captured so far (oldest first). Exposed for the
+   * runtime layer, which folds it into the user-visible failure message.
+   *
+   * @returns {string[]}
+   */
+  stderrTail() {
+    return [...this.#stderrTail];
   }
 
   #setState(next) {
@@ -151,7 +171,9 @@ export class CodexAppServerClient extends EventEmitter {
     this.child.on('error', (err) => {
       const message = this.sanitizeDiagnostic(err?.message ?? 'unknown process error');
       if (!(this.child?.pid > 0)) {
-        this.#finalizeExit(new ClassifiedError('CHILD_EXITED', `codex app-server spawn failed: ${message}`));
+        this.#finalizeExit(this.#startupFailure(
+          new ClassifiedError('CHILD_EXITED', `codex app-server spawn failed: ${message}`)
+        ));
         return;
       }
       // A failed termination is not proof that the writer has exited.
@@ -164,10 +186,10 @@ export class CodexAppServerClient extends EventEmitter {
       // Exit forbids further writes, but buffered final items still own their
       // turn. Node's close event confirms that those pipes have drained.
       this.processExited = true;
-      this.exitError = new ClassifiedError(
-        'CHILD_EXITED',
-        `codex app-server exited (code=${code}, signal=${signal})`
-      );
+      // A death before READY is a startup failure: nothing was dispatched, so
+      // the runtime layer may retry with another resolved CLI.
+      const exitedBeforeReady = this.state !== 'ready';
+      this.exitError = this.#exitError(code, signal, exitedBeforeReady);
       // A grandchild that inherited our stdout/stderr pipes (e.g. a dev server
       // the agent launched with `&`) keeps them open after the child died, so
       // 'close' never arrives and waitForExit() would hang reset/shutdown
@@ -197,7 +219,11 @@ export class CodexAppServerClient extends EventEmitter {
     const stderrRl = createInterface({ input: this.child.stderr, crlfDelay: Infinity });
     // stderr is drained continuously and independently: the CLI logs stack
     // traces there, and a full pipe buffer would block the whole process.
-    stderrRl.on('line', (line) => this.emit('stderrLine', this.sanitizeDiagnostic(line)));
+    stderrRl.on('line', (line) => {
+      const clean = this.sanitizeDiagnostic(line);
+      this.#rememberStderr(clean);
+      this.emit('stderrLine', clean);
+    });
     stdoutRl.on('line', (line) => this.#handleLine(line));
 
     this.child.stdin.on('error', (err) => {
@@ -531,6 +557,46 @@ export class CodexAppServerClient extends EventEmitter {
   // ==========================================================================
   // Failure finalization
   // ==========================================================================
+
+  /** Keeps the newest sanitized stderr lines within the configured budget. */
+  #rememberStderr(line) {
+    if (this.stderrTailLines === 0) {
+      return;
+    }
+    const text = String(line ?? '').trim();
+    if (!text) {
+      return;
+    }
+    this.#stderrTail.push(text);
+    while (this.#stderrTail.length > this.stderrTailLines) {
+      this.#stderrTail.shift();
+    }
+  }
+
+  /** Canonical exit error; `beforeReady` attaches startup diagnostics out of band. */
+  #exitError(code, signal, beforeReady) {
+    const error = new ClassifiedError(
+      'CHILD_EXITED',
+      `codex app-server exited (code=${code}, signal=${signal})`
+    );
+    return beforeReady ? this.#startupFailure(error) : error;
+  }
+
+  /**
+   * Marks a transport failure that happened before READY and attaches the
+   * launch command plus the sanitized stderr tail. The message stays canonical
+   * (existing consumers match on it); details travel in `err.details`.
+   */
+  #startupFailure(error) {
+    error.startupFailure = true;
+    const stderr = this.#stderrTail.join('\n');
+    error.details = {
+      exitPhase: 'startup',
+      command: [...this.command],
+      ...(stderr ? { stderr } : {}),
+    };
+    return error;
+  }
 
   #failPending(id, err) {
     const entry = this.pendingRequests.get(id);

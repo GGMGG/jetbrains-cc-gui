@@ -971,6 +971,126 @@ test('a broken input pipe ends acknowledged and queued operations without exposi
   } finally { await service.resetRuntime(); }
 });
 
+// ---------------------------------------------------------------------------
+// CLI startup fallback
+// ---------------------------------------------------------------------------
+
+/** A client whose handshake dies exactly like a broken Codex CLI install. */
+function makeDeadClient(label, stderr) {
+  const dead = new EventEmitter();
+  dead.command = [label];
+  dead.close = () => {};
+  dead.closeRequested = false;
+  dead.processExited = true;
+  dead.exitSettled = true;
+  dead.waitForExit = async () => {};
+  dead.ensureInitialized = async () => {
+    const error = new ClassifiedError('CHILD_EXITED', 'codex app-server exited (code=1, signal=null)');
+    error.startupFailure = true;
+    error.details = { exitPhase: 'startup', command: [label], stderr };
+    throw error;
+  };
+  return dead;
+}
+
+test('a CLI that dies before READY falls back to the next resolved candidate', async () => {
+  const fixture = makeService({ scenario: 'early-notification', serviceOpts: { startupAttempts: 2 } });
+  const { service } = fixture;
+  const workingFactory = service.clientFactory;
+  const fallbacks = [];
+  service.on('runtimeFallback', (event) => fallbacks.push(event));
+  let calls = 0;
+  service.clientFactory = async () => {
+    calls += 1;
+    return calls === 1 ? makeDeadClient('broken-cli', 'spawn vendor/codex ENOENT') : workingFactory();
+  };
+  service.clientFactory.advance = () => ({ label: 'working-cli', command: ['working-cli'] });
+  try {
+    await service.ensureRuntime();
+    assert.equal(service.state, 'ready');
+    assert.equal(calls, 2, 'the fallback candidate started a runtime');
+    assert.equal(fallbacks.length, 1);
+    assert.equal(fallbacks[0].from, 'broken-cli');
+    assert.equal(fallbacks[0].to, 'working-cli');
+    assert.match(fallbacks[0].reason, /codex app-server exited/);
+  } finally { await service.resetRuntime(); }
+});
+
+test('exhausted candidates settle the turn with every CLI attempt and the fix hint', async () => {
+  const fixture = makeService({ scenario: 'early-notification', serviceOpts: { startupAttempts: 2 } });
+  const { service } = fixture;
+  let calls = 0;
+  service.clientFactory = async () => {
+    calls += 1;
+    return makeDeadClient(calls === 1 ? 'first-cli' : 'second-cli', 'spawn vendor/codex ENOENT');
+  };
+  service.clientFactory.advance = () => ({ label: 'second-cli', command: ['second-cli'] });
+  try {
+    const result = await service.send({ input: [{ type: 'text', text: 'hello' }], clientMessageId: 'cm-cli' });
+    assert.equal(result.outcome, 'failed');
+    // The canonical line stays first: other consumers match on it.
+    assert.match(result.error, /^codex runtime failure: codex app-server exited \(code=1, signal=null\)/);
+    assert.match(result.error, /first-cli: codex app-server exited/);
+    assert.match(result.error, /second-cli: codex app-server exited/);
+    assert.match(result.error, /spawn vendor\/codex ENOENT/);
+    assert.match(result.error, /Codex CLI check/);
+  } finally { await service.resetRuntime(); }
+});
+
+test('a transport event before the handshake rejects does not pre-empt the fallback', async () => {
+  // The real client emits `exited` synchronously from its child handler, before
+  // the pending handshake promise rejects. Failing the runtime from that event
+  // would abort the startup loop and report a bare exit code instead of moving
+  // on to the next CLI candidate.
+  const fixture = makeService({ scenario: 'early-notification', serviceOpts: { startupAttempts: 2 } });
+  const { service } = fixture;
+  const workingFactory = service.clientFactory;
+  const fallbacks = [];
+  service.on('runtimeFallback', (event) => fallbacks.push(event));
+  let calls = 0;
+  service.clientFactory = async () => {
+    calls += 1;
+    if (calls > 1) {
+      return workingFactory();
+    }
+    const dead = makeDeadClient('broken-cli', 'spawn vendor/codex ENOENT');
+    const reject = dead.ensureInitialized;
+    dead.ensureInitialized = async () => {
+      const error = await reject().then(() => null, (failure) => failure);
+      dead.emit('exited', error);
+      throw error;
+    };
+    return dead;
+  };
+  service.clientFactory.advance = () => ({ label: 'working-cli', command: ['working-cli'] });
+  try {
+    await service.ensureRuntime();
+    assert.equal(service.state, 'ready');
+    assert.equal(calls, 2);
+    assert.equal(fallbacks.length, 1);
+    // The failed candidate must not have finalized the runtime: a stuck
+    // failure gate would swallow every later failure of the recovered runtime.
+    assert.equal(service.failureSettled, false);
+  } finally { await service.resetRuntime(); }
+});
+
+test('a startup error is not retried when only one candidate was resolved', async () => {
+  const fixture = makeService({ scenario: 'early-notification' });
+  const { service } = fixture;
+  let calls = 0;
+  service.clientFactory = async () => {
+    calls += 1;
+    return makeDeadClient('only-cli', '');
+  };
+  service.clientFactory.advance = () => ({ label: 'never-used', command: ['never-used'] });
+  try {
+    const result = await service.send({ input: [{ type: 'text', text: 'hello' }], clientMessageId: 'cm-one' });
+    assert.equal(result.outcome, 'failed');
+    assert.equal(calls, 1);
+    assert.match(result.error, /only-cli/);
+  } finally { await service.resetRuntime(); }
+});
+
 test('child exit after ack fails the runtime once and settles pending once', async () => {
   const { service, events } = makeService({ scenario: 'disconnect-mid-turn' });
   let runtimeFailures = 0;
