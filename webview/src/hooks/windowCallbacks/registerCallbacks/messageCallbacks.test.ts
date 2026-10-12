@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { registerMessageCallbacks } from './messageCallbacks';
 import type { UseWindowCallbacksOptions } from '../../useWindowCallbacks';
 import type { StartupHistoryLoadState } from '../../../types/startupHistory';
+import type { ClaudeMessage } from '../../../types';
 
 const ref = <T,>(value: T) => ({ current: value });
 
@@ -23,10 +24,13 @@ interface StoredTitle {
 function createHarness(currentSessionId: string | null) {
   const storedTitles: Array<StoredTitle | null> = [];
   const startupHistoryUpdates: unknown[] = [];
+  let messages: ClaudeMessage[] = [];
 
   const options = {
     addToast: () => {},
-    setMessages: () => {},
+    setMessages: (updater: ClaudeMessage[] | ((previous: ClaudeMessage[]) => ClaudeMessage[])) => {
+      messages = typeof updater === 'function' ? updater(messages) : updater;
+    },
     setStatus: () => {},
     setLoading: () => {},
     setLoadingStartTime: () => {},
@@ -62,7 +66,7 @@ function createHarness(currentSessionId: string | null) {
   registerMessageCallbacks(options, () => {}, () => {});
   const dispatch = window.claudeHistoryPageInfo;
   if (!dispatch) throw new Error('claudeHistoryPageInfo was not registered');
-  return { storedTitles, startupHistoryUpdates, dispatch };
+  return { storedTitles, startupHistoryUpdates, dispatch, getMessages: () => messages };
 }
 
 const pageInfo = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -141,5 +145,31 @@ describe('claudeHistoryPageInfo', () => {
     const harness = createHarness('other');
     harness.dispatch(pageInfo({ hasMore: false }));
     expect(window.__claudeHistoryPageInfo).toBeUndefined();
+  });
+});
+
+describe('native Codex opaque history pages', () => {
+  it('restores the native thread name when the history page commits', () => {
+    const harness = createHarness('s1');
+    window.beginCodexHistoryPage?.(JSON.stringify({ pageId: 'named', sessionId: 's1', mode: 'replace' }));
+    window.completeCodexHistoryPage?.(JSON.stringify({ pageId: 'named', sessionId: 's1', mode: 'replace', source: 'native',
+      sessionTitle: 'Saved native title', cursor: null, hasMore: false, loadedMessageCount: 0 }));
+    expect(harness.storedTitles.at(-1)).toEqual({ sessionId: 's1', title: 'Saved native title' });
+  });
+  it('merges overlap by identity and refuses a response for an obsolete cursor', () => {
+    const harness = createHarness('s1');
+    const row = (uuid: string): ClaudeMessage => ({ type: 'user', content: 'same text', raw: { uuid } });
+    const deliver = (pageId: string, mode: 'replace' | 'prepend', ids: string[], requestCursor: string | null, cursor: string | null) => {
+      window.beginCodexHistoryPage?.(JSON.stringify({ pageId, sessionId: 's1', mode }));
+      window.appendCodexHistoryPageBatch?.(pageId, JSON.stringify(ids.map(row)));
+      window.completeCodexHistoryPage?.(JSON.stringify({ pageId, sessionId: 's1', mode, source: 'native',
+        requestCursor, cursor, hasMore: cursor !== null, fromTurn: 0, toTurn: 0, totalTurns: 0, loadedMessageCount: ids.length }));
+    };
+    deliver('first', 'replace', ['two', 'three'], null, 'opaque:next');
+    deliver('old', 'prepend', ['one', 'two'], 'opaque:next', 'opaque:older');
+    expect(harness.getMessages().map((message) => typeof message.raw === 'object' ? message.raw?.uuid : null)).toEqual(['one', 'two', 'three']);
+    deliver('stale', 'prepend', ['stale'], 'opaque:next', null);
+    expect(harness.getMessages()).toHaveLength(3);
+    expect(window.__codexHistoryPageInfo?.cursor).toBe('opaque:older');
   });
 });

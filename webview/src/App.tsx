@@ -17,6 +17,7 @@ import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from './utils/permissionDia
 import { createApplyHistoryModel } from './applyHistoryModel';
 import { useAppGlobalEffects } from './useAppGlobalEffects';
 import { useAppChatController } from './useAppChatController';
+import { SubagentStateContext } from './contexts/SubagentContext';
 
 const App = () => {
   const { t } = useTranslation();
@@ -66,7 +67,7 @@ const App = () => {
   // callbacks, message processing/sending, queue, computations, rewind ──
   const {
     sessionTitle, mergedMessages, getMessageText, getContentBlocks,
-    findToolResult, getToolResultRaw, subagents, globalTodos,
+    findToolResult, getToolResultRaw, subagents, allSubagents, globalTodos,
     filteredFileChanges, rewindableMessages,
     subagentHistoryCtxValue, sessionIdCtxValue,
     startupHistoryLoadState,
@@ -79,13 +80,16 @@ const App = () => {
     showNewSessionConfirm, handleConfirmNewSession, handleCancelNewSession,
     showInterruptConfirm, handleConfirmInterrupt, handleCancelInterrupt,
     handleRewindSelect, handleRewindSelectCancel, handleRewindConfirm, handleRewindCancel,
+    codexPlan, codexPlanExecutionPending, onExecuteCodexPlan, onContinueCodexPlan,
+    codexCompactionPending,
+    codexCompactionStartedAt,
   } = useAppChatController({ model, applyHistoryModel, setPermissionDialogTimeoutSeconds });
 
   const statusPanelExpanded = !userCollapsedRef.current;
 
   // ── Render ──
   return (
-    <>
+    <SubagentStateContext.Provider value={allSubagents}>
       <ToastContainer messages={toasts} onDismiss={dismissToast} />
       <AppHeader
         sessionTitle={sessionTitle}
@@ -174,6 +178,12 @@ const App = () => {
           messageQueue={messageQueue}
           onRemoveFromQueue={dequeueMessage}
           onReorderQueue={reorderMessageQueue}
+          codexPlan={codexPlan}
+          codexPlanExecutionPending={codexPlanExecutionPending}
+          codexCompactionPending={codexCompactionPending}
+          codexCompactionStartedAt={codexCompactionStartedAt}
+          onExecuteCodexPlan={onExecuteCodexPlan}
+          onContinueCodexPlan={onContinueCodexPlan}
           onLoadSession={loadHistorySession}
           onDeleteSession={deleteHistorySession}
           onDeleteSessions={deleteHistorySessions}
@@ -200,7 +210,7 @@ const App = () => {
         permissionDialogTimeoutSeconds={permissionDialogTimeoutSeconds}
         onModeSelect={model.handleModeSelect}
       />
-    </>
+    </SubagentStateContext.Provider>
   );
 };
 

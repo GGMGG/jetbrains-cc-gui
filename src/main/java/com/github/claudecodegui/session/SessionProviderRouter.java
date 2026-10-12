@@ -129,8 +129,13 @@ public class SessionProviderRouter {
     }
 
     public List<JsonObject> getSessionMessages(String provider, String sessionId, String cwd) {
+        return this.getSessionMessages(provider, sessionId, cwd, null);
+    }
+
+    /** Reads display history on the existing chat host without claiming execution ownership. */
+    public List<JsonObject> getSessionMessages(String provider, String sessionId, String cwd, String channelId) {
         if ("codex".equals(provider)) {
-            return codexSDKBridge.getSessionMessages(sessionId, cwd);
+            return this.codexSDKBridge.getSessionMessages(sessionId, cwd, channelId);
         }
         if ("grok".equals(provider) && grokSDKBridge != null) {
             return grokSDKBridge.getSessionMessages(sessionId, cwd);
@@ -149,10 +154,11 @@ public class SessionProviderRouter {
             String provider,
             String sessionId,
             String cwd,
+            String channelId,
             BooleanSupplier cancellation
     ) {
         if ("codex".equals(provider)) {
-            return codexSDKBridge.getSessionMessages(sessionId, cwd, cancellation);
+            return codexSDKBridge.getSessionMessages(sessionId, cwd, channelId, cancellation);
         }
         if ("grok".equals(provider) && grokSDKBridge != null) {
             return grokSDKBridge.getSessionMessages(sessionId, cwd, cancellation);

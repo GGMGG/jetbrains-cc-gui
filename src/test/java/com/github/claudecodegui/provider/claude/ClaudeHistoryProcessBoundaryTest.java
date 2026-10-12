@@ -55,7 +55,12 @@ public class ClaudeHistoryProcessBoundaryTest {
         node.setNodeExecutable(javaExecutable());
         manager = new FixtureProcessManager();
         service = new ClaudeSessionQueryService(Logger.getInstance(getClass()), new Gson(), node,
-                () -> home.toFile(), manager, new EnvironmentConfigurator(), new ClaudeJsonOutputExtractor());
+                () -> home.toFile(), manager, new EnvironmentConfigurator(), new ClaudeJsonOutputExtractor()) {
+            @Override
+            Process startProcess(ProcessBuilder ignored) throws IOException {
+                return manager.startFixtureProcess();
+            }
+        };
     }
 
     @After
@@ -171,8 +176,7 @@ public class ClaudeHistoryProcessBoundaryTest {
         private boolean available = true;
         private boolean blocked;
 
-        @Override
-        public Process startManagedProcess(String channelId, ProcessBuilder ignored) throws IOException {
+        private Process startFixtureProcess() throws IOException {
             ProcessBuilder fixture;
             if (!available) {
                 fixture = new ProcessBuilder(home.resolve("missing-history-reader.exe").toString());
@@ -183,10 +187,7 @@ public class ClaudeHistoryProcessBoundaryTest {
                     fixture.command().add(home.resolve("reader.ready").toString());
                 }
             }
-            // Bypass the singleton AI-home permit: this transport owns only temporary fixtures.
-            Process child = fixture.redirectErrorStream(true).start();
-            registerProcess(channelId, child);
-            return child;
+            return fixture.redirectErrorStream(true).start();
         }
     }
 }
