@@ -125,9 +125,11 @@ describe('useSessionManagement', () => {
     });
 
     expect(window.sendToJava).toHaveBeenNthCalledWith(1, 'interrupt_session:');
+    // The payload model is normalized webview-side: the retired sonnet-4-6 is
+    // mapped to its live replacement before Java stores it verbatim.
     expect(window.sendToJava).toHaveBeenNthCalledWith(
       2,
-      'load_session:{"sessionId":"history-1","provider":"claude","model":"claude-sonnet-4-6"}'
+      'load_session:{"sessionId":"history-1","provider":"claude","model":"claude-sonnet-5"}'
     );
     expect(window.__sessionTransitioning).toBe(true);
     expect(window.__sessionTransitionToken).toBeTruthy();
@@ -596,8 +598,9 @@ describe('useSessionManagement', () => {
     // Should NOT send interrupt when not loading
     const calls = (window.sendToJava as any).mock.calls.map((c: any) => c[0]);
     expect(calls).not.toContain('interrupt_session:');
+    // The retired sonnet-4-6 is normalized to its live replacement in the payload.
     expect(calls).toContain(
-      'load_session:{"sessionId":"hist-2","provider":"claude","model":"claude-sonnet-4-6"}',
+      'load_session:{"sessionId":"hist-2","provider":"claude","model":"claude-sonnet-5"}',
     );
 
     // But should still set transition guard

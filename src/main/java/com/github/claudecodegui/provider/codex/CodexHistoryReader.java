@@ -1,7 +1,9 @@
 package com.github.claudecodegui.provider.codex;
 
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.settings.CodemossSettingsService;
+import com.github.claudecodegui.util.PathUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
@@ -10,8 +12,10 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -27,6 +31,7 @@ public class CodexHistoryReader {
     private final CodexHistoryParser parser;
     private final CodexHistoryIndexService indexService;
     private final CodexHistorySessionService sessionService;
+    private final ThreadLocal<String> privacyThread = new ThreadLocal<>();
 
     private static Path defaultSessionsDir() {
         return Paths.get(NodeDetector.resolveHomeForFileOps(), ".codex", "sessions");
@@ -40,6 +45,13 @@ public class CodexHistoryReader {
         this.gson = gson;
         this.parser = new CodexHistoryParser(gson);
         this.indexService = new CodexHistoryIndexService(sessionsDir, parser);
+        this.sessionService = new CodexHistorySessionService(sessionsDir, gson);
+    }
+
+    CodexHistoryReader(Path sessionsDir, Gson gson, SessionIndexManager indexManager) {
+        this.gson = gson;
+        this.parser = new CodexHistoryParser(gson);
+        this.indexService = new CodexHistoryIndexService(sessionsDir, parser, indexManager);
         this.sessionService = new CodexHistorySessionService(sessionsDir, gson);
     }
 
@@ -115,6 +127,13 @@ public class CodexHistoryReader {
             // Normalize the project path for comparison
             String normalizedProjectPath = normalizePath(projectPath);
 
+            // The CLI records the physical (symlink-resolved) cwd in rollout files, so
+            // sessions opened via a symlinked project path only match the resolved form.
+            // Accept both candidates to cover either layout (issue #1789).
+            Set<String> projectPathCandidates = new LinkedHashSet<>();
+            projectPathCandidates.add(normalizedProjectPath);
+            projectPathCandidates.add(normalizePath(PathUtils.realPath(projectPath)));
+
             LOG.info("[CodexHistoryReader] Filtering sessions for project: " + normalizedProjectPath);
             LOG.info("[CodexHistoryReader] Total sessions before filtering: " + allSessions.size());
 
@@ -125,9 +144,10 @@ public class CodexHistoryReader {
                                                                  return false;
                                                              }
                                                              String normalizedCwd = normalizePath(session.cwd);
-                                                             // Match if cwd equals project path or is a subdirectory of it
-                                                             boolean matches = normalizedCwd.equals(normalizedProjectPath) ||
-                                                                                       normalizedCwd.startsWith(normalizedProjectPath + "/");
+                                                             // Match if cwd equals a project path candidate or is a subdirectory of it
+                                                             boolean matches = projectPathCandidates.stream()
+                                                                                        .anyMatch(candidate -> normalizedCwd.equals(candidate) ||
+                                                                                                                normalizedCwd.startsWith(candidate + "/"));
                                                              if (matches) {
                                                                  LOG.debug("[CodexHistoryReader] Session " + session.sessionId + " matches (cwd: " + session.cwd + ")");
                                                              }
@@ -176,7 +196,14 @@ public class CodexHistoryReader {
 
     public String getSessionMessagesAsJson(String sessionId) {
         logSessionAccessWithoutLocalConfigAuthorization();
-        return sessionService.getSessionMessagesAsJson(sessionId);
+        CodexHistoryPrivacy privacy = new CodexHistoryPrivacy(sessionId);
+        com.google.gson.JsonArray source = this.gson.fromJson(
+                this.sessionService.getSessionMessagesAsJson(sessionId), com.google.gson.JsonArray.class);
+        com.google.gson.JsonArray result = new com.google.gson.JsonArray();
+        for (var entry : source) {
+            result.add(entry.isJsonObject() ? privacy.protect(entry.getAsJsonObject()) : entry);
+        }
+        return this.gson.toJson(result);
     }
 
     /**
@@ -186,10 +213,43 @@ public class CodexHistoryReader {
      */
     public int forEachSessionMessage(String sessionId, Consumer<JsonObject> consumer) throws IOException {
         logSessionAccessWithoutLocalConfigAuthorization();
-        return sessionService.forEachSessionMessage(sessionId, message -> {
-            JsonObject raw = gson.toJsonTree(message).getAsJsonObject();
-            consumer.accept(raw);
+        CodexHistoryPrivacy privacy = new CodexHistoryPrivacy(sessionId);
+        return this.sessionService.forEachSessionMessage(sessionId, message -> {
+            JsonObject raw = this.gson.toJsonTree(message).getAsJsonObject();
+            consumer.accept(privacy.protect(raw));
         });
+    }
+
+    public Path resolveSessionFile(String sessionId) throws IOException {
+        Path file = sessionService.findSessionFile(sessionId);
+        if (file == null) {
+            throw new IOException("Codex session file not found: " + sessionId);
+        }
+        return file.toRealPath();
+    }
+
+    public int forEachSessionMessage(Path file, long offset, long end,
+                                     java.util.function.BooleanSupplier active,
+                                     Consumer<JsonObject> consumer) throws IOException {
+        CodexHistoryPrivacy privacy = new CodexHistoryPrivacy(this.privacyThread.get());
+        return this.sessionService.forEachSessionMessage(file, offset, end, active,
+                message -> consumer.accept(privacy.protect(this.gson.toJsonTree(message).getAsJsonObject())));
+    }
+
+    /** Keeps thread identity available while the existing bounded file-reader extension point runs. */
+    public int forEachSessionMessage(String sessionId, Path file, long offset, long end,
+                                     java.util.function.BooleanSupplier active, Consumer<JsonObject> consumer) throws IOException {
+        String previous = this.privacyThread.get();
+        this.privacyThread.set(sessionId);
+        try {
+            return this.forEachSessionMessage(file, offset, end, active, consumer);
+        } finally {
+            if (previous == null) {
+                this.privacyThread.remove();
+            } else {
+                this.privacyThread.set(previous);
+            }
+        }
     }
 
     /**

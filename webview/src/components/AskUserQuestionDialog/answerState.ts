@@ -12,12 +12,11 @@ export const normalizeQuestions = (rawQuestions: unknown): Question[] =>
 export const buildInitialAnswerState = (request: AskUserQuestionRequest) => {
   const questions = normalizeQuestions(request.questions);
 
-  const initialAnswers: Record<string, Set<string>> = {};
-  const initialCustomInputs: Record<string, string> = {};
-  questions.forEach((q) => {
-    initialAnswers[q.question] = new Set<string>();
-    initialCustomInputs[q.question] = '';
-  });
+  // Native question IDs are data, including names inherited by ordinary objects.
+  const initialAnswers: Record<string, Set<string>> = Object.fromEntries(
+    questions.map(q => [q.id ?? q.question, new Set<string>()]));
+  const initialCustomInputs: Record<string, string> = Object.fromEntries(
+    questions.map(q => [q.id ?? q.question, '']));
   return { initialAnswers, initialCustomInputs };
 };
 
@@ -47,26 +46,67 @@ export const toggleAnswerSelection = (
   return newAnswers;
 };
 
+/**
+ * Keep the "Other" marker in sync with the custom text box.
+ *
+ * The box and the marker used to be independent, so text typed while a
+ * predefined option was selected was silently dropped at submit time, and
+ * clearing the box left a selected "Other" that could never satisfy
+ * `canProceed`. Typing now selects "Other" (on a single-select question that
+ * replaces the picked option, which is the only value that question can carry),
+ * and emptying the box detaches it again.
+ */
+export const syncOtherSelection = (
+  prev: Record<string, Set<string>>,
+  questionKey: string,
+  multiSelect: boolean,
+  hasText: boolean,
+): Record<string, Set<string>> => {
+  const currentSet = prev[questionKey] || new Set<string>();
+  const markerSelected = currentSet.has(OTHER_OPTION_MARKER);
+  if (hasText && !markerSelected) {
+    return toggleAnswerSelection(prev, questionKey, multiSelect, OTHER_OPTION_MARKER);
+  }
+  if (!hasText && markerSelected) {
+    // An "Other" answer without text answers nothing, so emptying the box
+    // releases the marker in both modes. toggleAnswerSelection only ever
+    // selects on a single-select question, hence the explicit removal there;
+    // multi-select toggles the marker off, so the row does not stay checked
+    // over an empty box (which looked selected yet blocked canProceed).
+    if (multiSelect) {
+      return toggleAnswerSelection(prev, questionKey, true, OTHER_OPTION_MARKER);
+    }
+    return { ...prev, [questionKey]: new Set<string>() };
+  }
+  return prev;
+};
+
 export const formatAnswers = (
   questions: Question[],
   answers: Record<string, Set<string>>,
   customInputs: Record<string, string>,
 ): Record<string, string | string[]> => {
-  const formattedAnswers: Record<string, string | string[]> = {};
+  const formattedAnswers: Record<string, string | string[]> = Object.create(null);
   questions.forEach((q) => {
-    const selectedSet = answers[q.question] || new Set<string>();
-    const customText = customInputs[q.question] || '';
+    const key = q.id ?? q.question;
+    const selectedSet = answers[key] || new Set<string>();
+    const customText = (customInputs[key] || '').trim();
 
     // Filter out the "Other" marker, get actually selected options
     const selectedLabels = Array.from(selectedSet).filter(label => label !== OTHER_OPTION_MARKER);
 
-    // If "Other" is selected and has custom input, add the custom input to answers
-    if (selectedSet.has(OTHER_OPTION_MARKER) && customText.trim()) {
-      selectedLabels.push(customText.trim());
+    // A typed custom answer always travels with the answer, whether or not the
+    // "Other" row still carries the marker (a restored draft can disagree).
+    // Single-select questions carry exactly one value, and the custom answer
+    // wins there — the same precedence the DSH answer encoding expects, where
+    // `custom` overrides the selected choice.
+    if (customText) {
+      formattedAnswers[key] = q.multiSelect ? [...selectedLabels, customText] : customText;
+      return;
     }
 
     if (selectedLabels.length > 0) {
-      formattedAnswers[q.question] = q.multiSelect ? selectedLabels : selectedLabels[0]!;
+      formattedAnswers[key] = q.multiSelect ? selectedLabels : selectedLabels[0]!;
     }
   });
   return formattedAnswers;

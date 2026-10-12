@@ -9,7 +9,7 @@ import { join } from 'path';
 import { setupApiKey, loadClaudeSettings, getCliUserAgent } from '../config/api-config.js';
 import { ensureAnthropicSdk, ensureBedrockSdk } from './claude/message-utils.js';
 import { resolveModelFromSettings } from '../utils/model-utils.js';
-import { getClaudeProjectSessionFilePath, getCodemossDir } from '../utils/path-utils.js';
+import { getExistingClaudeProjectSessionFilePath, getCodemossDir } from '../utils/path-utils.js';
 
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_CONVERSATION_TEXT = 1000;
@@ -23,7 +23,7 @@ function isValidSessionId(sessionId) {
   return typeof sessionId === 'string' && SESSION_ID_PATTERN.test(sessionId);
 }
 
-const SESSION_TITLE_PROMPT = `Generate a concise title (3-7 words) for this coding session. The title must be in the SAME LANGUAGE as the user's message.
+export const SESSION_TITLE_PROMPT = `Generate a concise title (3-7 words) for this coding session. The title must be in the SAME LANGUAGE as the user's message.
 
 Return JSON: {"title": "..."}
 
@@ -118,7 +118,7 @@ async function hasExistingAiTitle(sessionFile) {
  * field is not set, matching the Java CodemossSettingsService default.
  * @returns {Promise<boolean>}
  */
-async function isTitleGenerationEnabled() {
+export async function isTitleGenerationEnabled() {
   try {
     const configPath = join(getCodemossDir(), 'config.json');
     const text = await readFile(configPath, 'utf8');
@@ -133,7 +133,7 @@ async function isTitleGenerationEnabled() {
 }
 
 function getSessionFilePath(sessionId, cwd) {
-  return getClaudeProjectSessionFilePath(sessionId, cwd);
+  return getExistingClaudeProjectSessionFilePath(sessionId, cwd);
 }
 
 // --- API ---

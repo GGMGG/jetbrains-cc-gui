@@ -2,7 +2,7 @@ import { useEffect, useState, type RefObject } from 'react';
 import type { AskUserQuestionRequest, Question } from '../AskUserQuestionDialog';
 import { isEditableEventTarget } from '../../utils/isEditableEventTarget';
 import { OTHER_OPTION_MARKER, MAX_CUSTOM_INPUT_LENGTH } from './constants';
-import { buildInitialAnswerState, formatAnswers, toggleAnswerSelection } from './answerState';
+import { buildInitialAnswerState, formatAnswers, syncOtherSelection, toggleAnswerSelection } from './answerState';
 import { clearDialogDraft, readDialogDraft, writeDialogDraft } from '../../utils/dialogStateStorage';
 
 interface AskUserQuestionDraft {
@@ -20,7 +20,8 @@ interface UseAskUserQuestionStateParams {
   normalizedQuestions: Question[];
   customInputRef: RefObject<HTMLTextAreaElement | null>;
   markSubmitted: () => boolean;
-  onSubmit: (requestId: string, answers: Record<string, string | string[]>) => void;
+  restoreSubmission?: () => void;
+  onSubmit: (requestId: string, answers: Record<string, string | string[]>) => void | boolean;
   onCancel: () => void;
 }
 
@@ -30,6 +31,7 @@ export const useAskUserQuestionState = ({
   normalizedQuestions,
   customInputRef,
   markSubmitted,
+  restoreSubmission,
   onSubmit,
   onCancel,
 }: UseAskUserQuestionStateParams) => {
@@ -39,54 +41,71 @@ export const useAskUserQuestionState = ({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [hydratedRequestKey, setHydratedRequestKey] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isOpen || !request) {
-      setHydratedRequestKey(null);
-      return;
-    }
-
-    const { initialAnswers, initialCustomInputs } = buildInitialAnswerState(request);
-    const draft = readDialogDraft<AskUserQuestionDraft>('askUserQuestion', request.requestId, request.deadlineMs, request.dialogToken);
-    if (draft?.answers) {
-      for (const [question, labels] of Object.entries(draft.answers)) {
-        if (Array.isArray(labels)) {
-          initialAnswers[question] = new Set(labels.filter((label): label is string => typeof label === 'string'));
+  // Hydrate draft state exactly once per request via render-time adjustment:
+  // the key is derived during render and the previous-key state tracks which
+  // request has already been hydrated (no effect chain, no extra commit).
+  const requestKey = isOpen && request ? request.dialogToken ?? request.requestId : null;
+  if (hydratedRequestKey !== requestKey) {
+    setHydratedRequestKey(requestKey);
+    if (requestKey !== null && request) {
+      const { initialAnswers, initialCustomInputs } = buildInitialAnswerState(request);
+      const draft = readDialogDraft<AskUserQuestionDraft>('askUserQuestion', request.requestId, request.deadlineMs, request.dialogToken);
+      if (draft?.answers) {
+        for (const [question, labels] of Object.entries(draft.answers)) {
+          const secretQuestion = normalizedQuestions
+            .some((item) => (item.id ?? item.question) === question && item.isSecret);
+          if (!secretQuestion && Array.isArray(labels)) {
+            initialAnswers[question] = new Set(labels.filter((label): label is string => typeof label === 'string'));
+          }
         }
       }
-    }
-    if (draft?.customInputs && typeof draft.customInputs === 'object') {
-      for (const [question, value] of Object.entries(draft.customInputs)) {
-        if (typeof value === 'string') {
-          initialCustomInputs[question] = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+      if (draft?.customInputs && typeof draft.customInputs === 'object') {
+        for (const [question, value] of Object.entries(draft.customInputs)) {
+          const secretQuestion = normalizedQuestions
+            .some((item) => (item.id ?? item.question) === question && item.isSecret);
+          if (!secretQuestion && typeof value === 'string') {
+            initialCustomInputs[question] = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+          }
         }
       }
+      setAnswers(initialAnswers);
+      setCustomInputs(initialCustomInputs);
+      setCurrentQuestionIndex(
+        typeof draft?.currentQuestionIndex === 'number' && Number.isInteger(draft.currentQuestionIndex)
+          ? Math.max(0, draft.currentQuestionIndex)
+          : 0,
+      );
+      setIsCollapsed(draft?.isCollapsed === true);
+    } else {
+      // Closing a request must also forget secret drafts held in React state.
+      setAnswers({});
+      setCustomInputs({});
+      setCurrentQuestionIndex(0);
+      setIsCollapsed(false);
     }
-    setAnswers(initialAnswers);
-    setCustomInputs(initialCustomInputs);
-    setCurrentQuestionIndex(
-      typeof draft?.currentQuestionIndex === 'number' && Number.isInteger(draft.currentQuestionIndex)
-        ? Math.max(0, draft.currentQuestionIndex)
-        : 0,
-    );
-    setIsCollapsed(draft?.isCollapsed === true);
-    setHydratedRequestKey(request.dialogToken ?? request.requestId);
-  }, [isOpen, request?.requestId, request?.dialogToken, request?.deadlineMs]);
+  }
 
   useEffect(() => {
     const requestId = request?.requestId;
     const deadlineMs = request?.deadlineMs;
-    if (!isOpen || requestId === undefined || hydratedRequestKey !== (request?.dialogToken ?? requestId)) {
+    if (!isOpen || requestId === undefined) {
       return;
     }
-    const serializedAnswers: Record<string, string[]> = {};
+    const serializedAnswers: Record<string, string[]> = Object.create(null);
+    const secretKeys = new Set(normalizedQuestions
+      .filter((question) => question.isSecret)
+      .map((question) => question.id ?? question.question));
     for (const [question, labels] of Object.entries(answers)) {
-      serializedAnswers[question] = Array.from(labels);
+      if (!secretKeys.has(question)) serializedAnswers[question] = Array.from(labels);
     }
+    const safeCustomInputs = Object.fromEntries(
+      Object.entries(customInputs).filter(([question]) => !secretKeys.has(question)),
+    );
     writeDialogDraft('askUserQuestion', requestId, {
       deadlineMs,
       dialogToken: request?.dialogToken,
       answers: serializedAnswers,
-      customInputs,
+      customInputs: safeCustomInputs,
       currentQuestionIndex,
       isCollapsed,
     });
@@ -94,12 +113,12 @@ export const useAskUserQuestionState = ({
     answers,
     customInputs,
     currentQuestionIndex,
-    hydratedRequestKey,
     isCollapsed,
     isOpen,
     request?.requestId,
     request?.dialogToken,
     request?.deadlineMs,
+    normalizedQuestions,
   ]);
 
   // Keyboard event handling - separate effect to avoid frequent listener registration/removal
@@ -125,27 +144,37 @@ export const useAskUserQuestionState = ({
   const safeQuestionIndex = Math.max(0, Math.min(currentQuestionIndex, normalizedQuestions.length - 1));
   const currentQuestion = normalizedQuestions[safeQuestionIndex];
   const isLastQuestion = safeQuestionIndex === normalizedQuestions.length - 1;
-  const currentAnswerSet = (currentQuestion && answers[currentQuestion.question]) || new Set<string>();
-  const currentCustomInput = (currentQuestion && customInputs[currentQuestion.question]) || '';
-  const isOtherSelected = currentAnswerSet.has(OTHER_OPTION_MARKER);
+  const currentQuestionKey = currentQuestion?.id ?? currentQuestion?.question;
+  const currentAnswerSet = (currentQuestionKey && answers[currentQuestionKey]) || new Set<string>();
+  const currentCustomInput = (currentQuestionKey && customInputs[currentQuestionKey]) || '';
 
   const handleSubmitFinal = () => {
     if (!markSubmitted() || !request) return;
 
-    onSubmit(request.requestId, formatAnswers(normalizedQuestions, answers, customInputs));
-    clearDialogDraft('askUserQuestion', request.requestId, request.dialogToken);
+    if (onSubmit(request.requestId, formatAnswers(normalizedQuestions, answers, customInputs)) === false) {
+      restoreSubmission?.();
+    } else {
+      clearDialogDraft('askUserQuestion', request.requestId, request.dialogToken);
+    }
   };
 
   const handleOptionToggle = (label: string) => {
     if (!currentQuestion) return;
 
-    setAnswers((prev) => toggleAnswerSelection(prev, currentQuestion.question, currentQuestion.multiSelect, label));
+    const questionKey = currentQuestion.id ?? currentQuestion.question;
+    setAnswers((prev) => toggleAnswerSelection(prev, questionKey, currentQuestion.multiSelect, label));
 
-    // Auto-focus the input field when "Other" option is selected
+    // Single-select questions carry one value: picking a predefined option
+    // retires the typed answer, so the box never keeps text that would be
+    // silently left out of the submission.
+    if (!currentQuestion.multiSelect && label !== OTHER_OPTION_MARKER) {
+      setCustomInputs((prev) => (prev[questionKey] ? { ...prev, [questionKey]: '' } : prev));
+    }
+
+    // Auto-focus the input field when "Other" option is selected. The box is
+    // always mounted now, so it can take focus in the same tick.
     if (label === OTHER_OPTION_MARKER) {
-      setTimeout(() => {
-        customInputRef.current?.focus();
-      }, 0);
+      customInputRef.current?.focus();
     }
   };
 
@@ -154,10 +183,15 @@ export const useAskUserQuestionState = ({
 
     // Limit input length to prevent excessively long input
     const sanitizedValue = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+    const questionKey = currentQuestion.id ?? currentQuestion.question;
     setCustomInputs((prev) => ({
       ...prev,
-      [currentQuestion.question]: sanitizedValue,
+      [questionKey]: sanitizedValue,
     }));
+    // Typing is an answer: attach the "Other" marker so the text is submitted.
+    setAnswers((prev) =>
+      syncOtherSelection(prev, questionKey, currentQuestion.multiSelect, sanitizedValue.trim().length > 0),
+    );
   };
 
   const handleNext = () => {
@@ -176,10 +210,11 @@ export const useAskUserQuestionState = ({
 
   // Check if we can proceed:
   // 1. A regular option (not "Other") is selected
-  // 2. Or "Other" is selected with valid custom input
+  // 2. Or a custom answer has been typed (the box is a valid answer on its own,
+  //    even for a question that offers options)
   const hasRegularSelection = Array.from(currentAnswerSet).some(label => label !== OTHER_OPTION_MARKER);
-  const hasValidCustomInput = isOtherSelected && currentCustomInput.trim().length > 0;
-  const canProceed = hasRegularSelection || hasValidCustomInput;
+  const hasCustomText = currentCustomInput.trim().length > 0;
+  const canProceed = currentQuestion?.required !== true || hasRegularSelection || hasCustomText;
 
   return {
     isCollapsed,

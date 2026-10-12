@@ -18,6 +18,11 @@ import { sendBridgeEvent } from './utils/bridge';
 import { debugLog } from './utils/debug';
 import { forceWebviewRepaint } from './utils/forceWebviewRepaint';
 import {
+  FONT_SIZE_LEVEL_STORAGE_KEY,
+  fontSizeLevelToScale,
+  parseFontSizeLevel,
+} from './utils/fontScale';
+import {
   advanceSurfaceDamagePulse,
   beginSurfaceDamagePulse,
   cancelSurfaceDamagePulse,
@@ -139,18 +144,7 @@ function setupScaleRecovery() {
     const fromCss = getComputedStyle(document.documentElement).getPropertyValue('--font-scale').trim();
     if (fromCss) return fromCss;
 
-    const savedLevel = localStorage.getItem('fontSizeLevel');
-    const level = savedLevel ? parseInt(savedLevel, 10) : 3;
-    const fontSizeLevel = level >= 1 && level <= 6 ? level : 3;
-    const fontSizeMap: Record<number, number> = {
-      1: 0.8,
-      2: 0.9,
-      3: 1.0,
-      4: 1.1,
-      5: 1.2,
-      6: 1.4,
-    };
-    return String(fontSizeMap[fontSizeLevel] || 1.0);
+    return String(fontSizeLevelToScale(parseFontSizeLevel(localStorage.getItem(FONT_SIZE_LEVEL_STORAGE_KEY))));
   };
 
   let hiddenAt: number | null = null;
@@ -690,6 +684,23 @@ if (typeof window !== 'undefined' && !window.showPlanApprovalDialog) {
 if (typeof window !== 'undefined' && !window.forceClosePlanApprovalDialog) {
   window.forceClosePlanApprovalDialog = (targetId, dialogToken) => {
     (window.__pendingDialogEvents ??= []).push({ kind: 'planApproval', type: 'close', targetId: targetId ?? null, dialogToken });
+  };
+}
+
+// Buffer native Codex interactions until React installs its typed router.
+if (typeof window !== 'undefined' && !window.onCodexRuntimeEvent) {
+  window.onCodexRuntimeEvent = (eventJson) => {
+    (window.__pendingCodexRuntimeEvents ??= []).push(eventJson);
+  };
+}
+if (typeof window !== 'undefined' && !window.onCodexWorkspaceDiff) {
+  window.onCodexWorkspaceDiff = (json) => {
+    window.__pendingCodexWorkspaceDiff = json;
+  };
+}
+if (typeof window !== 'undefined' && !window.onCodexInteractionResponse) {
+  window.onCodexInteractionResponse = (json) => {
+    window.dispatchEvent(new CustomEvent('codex-interaction-response', { detail: json }));
   };
 }
 

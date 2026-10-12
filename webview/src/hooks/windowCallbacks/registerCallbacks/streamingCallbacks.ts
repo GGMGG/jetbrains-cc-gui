@@ -11,9 +11,10 @@ import { startTransition } from 'react';
 import type { UseWindowCallbacksOptions } from '../../useWindowCallbacks';
 import type { ClaudeMessage, ClaudeRawMessage } from '../../../types';
 import { sendBridgeEvent } from '../../../utils/bridge';
+import { clearPendingStreamStart, isPendingStreamStartActive } from '../../../utils/streamLifecycle';
 import { THROTTLE_INTERVAL } from '../../useStreamingMessages';
 import { parseSequence } from '../parseSequence';
-import { getStreamEndHandlingMode } from '../messageSync';
+import { getStreamEndHandlingMode, getRawUuid, isCodexMessageSnapshot, mergeRawBlocksForFinalization } from '../messageSync';
 
 /**
  * Pour every tool_use_id carried by tool_result blocks inside one message's raw
@@ -163,31 +164,18 @@ function streamingBubbleHasContent(message: ClaudeMessage): boolean {
   return false;
 }
 
-// Helper to measure total text length from raw blocks (for comparing completeness).
-// Handles both object and JSON string formats of raw.
-type TextBlock = { type: 'text'; text: string };
-const hasTextBlocks = (value: unknown): value is { message: { content: TextBlock[] } } => {
-  if (!value || typeof value !== 'object') return false;
-  const msg = (value as { message?: unknown }).message;
-  if (!msg || typeof msg !== 'object') return false;
-  const content = (msg as { content?: unknown }).content;
-  return Array.isArray(content);
-};
-const getTextLenFromRaw = (raw: unknown): number => {
-  let parsedRaw: unknown = raw;
-  if (typeof raw === 'string') {
-    try {
-      parsedRaw = JSON.parse(raw);
-    } catch (error) {
-      console.warn('[Frontend] Failed to parse raw JSON for length comparison:', error);
-      return 0;
-    }
-  }
-  if (!hasTextBlocks(parsedRaw)) return 0;
-  return parsedRaw.message.content
-    .filter((b): b is TextBlock => b?.type === 'text' && typeof b.text === 'string')
-    .reduce((sum, b) => sum + b.text.length, 0);
-};
+/** UUIDs distinguish existing backend rows from local placeholders. */
+type MessageIdentity = 'same' | 'conflict' | 'unknown';
+
+function compareMessageIdentity(
+  candidate: ClaudeMessage | undefined,
+  incoming: ClaudeMessage,
+): MessageIdentity {
+  const candidateUuid = candidate ? getRawUuid(candidate) : undefined;
+  const incomingUuid = getRawUuid(incoming);
+  if (!candidateUuid || !incomingUuid) return 'unknown';
+  return candidateUuid === incomingUuid ? 'same' : 'conflict';
+}
 
 export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): void {
   const {
@@ -212,6 +200,7 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     lastThinkingUpdateRef,
     thinkingUpdateTimeoutRef,
     getOrCreateStreamingAssistantIndex,
+    findLastAssistantIndex,
     patchAssistantForStreaming,
   } = options;
 
@@ -261,14 +250,18 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
 
   window.onStreamStart = (mode?: string | boolean) => {
     if (window.__sessionTransitioning) return;
+    // The dispatched turn now owns the loading state — late cleanup echoes
+    // from a previously interrupted turn must no longer be suppressed.
+    clearPendingStreamStart();
     const isReplayStart = mode === 'replay' || mode === true;
     // Clear any stale pending updateMessages from previous turn.
     // This prevents onStreamEnd from using outdated snapshot data.
     if (typeof window.__cancelPendingUpdateMessages === 'function') {
       window.__cancelPendingUpdateMessages();
     }
-    // Explicit null in case the rAF already executed (clearing pendingUpdateRaf)
-    // but __pendingUpdateJson was not yet cleared by the rAF callback.
+    // Explicit null in case the timer already executed (clearing
+    // __pendingUpdateTimer) but __pendingUpdateJson was not yet cleared by its
+    // callback.
     window.__pendingUpdateJson = null;
     // Clear the previous stream-ended marker when a new turn starts
     window.__lastStreamEndedTurnId = undefined;
@@ -361,23 +354,29 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     });
   };
 
-  // rAF-scheduled streaming update: frame-aligned, avoids setTimeout jank.
+  // Timer-scheduled streaming update: a 16ms tick gated by THROTTLE_INTERVAL
+  // throttling, mirroring the timer-based scheduling of the updateMessages
+  // batching path. setTimeout is used instead of requestAnimationFrame because
+  // rAF is paint-cycle gated: in a deprioritized JCEF paint state Chromium
+  // defers rAF callbacks indefinitely, so deltas would pile up unrendered
+  // until a structural snapshot forces a paint (same root cause the
+  // updateMessages batching fixed).
   // Factory that creates a throttled scheduler bound to a specific timeoutRef +
   // lastUpdateRef pair.  patchAssistantForStreaming reads streamingContentRef /
   // streamingThinkingRef from the hook closure, so the factory only needs to
   // know which ref pair to guard against double-scheduling.
-  const createStreamingRafScheduler = (
+  const createStreamingRenderScheduler = (
     timeoutRef: React.MutableRefObject<number | null>,
     lastUpdateRef: React.MutableRefObject<number>,
   ) => {
-    const scheduleRaf = (): void => {
+    const scheduleRender = (): void => {
       if (timeoutRef.current != null) return;
-      timeoutRef.current = requestAnimationFrame(() => {
+      timeoutRef.current = setTimeout(() => {
         timeoutRef.current = null;
         const now = Date.now();
         const elapsed = now - lastUpdateRef.current;
         if (elapsed < THROTTLE_INTERVAL) {
-          scheduleRaf(); // too soon — wait for next frame
+          scheduleRender(); // too soon — retry after another tick
           return;
         }
         lastUpdateRef.current = now;
@@ -400,19 +399,19 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
             return newMessages;
           });
         });
-      });
+      }, 16) as unknown as number;
     };
-    return scheduleRaf;
+    return scheduleRender;
   };
 
-  const scheduleContentRaf = createStreamingRafScheduler(contentUpdateTimeoutRef, lastContentUpdateRef);
-  const scheduleThinkingRaf = createStreamingRafScheduler(thinkingUpdateTimeoutRef, lastThinkingUpdateRef);
+  const scheduleContentRender = createStreamingRenderScheduler(contentUpdateTimeoutRef, lastContentUpdateRef);
+  const scheduleThinkingRender = createStreamingRenderScheduler(thinkingUpdateTimeoutRef, lastThinkingUpdateRef);
 
   window.__flushDeferredStreamingRenders = () => {
     if (!window.__streamingDeltaRenderDeferred || !isStreamingRef.current) return;
     window.__streamingDeltaRenderDeferred = false;
-    scheduleContentRaf();
-    scheduleThinkingRaf();
+    scheduleContentRender();
+    scheduleThinkingRender();
   };
 
   window.onContentDelta = (delta: string) => {
@@ -420,14 +419,14 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     if (!isStreamingRef.current) return;
     window.__lastStreamActivityAt = Date.now();
     streamingContentRef.current += delta;
-    if (window.__pendingUpdateRaf != null || window.__pendingUpdateJson != null) {
+    if (window.__pendingUpdateTimer != null || window.__pendingUpdateJson != null) {
       // Let the pending structural snapshot establish the message identity first.
       // The snapshot merge already consumes this buffer, so a second React update
       // here would only race the authoritative structural update.
       window.__streamingDeltaRenderDeferred = true;
       return;
     }
-    scheduleContentRaf();
+    scheduleContentRender();
   };
 
   window.onThinkingDelta = (delta: string) => {
@@ -435,11 +434,11 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     if (!isStreamingRef.current) return;
     window.__lastStreamActivityAt = Date.now();
     streamingThinkingRef.current += delta;
-    if (window.__pendingUpdateRaf != null || window.__pendingUpdateJson != null) {
+    if (window.__pendingUpdateTimer != null || window.__pendingUpdateJson != null) {
       window.__streamingDeltaRenderDeferred = true;
       return;
     }
-    scheduleThinkingRaf();
+    scheduleThinkingRender();
   };
 
   // Mark any tool_use block that never received a tool_result as denied, so its
@@ -498,7 +497,18 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       return;
     }
 
+    // A dispatched turn that has not streamed yet owns the loading state; an
+    // onStreamEnd arriving within that window belongs to an older (e.g.
+    // interrupted) turn — its loading reset would tear the new turn's state
+    // down and re-arm the message-queue drain mid-boot (repeat sends).
+    // Finalize the old turn's bubble below, but keep the marker and the
+    // loading state; the dispatched turn's own stream end will reset both.
+    const suppressLoadingReset = isPendingStreamStartActive();
+
     clearStallWatchdog();
+    const nativeProvider = options.currentProviderRef.current === 'codex';
+    // Commit the whole native transcript before clearing refs, including separate final items.
+    if (nativeProvider) window.__flushPendingUpdateMessages?.();
     const parsedSequence = parseSequence(sequence);
     // Only update minAcceptedUpdateSequence for valid positive sequences.
     // The fallback path sends sequence=-1 which means "no sequence info" —
@@ -513,6 +523,13 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       if (typeof window.__cancelPendingUpdateMessages === 'function') {
         window.__cancelPendingUpdateMessages();
       }
+      if (suppressLoadingReset) {
+        window.__streamEndProcessedTurnId = currentTurnId > 0 ? currentTurnId : undefined;
+        return;
+      }
+      // This branch resets the loading state, so the pending-stream-start
+      // marker has served its purpose.
+      clearPendingStreamStart();
       setStreamingActive(false);
       setLoading(false);
       setLoadingStartTime(null);
@@ -521,37 +538,41 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       return;
     }
 
-    // FIX: Extract backend final snapshot from pending updateMessages BEFORE cancelling rAF.
-    // The backend's final flush contains the authoritative message state (complete raw blocks).
-    // If onStreamEnd cancels the rAF without processing this snapshot, the final message may
-    // show incomplete content (e.g., last delta missing) or duplicated content in raw blocks.
+    // FIX: Extract backend final snapshot from pending updateMessages BEFORE cancelling
+    // the pending batch timer. The backend's final flush contains the authoritative message
+    // state (complete raw blocks). If onStreamEnd cancels that timer without processing this
+    // snapshot, the final message may show incomplete content (e.g., last delta missing) or
+    // duplicated content in raw blocks.
     //
     // FIX: Also preserve tool_result user messages from the pending snapshot.
     // Previously only the assistant message was extracted; tool_result user messages were
-    // silently dropped when the pending rAF was cancelled.  This caused tool cards to
+    // silently dropped when the pending snapshot timer was cancelled.  This caused tool cards to
     // remain stuck in "pending" state (spinner) even though the tool had completed.
     let backendSnapshotContent: string | undefined;
     let backendSnapshotRaw: ClaudeRawMessage | string | undefined = undefined;
+    let backendSnapshotAssistant: ClaudeMessage | undefined;
     const pendingToolResultMsgs: Array<{ content: string; raw: Record<string, unknown> }> = [];
     if (typeof window.__pendingUpdateJson === 'string' && window.__pendingUpdateJson.length > 0) {
       try {
         const parsed = JSON.parse(window.__pendingUpdateJson) as Array<Record<string, unknown>>;
         for (let i = parsed.length - 1; i >= 0; i--) {
           if (parsed[i]?.type === 'assistant') {
+            const candidate = parsed[i] as unknown as ClaudeMessage;
             const rawContent = parsed[i].content;
             const content = typeof rawContent === 'string' ? rawContent : '';
-            if (content) {
-              backendSnapshotContent = content;
-              const rawVal = parsed[i].raw;
-              if (rawVal != null && (typeof rawVal === 'object' || typeof rawVal === 'string')) {
-                backendSnapshotRaw = rawVal as ClaudeRawMessage | string;
-              }
+            backendSnapshotAssistant = candidate;
+            backendSnapshotContent = content;
+            const rawVal = parsed[i].raw;
+            if (rawVal != null && (typeof rawVal === 'object' || typeof rawVal === 'string')) {
+              // Keep raw even when content is empty: tool-only assistant messages
+              // carry their complete structure exclusively in raw.message.content.
+              backendSnapshotRaw = rawVal as ClaudeRawMessage | string;
             }
             break;
           }
         }
         // Collect tool_result user messages from the pending snapshot so that
-        // completed tool calls are not lost when the rAF is cancelled below.
+        // completed tool calls are not lost when the pending timer is cancelled below.
         for (let i = 0; i < parsed.length; i++) {
           const msg = parsed[i];
           if (msg?.type === 'user' && typeof msg.content === 'string' && msg.content.trim() === '[tool_result]') {
@@ -572,13 +593,13 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       window.__cancelPendingUpdateMessages();
     }
 
-    // Clear pending rAF callbacks — their content is already in streamingContentRef
+    // Clear pending timer callbacks — their content is already in streamingContentRef
     if (contentUpdateTimeoutRef.current != null) {
-      cancelAnimationFrame(contentUpdateTimeoutRef.current);
+      clearTimeout(contentUpdateTimeoutRef.current);
       contentUpdateTimeoutRef.current = null;
     }
     if (thinkingUpdateTimeoutRef.current != null) {
-      cancelAnimationFrame(thinkingUpdateTimeoutRef.current);
+      clearTimeout(thinkingUpdateTimeoutRef.current);
       thinkingUpdateTimeoutRef.current = null;
     }
 
@@ -616,7 +637,7 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     // Trade-off analysis:
     // - Original approach: refs cleared inside updater, leverages React batching to ensure
     //   clearing and state update happen together. But this caused timing issues when
-    //   deferred operations (rAF, timeout) executed after the updater but before refs were
+    //   deferred timer callbacks executed after the updater but before refs were
     //   actually cleared, allowing them to modify the streaming message incorrectly.
     // - New approach: refs cleared outside updater, uses snapshot values inside updater.
     //   This prevents race conditions where deferred updateMessages sees isStreamingRef=false
@@ -661,37 +682,96 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     // captured in a closure variable after setMessages() would be empty.
     setMessages((prev) => {
       let newMessages = prev;
+      const nativeAssistantIndex = nativeProvider ? findLastAssistantIndex(prev) : -1;
+      const nativeTarget = nativeAssistantIndex >= 0 && isCodexMessageSnapshot(prev[nativeAssistantIndex])
+        && prev[nativeAssistantIndex].__turnId === endedStreamingTurnId;
       // FIX (Issue #1315 investigation, residual risk A): Prefer the snapshot
       // index, but fall back to a __turnId scan when an interleaved
       // updateMessages reordered/shrank the list so prev[idx] is no longer the
       // streaming assistant. Without this, the final content flush is silently
       // dropped. The re-scan only runs when the primary index is invalid, so the
       // hot path (index still valid) pays no cost.
-      let idx = endedStreamingMessageIndex;
-      if (!(idx >= 0 && idx < prev.length && prev[idx]?.type === 'assistant')
+      const belongsToEndedTurn = (message: ClaudeMessage | undefined): boolean => {
+        if (message?.type !== 'assistant') return false;
+        if (message.__turnId != null) {
+          if (message.__turnId !== endedStreamingTurnId) return false;
+          // A bubble stamped with the ended turn id IS this turn's bubble. The
+          // backend row's uuid rotates per tool-loop iteration (Java's
+          // MessageMerger copies every top-level field, uuid included, onto the
+          // single live row), and the bubble inherits it from its last APPLIED
+          // flush. When the final flush is still parked in __pendingUpdateJson,
+          // the bubble carries iteration N's uuid against the snapshot's N+1 —
+          // a conflict that proves nothing about turn identity. Rejecting here
+          // would append a second bubble for the same turn.
+          return true;
+        }
+        // No turn stamp: uuid is the only identity evidence available.
+        return !backendSnapshotAssistant
+          || compareMessageIdentity(message, backendSnapshotAssistant) !== 'conflict';
+      };
+      let idx = nativeTarget ? nativeAssistantIndex : endedStreamingMessageIndex;
+      if (!belongsToEndedTurn(prev[idx])
           && endedStreamingTurnId > 0) {
         for (let i = prev.length - 1; i >= 0; i--) {
           const msg = prev[i];
-          if (msg?.type === 'assistant' && msg.__turnId === endedStreamingTurnId) {
+          if (belongsToEndedTurn(msg) && msg.__turnId === endedStreamingTurnId) {
             idx = i;
             break;
           }
         }
       }
-      if (idx >= 0 && idx < prev.length && prev[idx]?.type === 'assistant') {
-        newMessages = [...prev];
+      if (!belongsToEndedTurn(prev[idx]) && backendSnapshotAssistant) {
+        let fallbackAssistantIndex = findLastAssistantIndex(prev);
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].type === 'assistant'
+              && compareMessageIdentity(prev[i], backendSnapshotAssistant) === 'same') {
+            fallbackAssistantIndex = i;
+            break;
+          }
+        }
+        const fallbackAssistant = fallbackAssistantIndex >= 0 ? prev[fallbackAssistantIndex] : undefined;
+        const identity = compareMessageIdentity(fallbackAssistant, backendSnapshotAssistant);
+        if (identity === 'same') {
+          // The same assistant already sits in the list, finalized by an earlier
+          // path. Patch it in place instead of appending, which would leave two
+          // bubbles for one turn.
+          idx = fallbackAssistantIndex;
+        } else if (identity === 'unknown' && fallbackAssistant?.isStreaming
+            && belongsToEndedTurn(fallbackAssistant)) {
+          // No uuid to compare on either side, but a still-streaming last assistant
+          // is this turn's target: its uuid arrives at finalize time, so its missing
+          // identity cannot be used to prove it belongs to a different turn.
+          idx = fallbackAssistantIndex;
+        } else {
+          // Either a proven different turn, or nothing streaming to patch. Appending
+          // is safe against duplicates: the identity check above already rejected the
+          // case where this assistant is present, and Java defers history reloads
+          // while a stream (or its final snapshot) is pending, so no history load can
+          // have inserted the same message in between. __turnId is stamped by the
+          // finalize block below, which every path through here reaches.
+          newMessages = [...prev, {
+            ...backendSnapshotAssistant,
+            isStreaming: false,
+          }];
+          idx = newMessages.length - 1;
+        }
+      }
+      if (idx >= 0 && idx < newMessages.length && newMessages[idx]?.type === 'assistant'
+          && (newMessages !== prev || belongsToEndedTurn(newMessages[idx]))) {
+        if (newMessages === prev) {
+          newMessages = [...prev];
+        }
         // FIX: Keep __turnId on the message for a short period to prevent
         // incorrect merging with history messages. The __turnId will be
         // removed later when history is loaded or a new turn starts.
-        const finalContent = endedStreamingContent || newMessages[idx].content || '';
-        // Use backend raw blocks only if they are more complete than the existing raw.
-        // The backend snapshot may be from an earlier coalescer flush, so the existing
-        // raw (updated by subsequent deltas) could actually be more up-to-date.
+        const finalContent = nativeTarget ? newMessages[idx].content ?? ''
+          : endedStreamingContent || newMessages[idx].content || '';
+        // Merge backend structure into the latest frontend raw instead of choosing by
+        // text length. A tool-only assistant can contain more structural information
+        // while having fewer text characters than the locally accumulated snapshot.
         let finalRaw = newMessages[idx].raw;
-        if (endedBackendRaw != null) {
-          if (getTextLenFromRaw(endedBackendRaw) >= getTextLenFromRaw(finalRaw)) {
-            finalRaw = endedBackendRaw;
-          }
+        if (!nativeTarget && endedBackendRaw != null) {
+          finalRaw = mergeRawBlocksForFinalization(finalRaw, endedBackendRaw) as ClaudeMessage['raw'];
         }
         newMessages[idx] = {
           ...newMessages[idx],
@@ -704,7 +784,7 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       }
 
       // FIX: Merge tool_result user messages that were in the pending snapshot
-      // but would otherwise be lost when the rAF is cancelled.  Without this,
+      // but would otherwise be lost when the pending timer is cancelled.  Without this,
       // tool cards remain stuck in "pending" spinner state.
       //
       // Runs INDEPENDENTLY of the assistant-patch branch above: a completed
@@ -808,9 +888,15 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     // arrives before onStreamEnd and gets ignored by the isStreamingRef guard,
     // while the flush callback's showLoading("false") may be delayed or lost
     // (e.g., due to slow message serialization or multi-hop async chains).
-    setLoading(false);
-    setLoadingStartTime(null);
-    setIsThinking(false);
+    // Suppressed while a freshly dispatched turn awaits its stream start: the
+    // onStreamEnd then belongs to an older turn, whose bubble was finalized
+    // above but whose loading reset must not claim the new turn's state.
+    if (!suppressLoadingReset) {
+      clearPendingStreamStart();
+      setLoading(false);
+      setLoadingStartTime(null);
+      setIsThinking(false);
+    }
 
     // Mark this turn as processed — idempotency guard for dual-path delivery
     window.__streamEndProcessedTurnId = endedStreamingTurnId;
@@ -855,11 +941,11 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     // message is shared across turns, so the index already points at it.
     // Reset throttle timeouts to ensure clean state for new deltas
     if (contentUpdateTimeoutRef.current != null) {
-      cancelAnimationFrame(contentUpdateTimeoutRef.current);
+      clearTimeout(contentUpdateTimeoutRef.current);
       contentUpdateTimeoutRef.current = null;
     }
     if (thinkingUpdateTimeoutRef.current != null) {
-      cancelAnimationFrame(thinkingUpdateTimeoutRef.current);
+      clearTimeout(thinkingUpdateTimeoutRef.current);
       thinkingUpdateTimeoutRef.current = null;
     }
     // Reset last update timestamps to prevent throttle delays

@@ -6,6 +6,9 @@ import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.handler.AgentHandler;
 import com.github.claudecodegui.handler.ClipboardHandler;
 import com.github.claudecodegui.handler.ContextHandler;
+import com.github.claudecodegui.handler.CodexInteractionHandler;
+import com.github.claudecodegui.handler.CodexNativeDataHandler;
+import com.github.claudecodegui.handler.CodexWorkspaceDiffHandler;
 import com.github.claudecodegui.handler.CodexMcpServerHandler;
 import com.github.claudecodegui.handler.CodexPetHandler;
 import com.github.claudecodegui.handler.CliModelsHandler;
@@ -49,7 +52,6 @@ import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.session.SessionLifecycleManager;
 import com.github.claudecodegui.session.StreamMessageCoalescer;
 import com.github.claudecodegui.util.JsUtils;
-import com.github.claudecodegui.util.MessageJsonConverter;
 import com.google.gson.JsonObject;
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.application.ApplicationManager;
@@ -383,6 +385,9 @@ public class ChatWindowDelegate {
         messageDispatcher.registerHandler(new DshHostHandler(handlerContext));
         messageDispatcher.registerHandler(new ClipboardHandler(handlerContext));
         messageDispatcher.registerHandler(new NodeProcessHandler(handlerContext));
+        messageDispatcher.registerHandler(new CodexInteractionHandler(handlerContext));
+        messageDispatcher.registerHandler(new CodexNativeDataHandler(handlerContext));
+        messageDispatcher.registerHandler(new CodexWorkspaceDiffHandler(handlerContext));
 
         messageDispatcher.registerHandler(new WindowEventHandler(handlerContext, new WindowEventHandler.Callback() {
             @Override public void onHeartbeat(String content) { host.getWebviewWatchdog().handleHeartbeat(content); }
@@ -439,7 +444,9 @@ public class ChatWindowDelegate {
                 // instead of interrupting the in-flight turn.
                 LOG.info("[HistoryHandler] Same-session resume, soft-reloading transcript: " + sessionId);
                 if (model != null && !model.trim().isEmpty()) {
-                    current.setModel(model.trim());
+                    // The payload model is webview-normalized (custom ids kept
+                    // verbatim, retired built-ins already migrated there).
+                    current.setModelVerbatim(model.trim());
                 }
                 host.reloadActiveSessionMessages();
             } else {
@@ -582,6 +589,9 @@ public class ChatWindowDelegate {
         host.callJavaScript("showLoading", "true");
 
         host.getSession().send(prompt, null, (String) null).thenRun(() -> {
+            // Only the last message's content string is read, and content is immutable,
+            // so the shallow copy is enough — getMessagesSnapshot would deep-copy every
+            // raw tree in the transcript for a value this call never touches.
             List<ClaudeSession.Message> messages = host.getSession().getMessages();
             if (!messages.isEmpty()) {
                 ClaudeSession.Message last = messages.get(messages.size() - 1);
@@ -623,18 +633,25 @@ public class ChatWindowDelegate {
         }
         host.persistTabSessionState();
 
-        if (pendingQuickFixPrompt != null && pendingQuickFixCallback != null) {
+        if (this.pendingQuickFixPrompt != null && this.pendingQuickFixCallback != null) {
             LOG.info("Processing pending QuickFix message after frontend ready");
-            String prompt = pendingQuickFixPrompt;
-            MessageCallback callback = pendingQuickFixCallback;
-            pendingQuickFixPrompt = null;
-            pendingQuickFixCallback = null;
+            String prompt = this.pendingQuickFixPrompt;
+            MessageCallback callback = this.pendingQuickFixCallback;
+            this.pendingQuickFixPrompt = null;
+            this.pendingQuickFixCallback = null;
             ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                executePendingQuickFix(prompt, callback);
+                this.executePendingQuickFix(prompt, callback);
             });
         }
 
-        host.getStreamCoalescer().flush(null);
+        // replayCurrentSessionStateToFrontend already force-fulls the live transcript
+        // through the coalescer. A second flush would serialize the same snapshot
+        // again and discard the first. Only the no-session path still flushes:
+        // replay is a no-op then, and the coalescer may still hold a parked snapshot
+        // from the previous page.
+        if (this.host.getSession() == null) {
+            this.host.getStreamCoalescer().flush(null);
+        }
     }
 
     /**
@@ -743,11 +760,8 @@ public class ChatWindowDelegate {
                 host.callJavaScript("setSessionId", JsUtils.escapeJs(sessionId));
             }
 
-            List<ClaudeSession.Message> messages = session.getMessages();
-            if (!messages.isEmpty()) {
-                String messagesJson = MessageJsonConverter.convertMessagesToJson(messages);
-                host.callJavaScript("updateMessages", JsUtils.escapeJs(messagesJson));
-            }
+            List<ClaudeSession.Message> messages = session.getMessagesSnapshot();
+            host.getStreamCoalescer().replayLatestSnapshot(messages);
 
             host.callJavaScript("showLoading", String.valueOf(session.isLoading()));
             host.callJavaScript("showThinkingStatus", String.valueOf(false));

@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import type { Attachment } from '../types.js';
 import type { Dispatch, SetStateAction } from 'react';
+import { parseCodexCommand } from '../../../hooks/codexCommandDispatcher';
 
 interface CompletionLike {
   close: () => void;
@@ -9,13 +10,10 @@ interface CompletionLike {
 export interface UseSubmitHandlerOptions {
   getTextContent: () => string;
   attachments: Attachment[];
-  isLoading: boolean;
   sdkStatusLoading: boolean;
   sdkInstalled: boolean;
   currentProvider: string;
   clearInput: () => void;
-  /** Cancel any pending debounced input callbacks to prevent stale values from refilling the input */
-  cancelPendingInput: () => void;
   /** Invalidate text content cache to force fresh DOM read on submit */
   invalidateCache: () => void;
   externalAttachments: Attachment[] | undefined;
@@ -45,12 +43,10 @@ export interface UseSubmitHandlerOptions {
 export function useSubmitHandler({
   getTextContent,
   attachments,
-  isLoading,
   sdkStatusLoading,
   sdkInstalled,
   currentProvider,
   clearInput,
-  cancelPendingInput,
   invalidateCache,
   externalAttachments,
   setInternalAttachments,
@@ -72,12 +68,19 @@ export function useSubmitHandler({
     const content = getTextContent();
     const cleanContent = content.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
 
-    if (sdkStatusLoading) {
+    const command = currentProvider === 'codex' ? parseCodexCommand(cleanContent) : null;
+    // Native controls have their own backend capability/access gate. Waiting
+    // for SDK discovery here can swallow /compact during a provider switch.
+    const isCodexControl = ['compact', 'review', 'diff', 'approvals'].includes(command?.kind ?? '');
+
+    // CLI providers are already known-installed. The global npm SDK query can
+    // still be in flight; waiting on it only toasts "Checking SDK status...".
+    if (!isCodexControl && sdkStatusLoading && !sdkInstalled) {
       addToast?.(t('chat.sdkStatusLoading'), 'info');
       return;
     }
 
-    if (!sdkInstalled) {
+    if (!isCodexControl && !sdkInstalled) {
       addToast?.(
         t('chat.sdkNotInstalled', {
           provider: currentProvider === 'codex' ? 'Codex' : 'Claude Code',
@@ -104,9 +107,8 @@ export function useSubmitHandler({
 
     const attachmentsToSend = attachments.length > 0 ? [...attachments] : undefined;
 
-    // Cancel any pending debounced input callbacks before clearing
-    // This prevents stale values from refilling the input after submit
-    cancelPendingInput();
+    // clearInput also drops any queued draft notification, so a stale debounced
+    // value cannot refill the input after submit.
     clearInput();
     if (externalAttachments === undefined) {
       setInternalAttachments([]);
@@ -122,12 +124,10 @@ export function useSubmitHandler({
     getTextContent,
     invalidateCache,
     attachments,
-    isLoading,
     sdkStatusLoading,
     sdkInstalled,
     currentProvider,
     clearInput,
-    cancelPendingInput,
     externalAttachments,
     setInternalAttachments,
     clearAttachmentsDraft,

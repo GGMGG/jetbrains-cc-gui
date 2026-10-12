@@ -4,6 +4,7 @@ import type { ClaudeMessage, HistoryData, SubagentHistoryResponse, TaskEventMap 
 import { sendBridgeEvent } from '../utils/bridge';
 import { getSkipNewSessionConfirm } from '../utils/skipNewSessionConfirm';
 import { clearAllPersistedExpanded } from '../utils/expandedState';
+import { normalizeClaudeModelForBridge } from '../utils/customClaudeModels';
 
 type ViewMode = 'chat' | 'history' | 'settings';
 
@@ -295,6 +296,13 @@ export function useSessionManagement({
       applyHistoryModel(effectiveProvider, effectiveModel, effectiveAgent || null);
     }
 
+    // Java stores the payload model verbatim, so normalize it here where the
+    // custom model list lives: custom ids stay untouched, retired built-in ids
+    // are mapped to their live replacement (same rule applyHistoryModel uses).
+    const bridgeModel = effectiveModel
+      ? (effectiveProvider === 'claude' ? normalizeClaudeModelForBridge(effectiveModel) : effectiveModel)
+      : '';
+
     // Re-opening the session already active: soft-reload only — do NOT
     // beginSessionTransition (which clears messages and holds the transition
     // guard). Backend routes same-session to reloadActiveSessionMessages.
@@ -306,7 +314,7 @@ export function useSessionManagement({
       sendBridgeEvent('load_session', JSON.stringify({
         sessionId,
         provider: effectiveProvider,
-        ...(effectiveModel ? { model: effectiveModel } : {}),
+        ...(bridgeModel ? { model: bridgeModel } : {}),
       }));
       setCurrentView('chat');
       return;
@@ -321,7 +329,7 @@ export function useSessionManagement({
     sendBridgeEvent('load_session', JSON.stringify({
       sessionId,
       provider: effectiveProvider,
-      ...(effectiveModel ? { model: effectiveModel } : {}),
+      ...(bridgeModel ? { model: bridgeModel } : {}),
     }));
     setCurrentView('chat');
   }, [applyHistoryModel, beginSessionTransition, currentProvider, loading, setCurrentView, currentSessionId]);

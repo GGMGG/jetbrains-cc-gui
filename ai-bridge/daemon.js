@@ -64,6 +64,30 @@ import {
   getUsagePersistent as zcodeGetUsagePersistent,
   getRuntimeSnapshot as getZcodeRuntimeSnapshot
 } from './services/zcode/persistent-zcode-service.js';
+import {
+  codexSendPersistent,
+  codexExecutePlanPersistent,
+  codexCompactPersistent,
+  codexReviewPersistent,
+  codexPreconnectPersistent,
+  codexRespondInteractionPersistent,
+  codexRespondInteractionErrorPersistent,
+  codexAbortTurnPersistent,
+  codexUpdateSettingsPersistent,
+  codexReleaseThreadPersistent,
+  codexResetRuntimePersistent,
+  codexListThreadsPersistent,
+  codexReadThreadPersistent,
+  codexReadHistoryPagePersistent,
+  codexReadSubagentPersistent,
+  codexListModelsPersistent,
+  codexListSkillsPersistent,
+  codexGetMcpStatusPersistent,
+  codexReloadMcpPersistent,
+  codexShutdownPersistentRuntimes,
+  getCodexRuntimeSnapshot,
+  setCodexPristineBaseEnv,
+} from './services/codex/persistent-codex-service.js';
 import { injectStartupEnvVars, isWebviewControlledEnvVar, isDangerousEnvVar } from './config/api-config.js';
 import { cleanupStaleTempImages } from './services/claude/attachment-service.js';
 
@@ -77,6 +101,12 @@ import { cleanupStaleTempImages } from './services/claude/attachment-service.js'
 // corporate SSL-inspection proxies in those modes will get certificate
 // verification errors, and Bedrock auth fails for desktop-launched IDEs.
 injectStartupEnvVars();
+
+// Freeze the pristine base environment AFTER startup env injection but BEFORE
+// any request can apply request-scoped params.env to process.env. Codex
+// runtime construction must never bake a concurrent Claude request's injected
+// credentials into its child process environment.
+setCodexPristineBaseEnv(process.env);
 
 // =============================================================================
 // Constants
@@ -411,6 +441,7 @@ async function processRequest(request) {
         claude: getClaudeRuntimeSnapshot(),
         grok: getGrokRuntimeSnapshot(),
         zcode: getZcodeRuntimeSnapshot(),
+        codex: getCodexRuntimeSnapshot(),
       },
     });
     return;
@@ -430,6 +461,7 @@ async function processRequest(request) {
         claude: getClaudeRuntimeSnapshot(),
         grok: getGrokRuntimeSnapshot(),
         zcode: getZcodeRuntimeSnapshot(),
+        codex: getCodexRuntimeSnapshot(),
       },
     });
     return;
@@ -440,6 +472,7 @@ async function processRequest(request) {
     await shutdownPersistentRuntimes();
     await grokShutdownPersistentRuntimes().catch(() => {});
     await zcodeShutdownPersistentRuntimes().catch(() => {});
+    await codexShutdownPersistentRuntimes().catch(() => {});
     sendDaemonEvent('shutdown', { reason: 'requested' });
     writeRawLine({ id: id || '0', done: true, success: true });
     isDaemonMode = false;
@@ -461,6 +494,7 @@ async function processRequest(request) {
 
   // Save original env values for restoration after request completes
   const savedEnv = {};
+  let codexResult;
 
   try {
     // Apply environment variables from params (with save for restore).
@@ -533,6 +567,16 @@ async function processRequest(request) {
       await zcodeGetContextUsagePersistent(stdinData);
     } else if (provider === 'zcode' && command === 'getUsage') {
       await zcodeGetUsagePersistent(stdinData);
+    } else if (provider === 'codex' && command === 'send') {
+      codexResult = await codexSendPersistent(stdinData);
+    } else if (provider === 'codex' && command === 'executePlan') {
+      codexResult = await codexExecutePlanPersistent(stdinData);
+    } else if (provider === 'codex' && command === 'compact') {
+      codexResult = await codexCompactPersistent(stdinData);
+    } else if (provider === 'codex' && command === 'review') {
+      codexResult = await codexReviewPersistent(stdinData);
+    } else if (provider === 'codex' && command === 'preconnect') {
+      await codexPreconnectPersistent(stdinData);
     } else {
       // Dispatch to the existing handlers for non-send commands.
       switch (provider) {
@@ -553,7 +597,10 @@ async function processRequest(request) {
       }
     }
 
-    writeRawLine({ id, done: true, success: true });
+    const success = !codexResult?.outcome || codexResult.outcome === 'completed';
+    const aborted = ['cancelled', 'interrupted'].includes(codexResult?.outcome);
+    writeRawLine({ id, done: true, success, ...(codexResult ? { result: codexResult } : {}),
+      ...(aborted ? { aborted: true } : !success ? { error: codexResult.error || `Codex operation ${codexResult.outcome}` } : {}) });
   } catch (error) {
     // Only send done if not already sent (e.g., by process.exit interceptor)
     if (activeRequestId !== null) {
@@ -656,6 +703,16 @@ async function runDaemonMain() {
   // Command requests must be serialized because they share `activeRequestId`
   // for stdout interception. Heartbeats/status are safe to run concurrently.
   let commandQueue = Promise.resolve();
+  let pendingIdleShutdownToken = null;
+  const deferredIdleLines = [];
+
+  const cancelPendingIdleShutdown = () => {
+    if (pendingIdleShutdownToken === null) return;
+    pendingIdleShutdownToken = null;
+    idleShutdownGeneration++;
+    idleShutdownInFlight = false;
+    lastCommandActivityAt = Date.now();
+  };
 
   // A daemon is deliberately lazy: after all provider runtimes have been
   // released, keep the lightweight bridge around briefly for quick reuse and
@@ -673,7 +730,9 @@ async function runDaemonMain() {
       || !!claude.activeTurnEpoch;
     const grokBusy = (grok.runtimeCount || 0) > 0 || (grok.activeTurnCount || 0) > 0;
     const zcodeBusy = zcode.clientActive || zcode.turnActive;
-    if (claudeBusy || grokBusy || zcodeBusy) return;
+    const codex = getCodexRuntimeSnapshot();
+    const codexBusy = codex.busy || codex.sessionCount > 0;
+    if (claudeBusy || grokBusy || zcodeBusy || codexBusy) return;
 
     idleShutdownInFlight = true;
     const shutdownGeneration = ++idleShutdownGeneration;
@@ -681,27 +740,32 @@ async function runDaemonMain() {
       await shutdownPersistentRuntimes();
       await grokShutdownPersistentRuntimes().catch(() => {});
       await zcodeShutdownPersistentRuntimes().catch(() => {});
-      // A command may have arrived while provider shutdown was awaiting an
-      // SDK/client close. In that case the command wins: its runtime will be
-      // recreated lazily and the daemon must stay alive to service it.
+      await codexShutdownPersistentRuntimes().catch(() => {});
+      // Commands arriving during provider cleanup wait until every close has
+      // finished, then resume on this daemon with fresh runtimes.
       if (shutdownGeneration !== idleShutdownGeneration) {
         idleShutdownInFlight = false;
+        for (const deferredLine of deferredIdleLines.splice(0)) {
+          handleInputLine(deferredLine);
+        }
         return;
       }
-      sendDaemonEvent('shutdown', { reason: 'idle_timeout' });
-      isDaemonMode = false;
-      // Keep stdin open until exit: a command racing the shutdown commit gets
-      // an explicit daemon_shutting_down error from the gate in the line
-      // handler instead of being silently dropped mid-pipe.
-      setTimeout(() => _originalExit(0), 100).unref();
+      // Java owns the request registry. Only it can atomically reject new
+      // requests and confirm that no command was sent during this idle check.
+      pendingIdleShutdownToken = shutdownGeneration;
+      sendDaemonEvent('idle_shutdown_request', { token: shutdownGeneration });
     } catch (error) {
       idleShutdownInFlight = false;
+      pendingIdleShutdownToken = null;
+      for (const deferredLine of deferredIdleLines.splice(0)) {
+        handleInputLine(deferredLine);
+      }
       _originalStderrWrite(`[daemon] Idle shutdown failed: ${error?.message || error}\n`, 'utf8');
     }
   }, DAEMON_IDLE_CHECK_INTERVAL_MS);
   idleReaper.unref();
 
-  rl.on('line', (line) => {
+  const handleInputLine = (line) => {
     // Skip empty lines
     if (!line.trim()) return;
 
@@ -716,10 +780,28 @@ async function runDaemonMain() {
       return;
     }
 
+    if (request.method === 'idle_shutdown_ack'
+        || request.method === 'idle_shutdown_cancel') {
+      if (request.params?.token !== pendingIdleShutdownToken
+          || pendingIdleShutdownToken === null) return;
+      if (request.method === 'idle_shutdown_cancel') {
+        cancelPendingIdleShutdown();
+        for (const deferredLine of deferredIdleLines.splice(0)) {
+          handleInputLine(deferredLine);
+        }
+      } else {
+        pendingIdleShutdownToken = null;
+        deferredIdleLines.length = 0;
+        sendDaemonEvent('shutdown', { reason: 'idle_timeout' });
+        isDaemonMode = false;
+        setTimeout(() => _originalExit(0), 100).unref();
+      }
+      return;
+    }
+
     if (request.method !== 'heartbeat' && request.method !== 'status') {
-      // The idle reaper already committed to exit: fail the command fast so the
-      // Java side retries on a freshly spawned daemon instead of waiting for
-      // process-death detection. Heartbeats/status remain answerable.
+      // A retired Java generation should not send commands here. Return an
+      // explicit error if a stale writer races the final exit.
       if (!isDaemonMode) {
         writeRawLine({
           id: request.id || '0',
@@ -730,11 +812,25 @@ async function runDaemonMain() {
         return;
       }
       lastCommandActivityAt = Date.now();
-      // Cancel an idle shutdown whose provider cleanup is still awaiting. The
-      // request is still accepted and serialized normally below.
+      // Wait until provider cleanup finishes, or until Java resolves the idle
+      // request. Processing now could let cleanup close a newly made runtime.
+      if (idleShutdownInFlight && request.method !== 'shutdown') {
+        deferredIdleLines.push(line);
+        if (pendingIdleShutdownToken === null) {
+          idleShutdownGeneration++;
+        }
+        return;
+      }
+      // Explicit shutdown may bypass the idle wait because Java is disposing
+      // of this daemon regardless of any queued work.
       if (idleShutdownInFlight) {
-        idleShutdownGeneration++;
-        idleShutdownInFlight = false;
+        if (pendingIdleShutdownToken !== null) {
+          cancelPendingIdleShutdown();
+          deferredIdleLines.length = 0;
+        } else {
+          idleShutdownGeneration++;
+          idleShutdownInFlight = false;
+        }
       }
     }
 
@@ -752,7 +848,11 @@ async function runDaemonMain() {
         'utf8'
       );
       if (targetId) {
-        // Fire-and-forget for every provider with a persistent runtime
+        // Fire-and-forget for every provider with a persistent runtime.
+        // Codex is absent here on purpose: its stop intent targets a specific
+        // channelId/sessionEpoch and goes through `codex.abortTurn`, which
+        // bypasses the queue with the session key attached. A keyless call
+        // could never resolve the right session service.
         Promise.all([
           abortCurrentTurn().catch((e) => _originalStderrWrite(`[daemon] Claude abort error: ${e.message}\n`, 'utf8')),
           grokAbortCurrentTurn().catch((e) => _originalStderrWrite(`[daemon] Grok abort error: ${e.message}\n`, 'utf8')),
@@ -805,6 +905,48 @@ async function runDaemonMain() {
       return;
     }
 
+    // Codex interaction replies must reach the peer while a codex.send is
+    // still pending — queueing behind it would deadlock the approval (R1).
+    // These run immediately and emit their own done signal; they never touch
+    // activeRequestId.
+    if (request.method === 'codex.respondInteraction'
+        || request.method === 'codex.respondInteractionError') {
+      const replyId = request.id || '0';
+      const handler = request.method === 'codex.respondInteraction'
+        ? codexRespondInteractionPersistent
+        : codexRespondInteractionErrorPersistent;
+      handler(request.params || {})
+        .then(() => writeRawLine({ id: replyId, done: true, success: true }))
+        .catch((e) => {
+          _originalStderrWrite('[daemon] codex interaction reply error: ' + (e.message || String(e)) + '\n');
+          writeRawLine({ id: replyId, done: true, success: false, error: e.message || String(e) });
+        });
+      return;
+    }
+
+    // Codex turn stop bypasses the queue for the same reason: the stop intent
+    // must reach the service while the send operation still owns the queue.
+    if (request.method === 'codex.abortTurn') {
+      const abortId = request.id || '0';
+      codexAbortTurnPersistent(request.params || {})
+        .then((result) => writeRawLine({ id: abortId, done: true, success: true, result }))
+        .catch((e) => {
+          _originalStderrWrite('[daemon] codex.abortTurn error: ' + (e.message || String(e)) + '\n');
+          writeRawLine({ id: abortId, done: true, success: false, error: e.message || String(e) });
+        });
+      return;
+    }
+
+    if (request.method === 'codex.resetRuntime' || request.method === 'codex.releaseThread') {
+      const handler = request.method === 'codex.resetRuntime'
+        ? codexResetRuntimePersistent : codexReleaseThreadPersistent;
+      handler(request.params || {})
+        .then((result) => writeRawLine({ id: request.id || '0', done: true, success: true, result }))
+        .catch((error) => writeRawLine({ id: request.id || '0', done: true, success: false,
+          error: error?.message || String(error) }));
+      return;
+    }
+
     if (request.method === 'zcode.setPermissionMode') {
       const switchId = request.id || '0';
       zcodeSetPermissionModePersistent(request.params || {})
@@ -813,6 +955,49 @@ async function runDaemonMain() {
           _originalStderrWrite(`[daemon] zcode.setPermissionMode error: ${e.message}\n`, 'utf8');
           writeRawLine({ id: switchId, done: true, success: false, error: e.message || String(e) });
         });
+      return;
+    }
+
+    // Settings updates also bypass the queue: they become effective before a
+    // later FIFO operation and never mutate an active native turn in place.
+    if (request.method === 'codex.updateSettings') {
+      const controlId = request.id || '0';
+      Promise.resolve(codexUpdateSettingsPersistent(request.params || {}))
+        .then(() => writeRawLine({ id: controlId, done: true, success: true }))
+        .catch((error) => writeRawLine({
+          id: controlId,
+          done: true,
+          success: false,
+          error: error?.message || String(error),
+        }));
+      return;
+    }
+
+    // Catalog and history queries bypass the long-operation FIFO. They may
+    // run while a turn waits for a user interaction and never change the
+    // active request identity.
+    const readOnlyCodexMethods = new Map([
+      ['codex.listThreads', codexListThreadsPersistent],
+      ['codex.readThread', codexReadThreadPersistent],
+      ['codex.readHistoryPage', codexReadHistoryPagePersistent],
+      ['codex.readSubagent', codexReadSubagentPersistent],
+      ['codex.listModels', codexListModelsPersistent],
+      ['codex.listSkills', codexListSkillsPersistent],
+      ['codex.getMcpStatus', codexGetMcpStatusPersistent],
+      ['codex.reloadMcp', codexReloadMcpPersistent],
+    ]);
+    const readOnlyHandler = readOnlyCodexMethods.get(request.method);
+    if (readOnlyHandler) {
+      const readId = request.id || '0';
+      readOnlyHandler(request.params || {})
+        .then((result) => writeRawLine({ id: readId, done: true, success: true, result }))
+        .catch((error) => writeRawLine({
+          id: readId,
+          done: true,
+          success: false,
+          error: error?.message || String(error),
+          code: error?.code,
+        }));
       return;
     }
 
@@ -827,7 +1012,8 @@ async function runDaemonMain() {
           'utf8'
         );
       });
-  });
+  };
+  rl.on('line', handleInputLine);
 
   rl.on('close', async () => {
     // Idle reaper already performed graceful provider shutdown and scheduled
@@ -848,6 +1034,7 @@ async function runDaemonMain() {
       await shutdownPersistentRuntimes();
       await grokShutdownPersistentRuntimes();
       await zcodeShutdownPersistentRuntimes();
+      await codexShutdownPersistentRuntimes();
     } catch (e) {
       _originalStderrWrite(`[daemon] Failed to shutdown persistent runtimes: ${e.message}\n`, 'utf8');
     }
