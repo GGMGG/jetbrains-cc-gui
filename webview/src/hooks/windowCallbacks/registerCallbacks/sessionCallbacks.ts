@@ -43,8 +43,11 @@ export function registerSessionAndSdkCallbacks(
   window.setSessionId = (sessionId: string) => {
     const oldId = currentSessionIdRef.current;
     releaseSessionTransition();
-    currentSessionIdRef.current = sessionId;
-    setCurrentSessionId(sessionId);
+    // Java sends an empty ID when a restored transcript expires. Keep the
+    // canonical no-session state and wait for a real ID before migrating titles.
+    currentSessionIdRef.current = sessionId || null;
+    setCurrentSessionId(sessionId || null);
+    if (!sessionId) return;
 
     // B-011 + B-014: Persist custom title under the real SDK session ID.
     // NOTE: We intentionally do NOT delete the old ID's title to prevent

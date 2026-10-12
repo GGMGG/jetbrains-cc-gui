@@ -125,6 +125,7 @@ class ClaudeSessionQueryService {
      * @param beforeTurn null for the latest page, or the turn index to load before
      * @param limit max turns per page
      * @return the page payload, or null on failure (caller should fall back to getSessionMessages)
+     * @throws SessionHistoryNotFoundException when the transcript is missing
      */
     JsonObject getSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit) {
         return getSessionMessagesPage(sessionId, cwd, beforeTurn, limit, () -> false);
@@ -135,6 +136,11 @@ class ClaudeSessionQueryService {
         try {
             JsonObject jsonResult = runSessionQuery("getSessionPage", sessionId, cwd, "getSessionMessagesPage",
                     cancellation, beforeTurn == null ? "" : String.valueOf(beforeTurn), String.valueOf(limit));
+
+            // Missing history must clear the stale ID without another bridge read.
+            if (jsonResult.has("missing") && jsonResult.get("missing").getAsBoolean()) {
+                throw new SessionHistoryNotFoundException(sessionId, cwd);
+            }
 
             if (jsonResult.has("success") && jsonResult.get("success").getAsBoolean()) {
                 // Normalize messages in-place
@@ -153,7 +159,7 @@ class ClaudeSessionQueryService {
                     : "Unknown error";
             log.warn("[getSessionMessagesPage] Page query failed: " + errorMsg);
             return null;
-        } catch (CancellationException e) {
+        } catch (CancellationException | SessionHistoryNotFoundException e) {
             throw e;
         } catch (Exception e) {
             log.warn("[getSessionMessagesPage] Page query error: " + e.getMessage(), e);

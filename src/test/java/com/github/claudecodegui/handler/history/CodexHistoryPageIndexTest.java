@@ -71,6 +71,36 @@ public class CodexHistoryPageIndexTest {
         }
     }
 
+    /** A record stashed inside an open exec wrapper stays visible in paged pages and keeps its transcript order after the flush. */
+    @Test
+    public void pagedKnownCommandKeepsInterleavedSubagentActivityAcrossItsOutput() throws Exception {
+        String call = """
+                {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"known",
+                "input":"text(await tools.exec_command({cmd:'npm test'}));"}}
+                """;
+        String activity = """
+                {"type":"event_msg","payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn",
+                "item":{"type":"SubAgentActivity","id":"agent-1","kind":"review"}}}
+                """;
+        Files.writeString(this.session, user("inspect") + com.google.gson.JsonParser.parseString(call) + "\n"
+                + com.google.gson.JsonParser.parseString(activity) + "\n");
+        var full = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(new Gson().fromJson(
+                this.reader.getSessionMessagesAsJson("fixture"), com.google.gson.JsonArray.class));
+        assertTrue(full.toString().contains("bash"));
+        assertTrue(full.toString().contains("subAgentActivity"));
+        assertEquals(full, this.index.read(this.reader, "fixture", null, 30, () -> true).messages);
+        Files.writeString(this.session, com.google.gson.JsonParser.parseString("""
+                {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"known",
+                "output":[{"type":"input_text","text":"{\\"exit_code\\":0,\\"output\\":\\"passed\\"}"}]}}
+                """) + "\n" + assistant("done"), StandardOpenOption.APPEND);
+        full = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(new Gson().fromJson(
+                this.reader.getSessionMessagesAsJson("fixture"), com.google.gson.JsonArray.class));
+        assertEquals(full, this.index.read(this.reader, "fixture", null, 30, () -> true).messages);
+        assertTrue(full.toString().contains("passed"));
+        assertTrue("the interleaved activity card must follow the wrapper's own cards",
+                full.toString().indexOf("subAgentActivity") > full.toString().indexOf("passed"));
+    }
+
     /** Completed native receipts survive EOF and remain identical after append or cache-budget fallback. */
     @Test
     public void pagedNativeReceiptStaysCompletedBeforeTheOuterResultArrives() throws Exception {
@@ -234,6 +264,25 @@ public class CodexHistoryPageIndexTest {
                 previous.rawRecordCount + earlier.rawRecordCount);
     }
 
+    /** Appends crossing byte and UTF-8 boundaries keep valid partial-block fingerprints without reparsing the prefix. */
+    @Test
+    public void partialFingerprintBlocksSurviveRepeatedUtf8Appends() throws Exception {
+        Files.writeString(this.session, user("H".repeat(4100)) + assistant("first"));
+        assertEquals(1, this.index.read(this.reader, "fixture", null, 30, () -> true).totalTurns);
+        for (int round = 0; round < 3; round++) {
+            String appended = user("中文😀".repeat(1700) + round) + assistant("answer-" + round);
+            Files.writeString(this.session, appended, StandardOpenOption.APPEND);
+            var page = this.index.read(this.reader, "fixture", null, 30, () -> true);
+            assertEquals(round + 2, page.totalTurns);
+            assertEquals(2, page.rawRecordCount);
+            assertEquals(appended.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, page.sourceBytesRead);
+            var stable = this.index.read(this.reader, "fixture", null, 30, () -> true);
+            assertEquals(page.messages, stable.messages);
+            assertEquals(0, stable.rawRecordCount);
+            assertEquals(0, stable.sourceBytesRead);
+        }
+    }
+
     @Test
     public void retainsToolIdsAcrossPagesAndAppendedOutput() throws Exception {
         String call = "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\","
@@ -279,6 +328,32 @@ public class CodexHistoryPageIndexTest {
         var page = index.read(reader, "fixture", null, 1, () -> true);
         assertEquals("new", page.messages.get(0).get("content").getAsString());
         assertEquals(1, page.rawRecordCount);
+    }
+
+    /** Rotating validation must eventually visit a rewrite outside both fixed samples. */
+    @Test
+    public void equalMetadataMiddleRewriteCannotStayCachedForever() throws Exception {
+        String before = user("H".repeat(9000)) + user("OLD") + assistant("T".repeat(9000));
+        Files.writeString(this.session, before);
+        this.index.read(this.reader, "fixture", null, 30, () -> true);
+        Files.writeString(this.session, before.replace("OLD", "NEW"));
+        // Force a metadata collision on every OS, including Unix filesystems exposing nanosecond ctime.
+        var entriesField = CodexHistoryPageIndex.class.getDeclaredField("entries");
+        entriesField.setAccessible(true);
+        var entries = (java.util.Map<?, ?>) entriesField.get(this.index);
+        Object entry = entries.get(this.session);
+        var snapshotField = entry.getClass().getDeclaredField("snapshot");
+        snapshotField.setAccessible(true);
+        var readSnapshot = snapshotField.getType().getDeclaredMethod("read", Path.class);
+        readSnapshot.setAccessible(true);
+        snapshotField.set(entry, readSnapshot.invoke(null, this.session));
+        HistoryMessageInjector.CodexHistoryPage page = null;
+        for (int attempt = 0; attempt < (Files.size(this.session) + 4095) / 4096; attempt++) {
+            page = this.index.read(this.reader, "fixture", null, 30, () -> true);
+            if ("NEW".equals(page.messages.get(1).get("content").getAsString())) break;
+        }
+        assertNotNull(page);
+        assertEquals("NEW", page.messages.get(1).get("content").getAsString());
     }
 
     @Test
@@ -353,6 +428,94 @@ public class CodexHistoryPageIndexTest {
         assertEquals(1000, complete.totalTurns);
     }
 
+    /** Cancellation must interrupt fingerprint work before the entire source has been hashed. */
+    @Test
+    public void cancellationInterruptsSourceFingerprinting() throws Exception {
+        Files.writeString(this.session, user("H".repeat(30_000)) + assistant("answer"));
+        AtomicInteger observedBlocks = new AtomicInteger();
+        var spools = new java.util.ArrayList<Path>();
+        assertThrows(CancellationException.class, () -> this.index.read(this.reader, "fixture", null, 30, () -> {
+            spools.addAll(this.index.spoolFiles());
+            int blocks = this.indexedListSize("blockHashes");
+            observedBlocks.accumulateAndGet(blocks, Math::max);
+            return blocks < 2;
+        }));
+        assertEquals("Cancellation must not wait for the remaining fingerprint blocks", 2, observedBlocks.get());
+        assertEquals(0, this.index.size());
+        assertFalse(spools.isEmpty());
+        assertTrue(spools.stream().noneMatch(Files::exists));
+        assertEquals("answer", this.index.read(this.reader, "fixture", null, 30, () -> true)
+                .messages.get(1).get("content").getAsString());
+    }
+
+    /** Fingerprints must describe the parsed bytes rather than a rewrite observed after parsing. */
+    @Test
+    public void rewriteAfterParsingCannotBecomeTheOldPagesFingerprint() throws Exception {
+        String before = user("question") + assistant("old answer") + user("follow-up");
+        String after = before.replace("old answer", "new answer");
+        Files.writeString(this.session, before);
+        var modified = Files.getLastModifiedTime(this.session);
+        var rewritten = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            this.index.read(this.reader, "fixture", null, 30, () -> {
+                if (this.indexedListSize("offsets") == 2 && rewritten.compareAndSet(false, true)) {
+                    try {
+                        Files.writeString(this.session, after);
+                        Files.setLastModifiedTime(this.session, modified);
+                    } catch (java.io.IOException exception) {
+                        throw new java.io.UncheckedIOException(exception);
+                    }
+                }
+                return true;
+            });
+        } catch (java.io.IOException exception) {
+            // Unix ctime can reject the rewrite immediately; Windows must detect it from the parsed baseline.
+            assertTrue(exception.getMessage(), exception.getMessage().contains("changed"));
+        }
+        assertTrue("The rewrite must happen after both original messages are parsed", rewritten.get());
+        var page = this.index.read(this.reader, "fixture", null, 30, () -> true);
+        assertEquals("new answer", page.messages.get(1).get("content").getAsString());
+        assertEquals(page.messages, this.index.read(this.reader, "fixture", null, 30, () -> true).messages);
+    }
+
+    /** Large ignored records must not bypass the memory budget for retained source fingerprints. */
+    @Test
+    public void fingerprintBudgetFallsBackWithoutDroppingHistory() throws Exception {
+        String metadata = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"fixture\",\"padding\":\""
+                + "x".repeat(4096) + "\"}}\n";
+        Files.writeString(this.session, user("question") + assistant("answer") + metadata.repeat(100));
+        try (var bounded = new CodexHistoryPageIndex(1, 10, 12 * 1024)) {
+            var spools = new java.util.ArrayList<Path>();
+            var page = bounded.read(this.reader, "fixture", null, 30, () -> {
+                spools.addAll(bounded.spoolFiles());
+                return true;
+            });
+            assertEquals(1, page.totalTurns);
+            assertEquals(2, page.messages.size());
+            assertEquals("answer", page.messages.get(1).get("content").getAsString());
+            assertEquals("fixture", page.threadId);
+            assertEquals("Source fingerprints must share the bounded-cache policy", 0, bounded.size());
+            assertTrue(spools.stream().noneMatch(Files::exists));
+        }
+    }
+
+    private int indexedListSize(String fieldName) {
+        try {
+            var entriesField = CodexHistoryPageIndex.class.getDeclaredField("entries");
+            entriesField.setAccessible(true);
+            var entries = (java.util.Map<?, ?>) entriesField.get(this.index);
+            Object entry = entries.get(this.session);
+            if (entry == null) {
+                return 0;
+            }
+            var field = entry.getClass().getDeclaredField(fieldName);
+            field.setAccessible(true);
+            return ((java.util.List<?>) field.get(entry)).size();
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
     @Test
     public void lruEvictsSpoolsAndCloseDeletesRemainingFiles() throws Exception {
         Files.writeString(session, user("first"));
@@ -420,9 +583,9 @@ public class CodexHistoryPageIndexTest {
         }
     }
 
+    /** Equal-size overwrites must invalidate the cache on systems without a reliable change timestamp. */
     @Test
-    public void sameInodeRewriteWithPreservedMtimeInvalidatesOnUnix() throws Exception {
-        org.junit.Assume.assumeTrue(session.getFileSystem().supportedFileAttributeViews().contains("unix"));
+    public void sameInodeRewriteWithPreservedMtimeRebuildsIndex() throws Exception {
         Files.writeString(session, user("old"));
         index.read(reader, "fixture", null, 1, () -> true);
         var modified = Files.getLastModifiedTime(session);

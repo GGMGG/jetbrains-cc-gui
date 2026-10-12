@@ -654,14 +654,15 @@ test('buildSessionMessagesPagePayload carries the CLI session title', () => {
   }
 });
 
-test('buildSessionMessagesPagePayload returns empty page for missing file', () => {
+test('buildSessionMessagesPagePayload reports missing instead of an empty page for a pruned session', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-claude-page-'));
   try {
+    // A pruned transcript must surface as missing so Java clears the stale
+    // session ID; an "empty page" success would keep resuming a dead session.
     const page = buildSessionMessagesPagePayload(path.join(tempDir, 'nope.jsonl'), null, 30);
-    assert.equal(page.success, true);
+    assert.equal(page.success, false);
+    assert.equal(page.missing, true);
     assert.equal(page.messages.length, 0);
-    assert.equal(page.totalTurns, 0);
-    assert.equal(page.hasMore, false);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

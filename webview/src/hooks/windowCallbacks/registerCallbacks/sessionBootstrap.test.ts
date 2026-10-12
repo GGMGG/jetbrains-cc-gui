@@ -33,4 +33,35 @@ describe('restored session bootstrap', () => {
     expect(opts.currentSessionIdRef.current).toBe('live-root');
     expect(opts.setCurrentSessionId).not.toHaveBeenCalled();
   });
+
+  it('retires an expired identity without persisting its title under an empty ID', () => {
+    const opts = options();
+    opts.currentSessionIdRef.current = 'expired-root';
+    opts.customSessionTitleRef.current = 'My title';
+    opts.updateHistoryTitle = vi.fn();
+    opts.applyHistoryTitleLocal = vi.fn();
+    registerSessionAndSdkCallbacks(opts, tRef);
+
+    window.setSessionId!('');
+
+    expect(opts.currentSessionIdRef.current).toBeNull();
+    expect(opts.setCurrentSessionId).toHaveBeenCalledExactlyOnceWith(null);
+    expect(opts.updateHistoryTitle).not.toHaveBeenCalled();
+    expect(opts.applyHistoryTitleLocal).not.toHaveBeenCalled();
+
+    window.setSessionId!('fresh-root');
+    expect(opts.updateHistoryTitle).toHaveBeenCalledExactlyOnceWith('fresh-root', 'My title');
+  });
+
+  it('replays a buffered identity reset before React mounts', () => {
+    const opts = options();
+    opts.currentSessionIdRef.current = 'expired-root';
+    window.__pendingSessionId = '';
+
+    registerSessionAndSdkCallbacks(opts, tRef);
+
+    expect(opts.currentSessionIdRef.current).toBeNull();
+    expect(opts.setCurrentSessionId).toHaveBeenCalledExactlyOnceWith(null);
+    expect(window.__pendingSessionId).toBeUndefined();
+  });
 });

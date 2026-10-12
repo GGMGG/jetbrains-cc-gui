@@ -10,6 +10,7 @@ import com.intellij.openapi.diagnostic.Logger;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -94,6 +95,12 @@ class CodexHistorySessionService {
     int forEachSessionMessage(Path file, long offset, long end,
                               BooleanSupplier active,
                               Consumer<CodexHistoryReader.CodexMessage> consumer) throws IOException {
+        return this.forEachSessionMessage(file, offset, end, active, null, consumer);
+    }
+
+    int forEachSessionMessage(Path file, long offset, long end,
+                              BooleanSupplier active, Consumer<ByteBuffer> sourceBytesObserver,
+                              Consumer<CodexHistoryReader.CodexMessage> consumer) throws IOException {
         int count = 0;
         try (var input = Files.newInputStream(file)) {
             input.skipNBytes(offset);
@@ -107,6 +114,9 @@ class CodexHistorySessionService {
                 int length = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
                 if (length < 0) {
                     throw new IOException("Codex history changed while reading");
+                }
+                if (sourceBytesObserver != null) {
+                    sourceBytesObserver.accept(ByteBuffer.wrap(buffer, 0, length).asReadOnlyBuffer());
                 }
                 remaining -= length;
                 int segmentStart = 0;
