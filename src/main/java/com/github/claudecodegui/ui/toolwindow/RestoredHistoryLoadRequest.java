@@ -4,6 +4,10 @@ import com.github.claudecodegui.session.SessionMessageOrchestrator;
 
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 
 /** Owns cancellation and the final commit gate for one restored-history generation. */
@@ -60,6 +64,17 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
             loadFuture.completeExceptionally(new java.util.concurrent.CancellationException(
                     "History loading was cancelled"));
         }
+    }
+
+    void bind(CompletableFuture<Void> loadFuture, ScheduledExecutorService scheduler, int timeoutSeconds) {
+        bind(loadFuture);
+        ScheduledFuture<?> deadline = scheduler.schedule(() -> {
+            if (!loadFuture.isDone() && cancel(TIMEOUT)) {
+                loadFuture.completeExceptionally(new TimeoutException(
+                        "History loading timed out after " + timeoutSeconds + " seconds"));
+            }
+        }, timeoutSeconds, TimeUnit.SECONDS);
+        loadFuture.whenComplete((ignored, error) -> deadline.cancel(false));
     }
 
     synchronized void completeExceptionally(Throwable error) {

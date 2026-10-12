@@ -67,7 +67,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1644,23 +1643,11 @@ public class ClaudeChatWindow {
             completeRestoredHistoryLoad(request, restoringSession, restoringSessionId, error, loadStartedNanos);
             return;
         }
-        request.bind(loadFuture);
         int timeoutSeconds = settingsService.getHistoryLoadTimeoutSeconds();
-        ScheduledFuture<?> timeoutFuture = scheduleTimeout(request, loadFuture, timeoutSeconds);
+        request.bind(loadFuture, AppExecutorUtil.getAppScheduledExecutorService(), timeoutSeconds);
         loadFuture.whenComplete((ignored, error) -> {
-            timeoutFuture.cancel(false);
             completeRestoredHistoryLoad(request, restoringSession, restoringSessionId, error, loadStartedNanos);
         });
-    }
-
-    private ScheduledFuture<?> scheduleTimeout(RestoredHistoryLoadRequest request,
-                                               CompletableFuture<Void> loadFuture, int timeoutSeconds) {
-        return AppExecutorUtil.getAppScheduledExecutorService().schedule(() -> {
-            if (request.cancel(RestoredHistoryLoadRequest.TIMEOUT)) {
-                loadFuture.completeExceptionally(new java.util.concurrent.TimeoutException(
-                        "History loading timed out after " + timeoutSeconds + " seconds"));
-            }
-        }, timeoutSeconds, TimeUnit.SECONDS);
     }
 
     private void completeRestoredHistoryLoad(RestoredHistoryLoadRequest request, ClaudeSession restoringSession,

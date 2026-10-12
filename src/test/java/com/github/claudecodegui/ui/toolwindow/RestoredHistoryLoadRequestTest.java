@@ -3,12 +3,15 @@ package com.github.claudecodegui.ui.toolwindow;
 import org.junit.Test;
 
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class RestoredHistoryLoadRequestTest {
@@ -45,6 +48,22 @@ public class RestoredHistoryLoadRequestTest {
         assertTrue(request.commitIfActive(() -> { }));
         assertTrue(request.cancel(RestoredHistoryLoadRequest.TIMEOUT));
         assertTrue(request.wasCommitted());
+    }
+
+    @Test
+    public void cancellationBeforeFutureBindingRetainsItsFirstReasonAndAllowsAnIndependentRetry() {
+        RestoredHistoryLoadRequest cancelled = new RestoredHistoryLoadRequest(9L, () -> true);
+        assertTrue(cancelled.cancel(RestoredHistoryLoadRequest.CANCELLED));
+        assertFalse(cancelled.cancel(RestoredHistoryLoadRequest.TIMEOUT));
+        CompletableFuture<Void> lateBound = new CompletableFuture<>();
+        cancelled.bind(lateBound);
+        assertThrows(CancellationException.class, lateBound::join);
+        assertEquals(RestoredHistoryLoadRequest.CANCELLED, cancelled.cancellationCode());
+        AtomicInteger commits = new AtomicInteger();
+        assertFalse(cancelled.commitIfActive(commits::incrementAndGet));
+        RestoredHistoryLoadRequest retry = new RestoredHistoryLoadRequest(10L, () -> true);
+        assertTrue(retry.commitIfActive(commits::incrementAndGet));
+        assertEquals(1, commits.get());
     }
 
     @Test
