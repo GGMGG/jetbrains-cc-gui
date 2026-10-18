@@ -73,6 +73,40 @@ public class AiDataProcessGateTest {
     }
 
     @Test
+    public void concurrentStorageReadersDoNotReportProcessOrDatabaseContention() throws Exception {
+        AiDataProcessGate gate = new AiDataProcessGate();
+        ExecutorService executor = Executors.newFixedThreadPool(12);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<Future<Boolean>> readers = new java.util.ArrayList<>();
+        try (AiDataProcessGate.ProcessPermit process = gate.acquireProcessPermit()) {
+            for (int thread = 0; thread < 12; thread++) {
+                readers.add(executor.submit(() -> {
+                    start.await();
+                    for (int attempt = 0; attempt < 200; attempt++) {
+                        try (AiDataProcessGate.ReadPermit reader = gate.tryAcquireReadPermit()) {
+                            if (reader == null) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                }));
+            }
+            start.countDown();
+            for (Future<Boolean> reader : readers) {
+                assertTrue("Concurrent read admission must not imply an active maintenance owner", reader.get(10, TimeUnit.SECONDS));
+            }
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+        try (AiDataProcessGate.MigrationPermit migration = gate.tryAcquireMigrationPermit()) {
+            assertNotNull(migration);
+            assertNull(gate.tryAcquireReadPermit());
+        }
+    }
+
+    @Test
     public void processStartCancelsAndWaitsForMigration() throws Exception {
         AiDataProcessGate gate = new AiDataProcessGate();
         AiDataProcessGate.MigrationPermit migration = gate.tryAcquireMigrationPermit();

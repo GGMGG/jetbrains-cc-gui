@@ -18,6 +18,7 @@ public final class AiDataProcessGate {
     private final ReentrantLock lock = new ReentrantLock(true);
     private final Condition stateChanged = lock.newCondition();
     private int activeProcesses;
+    private int activeReaders;
     private int waitingProcesses;
     private boolean migrationActive;
     private boolean cancellationRequested;
@@ -84,11 +85,37 @@ public final class AiDataProcessGate {
         }
     }
 
-    /** Attempts to begin an exclusive migration without waiting for active AI processes. */
+    /** A bounded read never waits for or cancels migration, and uses the same cross-JVM exclusion. */
+    public ReadPermit tryAcquireReadPermit() {
+        // Serialize the short admission check. Another reader holding this mutex is not a migration.
+        lock.lock();
+        try {
+            if (migrationActive || waitingProcesses > 0) {
+                return null;
+            }
+            AiDataMigrationCoordinator.ProcessLock shared = null;
+            if (migrationCoordinator != null) {
+                try {
+                    shared = migrationCoordinator.tryAcquireProcessLock();
+                } catch (java.io.IOException error) {
+                    throw new IllegalStateException("AI_DATA_COORDINATION_UNAVAILABLE", error);
+                }
+                if (shared == null) {
+                    return null;
+                }
+            }
+            activeReaders++;
+            return new ReadPermit(this, shared);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Attempts to begin an exclusive migration without waiting for active processes or byte snapshots. */
     public MigrationPermit tryAcquireMigrationPermit() {
         lock.lock();
         try {
-            if (migrationActive || activeProcesses > 0 || waitingProcesses > 0) {
+            if (migrationActive || activeProcesses > 0 || activeReaders > 0 || waitingProcesses > 0) {
                 return null;
             }
             migrationActive = true;
@@ -144,6 +171,36 @@ public final class AiDataProcessGate {
             stateChanged.signalAll();
         } finally {
             lock.unlock();
+        }
+    }
+
+    public static final class ReadPermit implements AutoCloseable {
+        private final AiDataProcessGate owner;
+        private final AiDataMigrationCoordinator.ProcessLock shared;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private ReadPermit(AiDataProcessGate owner, AiDataMigrationCoordinator.ProcessLock shared) {
+            this.owner = owner;
+            this.shared = shared;
+        }
+
+        @Override
+        public void close() {
+            if (closed.compareAndSet(false, true)) {
+                try {
+                    if (shared != null) {
+                        shared.close();
+                    }
+                } finally {
+                    owner.lock.lock();
+                    try {
+                        owner.activeReaders--;
+                        owner.stateChanged.signalAll();
+                    } finally {
+                        owner.lock.unlock();
+                    }
+                }
+            }
         }
     }
 
