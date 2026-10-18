@@ -58,6 +58,11 @@ public final class AiDataMigrationCoordinator {
                 return null;
             }
 
+            if (!"codex-storage".equals(operation)
+                    && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+            }
+
             String ownerId = UUID.randomUUID().toString();
             writeOwner(ownerId, operation);
             return new LockHandle(channel, lock, ownerId);
@@ -75,6 +80,9 @@ public final class AiDataMigrationCoordinator {
         Path path = lockPath();
         SharedProcessLock shared = SHARED_PROCESS_LOCKS.computeIfAbsent(path, ignored -> new SharedProcessLock());
         synchronized (shared) {
+            if (com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+            }
             if (shared.references > 0) {
                 shared.references++;
                 return new ProcessLock(path, shared);
@@ -92,6 +100,11 @@ public final class AiDataMigrationCoordinator {
                 if (lock == null) {
                     channel.close();
                     return null;
+                }
+                if (com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                    lock.release();
+                    channel.close();
+                    throw new IOException("AI_DATA_MAINTENANCE_PENDING");
                 }
                 shared.channel = channel;
                 shared.lock = lock;

@@ -29,6 +29,11 @@ public class ProcessManager {
 
     /** Starts and registers an AI process only after data directory migration has yielded. */
     public Process startManagedProcess(String channelId, ProcessBuilder processBuilder) throws IOException {
+        return startManagedProcess(channelId, processBuilder, () -> { });
+    }
+
+    /** Revalidates provider-specific admission after acquiring the shared permit, before spawning. */
+    public Process startManagedProcess(String channelId, ProcessBuilder processBuilder, ProcessStartCheck check) throws IOException {
         AiDataProcessGate.ProcessPermit permit;
         try {
             permit = AiDataProcessGate.getInstance().acquireProcessPermit();
@@ -38,6 +43,7 @@ public class ProcessManager {
         }
 
         try {
+            check.validate();
             Process process = processBuilder.start();
             processPermits.put(process, permit);
             registerProcess(channelId, process);
@@ -46,6 +52,11 @@ public class ProcessManager {
             permit.close();
             throw error;
         }
+    }
+
+    @FunctionalInterface
+    public interface ProcessStartCheck {
+        void validate() throws IOException;
     }
 
     /**

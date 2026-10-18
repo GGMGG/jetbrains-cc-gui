@@ -5,6 +5,7 @@ import { sendBridgeEvent } from '../utils/bridge';
 import { getSkipNewSessionConfirm } from '../utils/skipNewSessionConfirm';
 import { clearAllPersistedExpanded } from '../utils/expandedState';
 import { normalizeClaudeModelForBridge } from '../utils/customClaudeModels';
+import { subscribeCodexDeletion } from '../components/settings/AiDataStorageSection/codexStorageBridge';
 import { sumKnownHistoryMessages } from '../utils/historyMessageCount';
 
 type ViewMode = 'chat' | 'history' | 'settings';
@@ -334,6 +335,29 @@ export function useSessionManagement({
     }));
     setCurrentView('chat');
   }, [applyHistoryModel, beginSessionTransition, currentProvider, loading, setCurrentView, currentSessionId]);
+
+  // Synchronize confirmed deletions from AI storage without rerouting legacy history actions.
+  useEffect(() => subscribeCodexDeletion(operation => {
+    const ids = new Set(operation.result?.deletedSessionIds ?? []);
+    if (ids.size === 0) return;
+    setHistoryData(previous => {
+      if (!previous?.sessions) return previous;
+      const removed = previous.sessions.filter(session => ids.has(session.sessionId)
+        && (session.provider || currentProvider) === 'codex');
+      return {
+        ...previous,
+        sessions: previous.sessions.filter(session => !removed.includes(session)),
+        total: Math.max(0, (previous.total ?? 0) - removed.reduce((sum, session) => sum + session.messageCount, 0)),
+      };
+    });
+    const transition = currentProvider === 'codex' && currentSessionId !== null && ids.has(currentSessionId);
+    if (transition) {
+      beginSessionTransition(null, null);
+      suppressNextStatusToastRef.current = true;
+      sendBridgeEvent('create_new_session');
+    }
+    showSessionDeletedToast(transition);
+  }), [beginSessionTransition, currentProvider, currentSessionId, setHistoryData, showSessionDeletedToast]);
 
   // Delete history session
   const deleteHistorySession = useCallback((sessionId: string) => {

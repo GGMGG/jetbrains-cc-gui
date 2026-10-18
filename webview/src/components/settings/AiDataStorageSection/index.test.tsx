@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AiDataStorageSection from './index';
 
+vi.mock('./CodexStoragePanel', () => ({ default: () => <div data-testid="codex-storage-panel" /> }));
+
 const mocks = vi.hoisted(() => ({
   statusListeners: [] as Array<(status: unknown) => void>,
   rootListeners: [] as Array<(path: string) => void>,
