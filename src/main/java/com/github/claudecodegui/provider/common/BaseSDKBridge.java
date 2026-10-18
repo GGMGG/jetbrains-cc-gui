@@ -352,6 +352,7 @@ public abstract class BaseSDKBridge {
 
                     if (wasInterrupted) {
                         result.success = false;
+                        result.cancelled = exitCode != 0;
                         result.error = "User interrupted";
                         callback.onComplete(result);
                     } else if (!hadSendError.get()) {

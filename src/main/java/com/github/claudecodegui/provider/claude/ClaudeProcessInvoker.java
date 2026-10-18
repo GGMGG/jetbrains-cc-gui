@@ -115,6 +115,7 @@ class ClaudeProcessInvoker {
                         disableThinking,
                         reasoningEffort
                 );
+                stdinInput.addProperty("executionScope", callback.executionScope());
                 String stdinJson = gson.toJson(stdinInput);
                 String preview = logSanitizer.buildPreview(stdinJson, 500);
                 log.debug("[PROMPT] Sending to Node.js (" + stdinJson.length() + " chars):\n" + preview);
@@ -169,6 +170,7 @@ class ClaudeProcessInvoker {
                     if (wasInterrupted) {
                         long elapsed = System.currentTimeMillis() - startTime;
                         log.info("[ProcessInvoker] Request was interrupted by user (elapsed: " + elapsed + "ms)");
+                        result.cancelled = exitCode != 0;
                         result.error = "User interrupted";
                         callback.onComplete(result);
                     } else if (!hadSendError.get()) {

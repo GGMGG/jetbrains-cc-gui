@@ -9,6 +9,8 @@ import java.util.List;
  */
 public class SDKResult {
     public boolean success;
+    /** Cancellation proved by termination of an interrupted process, rather than an error-message inference. */
+    public boolean cancelled;
     public String error;
     public int messageCount;
     public List<Object> messages;

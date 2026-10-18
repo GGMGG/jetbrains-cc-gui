@@ -33,6 +33,14 @@ public class CodexMessageHandler implements MessageCallback {
     private final SessionState state;
     private final Object turnOwner;
     private final String runtimeSessionEpoch;
+    private final String executionBindingEpoch;
+    private final SessionExecutionState.Turn executionTurn;
+    private final Map<String, SessionExecutionState.Interaction> executionInteractions = new HashMap<>();
+
+    @Override
+    public String executionScope() {
+        return executionTurn == null ? "" : executionTurn.bindingEpoch() + "/" + executionTurn.turnId();
+    }
     /**
      * callback handler.
      */
@@ -90,11 +98,17 @@ public class CodexMessageHandler implements MessageCallback {
         this(state, callbackHandler, true, clientMessageId, state.getTurnOwner());
     }
 
+    CodexMessageHandler(SessionState state, CallbackHandler callbackHandler, String clientMessageId, Object expectedTurnOwner) {
+        this(state, callbackHandler, true, clientMessageId, expectedTurnOwner);
+    }
+
     private CodexMessageHandler(SessionState state, CallbackHandler callbackHandler,
                                 boolean reportStateErrors, String clientMessageId, Object turnOwner) {
         this.state = state;
         this.turnOwner = turnOwner;
         this.runtimeSessionEpoch = state.getRuntimeSessionEpoch();
+        this.executionBindingEpoch = state.getExecutionSnapshot().bindingEpoch();
+        this.executionTurn = state.executionTurnForOwner(turnOwner);
         this.callbackHandler = callbackHandler;
         this.reportStateErrors = reportStateErrors;
         this.clientMessageId = clientMessageId;
@@ -114,6 +128,7 @@ public class CodexMessageHandler implements MessageCallback {
                 return;
             }
             // [FIX] Handle multiple message types
+            observeExecution(type);
             // Codex message-service.js sends:
             // - type='assistant': contains thinking, tool_use, text
             // - type='user': contains tool_result
@@ -152,6 +167,7 @@ public class CodexMessageHandler implements MessageCallback {
                 handleMessageEnd();
             } else if ("codex_runtime_event".equals(type)) {
                 JsonObject event = new com.google.gson.Gson().fromJson(content, JsonObject.class);
+                observeNativeInteraction(event);
                 if (event != null && event.has("kind") && "thread/settings/updated".equals(event.get("kind").getAsString())
                         && event.has("threadId") && !event.get("threadId").isJsonNull()
                         && event.get("threadId").getAsString().equals(this.state.getSessionId())
@@ -180,6 +196,8 @@ public class CodexMessageHandler implements MessageCallback {
             if (!ownsCurrentTurn()) {
                 return;
             }
+            state.getExecutionState().finish(executionTurn, SessionExecutionState.Outcome.FAILED);
+            executionInteractions.clear();
             isStreaming = false;
             streamEndedThisTurn = false;
             state.setError(error);
@@ -220,6 +238,17 @@ public class CodexMessageHandler implements MessageCallback {
     @Override
     public void onComplete(SDKResult result) {
         synchronized (state.getMessageStateLock()) {
+            if (!ownsBindingAndTurn()) {
+                return;
+            }
+            if (result == null) {
+                state.getExecutionState().activity(executionTurn, SessionExecutionState.Phase.UNKNOWN);
+            } else {
+                state.getExecutionState().finish(executionTurn,
+                        result.cancelled ? SessionExecutionState.Outcome.CANCELLED
+                                : result.success ? SessionExecutionState.Outcome.SUCCEEDED : SessionExecutionState.Outcome.FAILED);
+            }
+            // Provider termination can confirm cancellation after MESSAGE_END or an error completed the transport future.
             if (!ownsCurrentTurn()) {
                 return;
             }
@@ -246,9 +275,46 @@ public class CodexMessageHandler implements MessageCallback {
     // ===== Private methods =====
 
     private boolean ownsCurrentTurn() {
-        return this.state.isCurrentTurn(this.turnOwner)
-                && this.runtimeSessionEpoch.equals(this.state.getRuntimeSessionEpoch());
+        return ownsBindingAndTurn();
     }
+
+    private boolean ownsBindingAndTurn() {
+        return state.isCurrentTurn(turnOwner) && runtimeSessionEpoch.equals(state.getRuntimeSessionEpoch())
+                && state.getExecutionState().isCurrentBinding(executionBindingEpoch);
+    }
+
+    private void observeExecution(String type) {
+        SessionExecutionState.Phase phase = switch (type) {
+            case "thinking_delta" -> SessionExecutionState.Phase.THINKING;
+            case "assistant", "content", "content_delta", "user", "stream_start" -> SessionExecutionState.Phase.RUNNING;
+            case "stream_end" -> SessionExecutionState.Phase.UNKNOWN;
+            default -> null;
+        };
+        if (phase != null) {
+            state.getExecutionState().activity(executionTurn, phase);
+        }
+    }
+
+    /** Native registry events refer to actual pending app-server RPC requests. */
+    private void observeNativeInteraction(JsonObject event) {
+        if (event == null || !event.has("interactionKey") || !event.has("kind")) {
+            return;
+        }
+        String key = event.get("interactionKey").getAsString();
+        if ("interactionResolved".equals(event.get("kind").getAsString())) {
+            state.getExecutionState().endInteraction(executionInteractions.remove(key));
+        } else if ("interactionRequested".equals(event.get("kind").getAsString()) && !executionInteractions.containsKey(key)) {
+            JsonObject payload = event.getAsJsonObject("payload");
+            String method = payload != null && payload.has("method") ? payload.get("method").getAsString() : "";
+            SessionExecutionState.WaitReason reason = method.endsWith("requestUserInput")
+                    ? SessionExecutionState.WaitReason.QUESTION : SessionExecutionState.WaitReason.PERMISSION;
+            SessionExecutionState.Interaction interaction = state.getExecutionState().beginInteraction(executionTurn, reason);
+            if (interaction != null) {
+                executionInteractions.put(key, interaction);
+            }
+        }
+    }
+
 
     /**
      * Handle a complete assistant message in JSON format.
