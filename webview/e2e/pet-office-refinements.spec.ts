@@ -221,13 +221,21 @@ test('Chinese desk appearance controls and searchable Pet names remain readable'
   await expect(page.locator('.ant-select-item-option-content').filter({ hasText: /^橘子 🐥$/ })).toHaveCount(0);
   if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: '../.codex/office-neon-compact-20261017/screenshots/chinese-pet-names.png' });
   await page.keyboard.press('Escape'); await expect(page.locator('.pet-office')).not.toContainText('桌位');
-  await page.getByRole('button', { name: '工作室设置', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '工作室设置', exact: true });
-  await expect(dialog.getByRole('radio')).toHaveCount(6);
-  await dialog.getByText('霓虹光幕', { exact: true }).click();
-  await expect(dialog.getByRole('radio', { name: '霓虹光幕', exact: true })).toBeChecked();
-  await expect(dialog.getByText('紫粉光带 · 缓缓流转', { exact: true })).toBeVisible();
-  if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: '../.codex/office-neon-compact-20261017/screenshots/settings-effects-zh.png' });
+  const effects = page.getByRole('button', { name: '留白特效', exact: true });
+  await effects.click();
+  const options = page.locator('.office-effects-popover .office-effects-options');
+  await expect(options.getByRole('radio')).toHaveCount(6);
+  await options.getByText('霓虹光幕', { exact: true }).click();
+  await expect(options.getByRole('radio', { name: '霓虹光幕', exact: true })).toBeChecked();
+  await expect(options.getByText('仅装饰办公室两侧留白。', { exact: false })).toBeVisible();
+  await options.getByRole('radio', { name: '飘雪', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(options.getByRole('radio', { name: '霓虹光幕', exact: true })).toBeChecked();
+  if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: test.info().outputPath('header-effects-zh.png') });
+  await page.keyboard.press('Escape');
+  await expect(effects).toBeFocused();
+  await expect(effects).toHaveAttribute('aria-expanded', 'false');
+  await expect(effects).toContainText('霓虹光幕');
   await page.close();
 });
 

@@ -12,6 +12,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -195,6 +197,87 @@ public class PetOfficeSessionRegistryTest {
     }
 
     @Test
+    public void stoppingPermissionRoundTripsWithoutLosingOwnedWorkOrAnotherSource() throws Exception {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        registry.register(metadata("tab-A", "project-A"), state);
+        SessionState other = new SessionState();
+        registry.register(metadata("tab-B", "project-B"), other);
+        state.beginTurn();
+        other.beginTurn();
+        CompletableFuture<SDKResult> backend = new CompletableFuture<>();
+        other.currentExecutionOwnership().bindResult(backend);
+        SessionExecutionOwnership owner = state.currentExecutionOwnership();
+        CompletableFuture<String> answer = new CompletableFuture<>();
+        owner.bindInteraction(SessionExecutionState.WaitReason.PERMISSION, answer);
+        var waiting = roundTripSnapshot();
+        assertEquals(SessionExecutionState.Phase.WAITING_USER, waiting.sources().get(0).execution().phase());
+        assertEquals(1, waiting.sources().get(0).execution().pendingInteractionCount());
+
+        owner.state().activity(owner.turn(), SessionExecutionState.Phase.STOPPING);
+        var stopping = roundTripSnapshot();
+        assertEquals(2, stopping.sources().size());
+        var execution = stopping.sources().get(0).execution();
+        assertEquals(SessionExecutionState.Phase.STOPPING, execution.phase());
+        assertEquals(SessionExecutionState.WaitReason.NONE, execution.waitReason());
+        assertEquals("", execution.pendingInteractionId());
+        assertEquals(0, execution.pendingInteractionCount());
+        assertEquals(SessionExecutionState.Outcome.NONE, execution.outcome());
+        assertEquals(waiting.sources().get(1).execution(), stopping.sources().get(1).execution());
+        assertTrue(owner.state().hasOwnedPendingWork());
+        assertFalse(answer.isDone());
+        assertFalse(backend.isDone());
+
+        answer.complete("denied");
+        assertFalse(owner.state().hasOwnedPendingWork());
+        assertEquals(SessionExecutionState.Phase.STOPPING, roundTripSnapshot().sources().get(0).execution().phase());
+        owner.state().finish(owner.turn(), SessionExecutionState.Outcome.CANCELLED);
+        var completed = roundTripSnapshot();
+        assertEquals(SessionExecutionState.Phase.CANCELLED, completed.sources().get(0).execution().phase());
+        assertEquals(0, completed.sources().get(0).execution().pendingInteractionCount());
+        assertEquals(waiting.sources().get(1).execution(), completed.sources().get(1).execution());
+    }
+
+    @Test
+    public void interactionOverflowRoundTripsWithoutDiscardingPendingAnswers() throws Exception {
+        SessionState state = new SessionState();
+        registry.register(metadata("tab-A", "project-A"), state);
+        registry.register(metadata("tab-B", "project-B"), new SessionState());
+        state.beginTurn();
+        SessionExecutionOwnership owner = state.currentExecutionOwnership();
+        List<CompletableFuture<String>> answers = new ArrayList<>();
+        for (int index = 0; index < 16; index++) {
+            CompletableFuture<String> answer = new CompletableFuture<>();
+            answers.add(answer);
+            owner.bindInteraction(SessionExecutionState.WaitReason.QUESTION, answer);
+        }
+        var waiting = roundTripSnapshot();
+        assertEquals(SessionExecutionState.Phase.WAITING_USER, waiting.sources().get(0).execution().phase());
+        assertEquals(16, waiting.sources().get(0).execution().pendingInteractionCount());
+        CompletableFuture<String> overflow = new CompletableFuture<>();
+        owner.bindInteraction(SessionExecutionState.WaitReason.QUESTION, overflow);
+
+        var uncertain = roundTripSnapshot();
+        assertEquals(2, uncertain.sources().size());
+        var execution = uncertain.sources().get(0).execution();
+        assertEquals(SessionExecutionState.Phase.UNKNOWN, execution.phase());
+        assertEquals(SessionExecutionState.WaitReason.NONE, execution.waitReason());
+        assertEquals("", execution.pendingInteractionId());
+        assertEquals(0, execution.pendingInteractionCount());
+        assertEquals(waiting.sources().get(1).execution(), uncertain.sources().get(1).execution());
+        assertTrue(owner.state().hasOwnedPendingWork());
+        assertTrue(answers.stream().noneMatch(CompletableFuture::isDone));
+        assertFalse(overflow.isDone());
+
+        answers.forEach(answer -> answer.complete("answered"));
+        overflow.complete("answered");
+        assertFalse(owner.state().hasOwnedPendingWork());
+        assertEquals(SessionExecutionState.Phase.UNKNOWN, roundTripSnapshot().sources().get(0).execution().phase());
+        owner.state().finish(owner.turn(), SessionExecutionState.Outcome.SUCCEEDED);
+        assertEquals(SessionExecutionState.Phase.SUCCEEDED, roundTripSnapshot().sources().get(0).execution().phase());
+    }
+
+    @Test
     public void terminalGraceAndBoundedRecentResultsUseMonotonicAge() {
         SessionState state = new SessionState();
         registry.register(metadata("tab-A", "project-A"), state);
@@ -268,6 +351,13 @@ public class PetOfficeSessionRegistryTest {
         assertEquals(SessionExecutionState.Phase.UNKNOWN, onlySource().execution().phase());
         assertEquals(SessionExecutionState.Outcome.NONE, onlySource().execution().outcome());
         assertTrue(registry.snapshot().recentResults().isEmpty());
+    }
+
+    private PetOfficeSessionRegistry.CompleteSnapshot roundTripSnapshot() throws Exception {
+        registry.observe();
+        var snapshot = registry.snapshot();
+        return PetOfficeParticipantSnapshotCodec.decode(PetOfficeParticipantSnapshotCodec.encode(snapshot, snapshot.connectionEpoch()),
+                snapshot.instanceId(), snapshot.connectionEpoch());
     }
 
     private PetOfficeSessionRegistry.SourceSnapshot onlySource() {
