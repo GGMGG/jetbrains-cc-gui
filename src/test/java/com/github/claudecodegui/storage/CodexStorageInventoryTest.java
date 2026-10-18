@@ -1,5 +1,6 @@
 package com.github.claudecodegui.storage;
 
+import com.github.claudecodegui.util.PlatformUtils;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -153,7 +154,9 @@ public class CodexStorageInventoryTest {
         assertTrue(page.get("complete").getAsBoolean());
         assertTrue(page.getAsJsonArray("errors").isEmpty());
         var snapshot = inventory.snapshot();
-        assertNull(snapshot.sessions().get("readable").deletionUnavailableReason);
+        String expectedUnavailable = PlatformUtils.getPlatformType() == PlatformUtils.PlatformType.WINDOWS
+                ? null : "MAINTENANCE_PLATFORM_UNSUPPORTED";
+        assertEquals(expectedUnavailable, snapshot.sessions().get("readable").deletionUnavailableReason);
         assertNotNull(snapshot.sessions().get("00000000-0000-4000-8000-000000000001").metadataWarning);
         assertFalse(inventory.content("readable", null, 10).getAsJsonArray("records").isEmpty());
     }

@@ -138,6 +138,14 @@ public final class CodexMaintenanceJournal {
         return result;
     }
 
+    /** Resolve a native client's home only when maintenance receipts actually exist. */
+    public void requireSessionAvailable(Path codexHome, String sessionId) throws IOException {
+        if (sessionId == null || sessionId.isBlank() || !Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        requireSessionAvailable(new CodexStoragePaths(codexHome), sessionId);
+    }
+
     /** Called while holding process admission so a queued resume cannot resurrect deleted history. */
     public void requireSessionAvailable(CodexStoragePaths paths, String sessionId) throws IOException {
         if (sessionId == null || sessionId.isBlank() || !Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {

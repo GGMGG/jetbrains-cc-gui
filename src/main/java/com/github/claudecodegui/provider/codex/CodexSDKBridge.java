@@ -604,9 +604,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 }
                 // The live daemon owns a shared process permit; maintenance cannot start during admission.
                 if (threadId != null && !threadId.trim().isEmpty()) {
+                    Path codexHome = "default".equals(this.ownerScope)
+                            ? Path.of(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps(), ".codex")
+                            : Path.of(this.ownerScope);
                     new com.github.claudecodegui.storage.CodexMaintenanceJournal(
                             com.github.claudecodegui.settings.AiDataMigrationCoordinator.defaultCoordinationDirectory())
-                            .requireSessionAvailable(com.github.claudecodegui.storage.CodexStoragePaths.current(), threadId);
+                            .requireSessionAvailable(codexHome, threadId);
                     CodexThreadOwnerRegistry.ClaimResult claim = CodexThreadOwnerRegistry.claim(
                             this.ownerScope, threadId, this.bridgeOwnerId);
                     if (!claim.acquired()) {
