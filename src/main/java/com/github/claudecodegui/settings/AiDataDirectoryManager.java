@@ -591,8 +591,7 @@ public final class AiDataDirectoryManager {
     }
 
     private boolean hasExternalAiProcess() {
-        return DshHostProcessCoordinator.getInstance().hasRunningHost()
-                || scanExternalProcesses && externalProcessDetector.hasRunningProcess();
+        return scanExternalProcesses && externalProcessDetector.hasRunningProcess();
     }
 
     private void importLegacyState() throws IOException {
