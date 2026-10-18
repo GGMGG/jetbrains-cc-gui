@@ -255,16 +255,17 @@ describe('Codex storage settings', () => {
     sessionRows = multiplePages();
     render(<CodexStoragePanel addToast={vi.fn()} />);
     await screen.findByText('/project/idle');
-    fireEvent.click(screen.getAllByRole('checkbox', { name: 'settings.codexStorage.selectSession' })[1]!);
-    fireEvent.click(screen.getAllByRole('button', { name: 'settings.codexStorage.view' })[1]!);
-    await screen.findByText('bounded content', { selector: 'pre' });
-    fireEvent.click(screen.getByRole('button', { name: 'settings.codexStorage.close' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    fireEvent.click(screen.getAllByLabelText('settings.codexStorage.selectSession')[1]!);
+    fireEvent.click(screen.getAllByLabelText('settings.codexStorage.view')[1]!);
+    const dialog = await screen.findByRole('dialog', { name: 'settings.codexStorage.sessionContent' });
+    await within(dialog).findByText('bounded content', { selector: 'pre' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.codexStorage.close' }));
+    await waitFor(() => expect(dialog.isConnected).toBe(false));
     fireEvent.click(screen.getByTitle('settings.codexStorage.pagination.next'));
     await screen.findByText('/project/next');
     expect(screen.queryByRole('dialog', { name: 'settings.codexStorage.sessionContent' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'history.deleteSelected' })).toBeNull();
-    expect((screen.getByRole('checkbox', { name: 'settings.codexStorage.selectSession' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('settings.codexStorage.selectSession') as HTMLInputElement).checked).toBe(false);
     expect(mocks.deleteSessions).not.toHaveBeenCalled();
   });
 

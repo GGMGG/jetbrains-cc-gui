@@ -344,10 +344,12 @@ export function useSessionManagement({
       if (!previous?.sessions) return previous;
       const removed = previous.sessions.filter(session => ids.has(session.sessionId)
         && (session.provider || currentProvider) === 'codex');
+      const sessions = previous.sessions.filter(session => !removed.includes(session));
       return {
         ...previous,
-        sessions: previous.sessions.filter(session => !removed.includes(session)),
-        total: Math.max(0, (previous.total ?? 0) - removed.reduce((sum, session) => sum + session.messageCount, 0)),
+        sessions,
+        total: previous.source === 'native' ? sumKnownHistoryMessages(sessions)
+          : Math.max(0, (previous.total ?? 0) - removed.reduce((sum, session) => sum + (session.messageCount ?? 0), 0)),
       };
     });
     const transition = currentProvider === 'codex' && currentSessionId !== null && ids.has(currentSessionId);
