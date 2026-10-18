@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 
@@ -70,6 +71,15 @@ public class NodeJsServiceCallerPathTest {
         JsonObject json = JsonParser.parseString(result).getAsJsonObject();
         assertEquals("session-1", json.get("sessionId").getAsString());
         assertEquals("Quoted title", json.get("title").getAsString());
+        assertEquals(0, bridge.getProcessManager().getActiveProcessCount());
+    }
+
+    @Test
+    public void storageDisplayTitlesUseTheHistoryServiceAndPreserveUnicode() throws Exception {
+        writeService(bridge.getSdkTestDir().toPath().resolve("services/session-titles-service.cjs"),
+                "module.exports = { loadTitles: () => ({ 'session-1': { customTitle: 'Pet 工作室优化', updatedAt: 1000 } }) };\n");
+
+        assertEquals(Map.of("session-1", "Pet 工作室优化"), CodexStorageHandler.loadSessionTitles(new NodeJsServiceCaller(context)));
         assertEquals(0, bridge.getProcessManager().getActiveProcessCount());
     }
 

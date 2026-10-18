@@ -41,9 +41,15 @@ public final class CodexStorageInventory {
     private static final int RECORD_CHARS = 32 * 1024;
     private static final Pattern ROLLOUT_ID = Pattern.compile(".*-([a-fA-F0-9]{8}-[a-fA-F0-9-]{27,36})\\.jsonl", Pattern.CASE_INSENSITIVE);
     private final CodexStoragePaths paths;
+    private final Map<String, String> customTitles;
 
     public CodexStorageInventory(CodexStoragePaths paths) {
+        this(paths, Map.of());
+    }
+
+    public CodexStorageInventory(CodexStoragePaths paths, Map<String, String> customTitles) {
         this.paths = paths;
+        this.customTitles = Map.copyOf(customTitles);
     }
 
     public static final class Entry {
@@ -84,6 +90,11 @@ public final class CodexStorageInventory {
         String unavailable = deletionUnavailableReason();
         for (Entry entry : entries.values()) {
             entry.running = running.contains(entry.sessionId);
+            // Match history display names before title search and pagination are applied.
+            String customTitle = customTitles.get(entry.sessionId);
+            if (customTitle != null && !customTitle.isBlank()) {
+                entry.title = customTitle;
+            }
             if (entry.title.isBlank()) {
                 entry.title = entry.sessionId;
             }

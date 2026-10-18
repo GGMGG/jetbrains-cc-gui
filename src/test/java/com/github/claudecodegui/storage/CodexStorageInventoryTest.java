@@ -168,6 +168,48 @@ public class CodexStorageInventoryTest {
         assertEquals("Fix the storage list", new CodexStorageInventory(f.paths).snapshot().sessions().get("title").title);
     }
 
+    @Test public void savedSessionTitlesOverrideRawPromptsBeforeSearchAndPagination() throws Exception {
+        var f = new CodexStorageFixture(temporary.newFolder().toPath());
+        f.thread("renamed", "/project", 10);
+        f.sql("state_5.sqlite", "UPDATE threads SET title='Read a local CODEX session by ID'");
+        f.rollout("renamed", null, false);
+        f.rollout("archived-renamed", null, true);
+        var titles = java.util.Map.of("renamed", "Pet 工作室优化", "archived-renamed", "Pet 场景设计", "missing", "Pet missing");
+        var inventory = new CodexStorageInventory(f.paths, titles);
+
+        var first = inventory.list(null, 1, "Pet", "size");
+        assertEquals(2, first.get("total").getAsInt());
+        assertTrue(first.get("hasMore").getAsBoolean());
+        String firstId = first.getAsJsonArray("sessions").get(0).getAsJsonObject().get("sessionId").getAsString();
+        assertEquals(titles.get(firstId), first.getAsJsonArray("sessions").get(0).getAsJsonObject().get("title").getAsString());
+        var next = inventory.list(first.get("nextCursor").getAsString(), 1, "Pet", "size");
+        String nextId = next.getAsJsonArray("sessions").get(0).getAsJsonObject().get("sessionId").getAsString();
+        assertNotEquals(firstId, nextId);
+        assertEquals(titles.get(nextId), next.getAsJsonArray("sessions").get(0).getAsJsonObject().get("title").getAsString());
+        assertFalse(next.get("hasMore").getAsBoolean());
+        assertEquals("Pet 场景设计", inventory.listPage(1, 10, "场景", "recent", "archived")
+                .getAsJsonArray("sessions").get(0).getAsJsonObject().get("title").getAsString());
+        assertEquals(0, inventory.list(null, 10, "Read a local CODEX", "recent").get("total").getAsInt());
+        assertEquals(1, inventory.list(null, 10, "renamed", "recent", "archived").get("total").getAsInt());
+    }
+
+    @Test public void missingAndBlankSavedTitlesRetainExistingFallbacks() throws Exception {
+        var f = new CodexStorageFixture(temporary.newFolder().toPath());
+        f.thread("state-title", "/project", 10);
+        f.rollout("state-title", null, false);
+        var rollout = f.rollout("rollout-title", null, false);
+        Files.writeString(rollout, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Original rollout request\"}}\n",
+                java.nio.file.StandardOpenOption.APPEND);
+        f.rollout("untitled", null, false);
+        var titles = java.util.Map.of("state-title", "  ", "rollout-title", "\n");
+        var snapshot = new CodexStorageInventory(f.paths, titles).snapshot();
+
+        assertEquals("Title state-title", snapshot.sessions().get("state-title").title);
+        assertEquals("Original rollout request", snapshot.sessions().get("rollout-title").title);
+        assertEquals("untitled", snapshot.sessions().get("untitled").title);
+        assertEquals(3, snapshot.sessions().size());
+    }
+
     @Test public void anIdleClientsWriterLockIsNotReportedAsAnExecutingTurn() throws Exception {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("client-owned", "/project", 10);

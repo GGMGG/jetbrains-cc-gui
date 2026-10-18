@@ -17,6 +17,7 @@ import com.intellij.util.concurrency.AppExecutorUtil;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -162,12 +163,40 @@ final class CodexStorageHandler {
         return success != null && success.isJsonPrimitive() && success.getAsJsonPrimitive().isBoolean() && success.getAsBoolean();
     }
 
+    static Map<String, String> loadSessionTitles(NodeJsServiceCaller caller) {
+        try {
+            JsonElement result = JsonParser.parseString(caller.callNodeJsTitlesService("loadTitles"));
+            if (!result.isJsonObject()) {
+                return Map.of();
+            }
+            Map<String, String> titles = new LinkedHashMap<>();
+            for (var entry : result.getAsJsonObject().entrySet()) {
+                if (!entry.getValue().isJsonObject()) {
+                    continue;
+                }
+                JsonElement title = entry.getValue().getAsJsonObject().get("customTitle");
+                if (title != null && title.isJsonPrimitive() && title.getAsJsonPrimitive().isString() && !title.getAsString().isBlank()) {
+                    titles.put(entry.getKey(), title.getAsString());
+                }
+            }
+            return titles;
+        } catch (Exception error) {
+            if (error instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            LOG.warn("[CodexStorage] Failed to load session titles; using stored history titles");
+            return Map.of();
+        }
+    }
+
     private JsonObject read(String action, JsonObject request, CodexStoragePaths paths) throws Exception {
         try (AiDataProcessGate.ReadPermit permit = AiDataProcessGate.getInstance().tryAcquireReadPermit()) {
             if (permit == null) {
                 throw new IOException("DATABASE_BUSY");
             }
-            CodexStorageInventory inventory = new CodexStorageInventory(paths);
+            Map<String, String> titles = "list_ai_storage_sessions".equals(action)
+                    ? loadSessionTitles(new NodeJsServiceCaller(context)) : Map.of();
+            CodexStorageInventory inventory = new CodexStorageInventory(paths, titles);
             int limit = request.has("limit") ? request.get("limit").getAsInt() : 50;
             return switch (action) {
                 case "list_ai_storage_sessions" -> request.has("page")
