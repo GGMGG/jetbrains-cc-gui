@@ -6,6 +6,9 @@ import com.github.claudecodegui.handler.history.HistoryHandler;
 import com.github.claudecodegui.handler.core.MessageDispatcher;
 import com.github.claudecodegui.handler.PermissionHandler;
 import com.github.claudecodegui.permission.PermissionService;
+import com.github.claudecodegui.pet.office.PetOfficeSessionPublisher;
+import com.github.claudecodegui.pet.office.PetOfficeSessionRegistry;
+import com.github.claudecodegui.pet.office.PetOfficeTabNavigator;
 import com.github.claudecodegui.provider.claude.ClaudeSDKBridge;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.startup.CefPasteHook;
@@ -72,7 +75,7 @@ import java.util.function.BooleanSupplier;
  * Chat window instance. Coordinates UI components, session management,
  * and message dispatching. One instance per tab.
  */
-public class ClaudeChatWindow {
+public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
 
     private static final Logger LOG = Logger.getInstance(ClaudeChatWindow.class);
     private final JPanel mainPanel;
@@ -91,7 +94,10 @@ public class ClaudeChatWindow {
     private final HtmlLoader htmlLoader;
 
     private Content parentContent;
-    private String originalTabName;
+    private volatile PetOfficeSessionPublisher petOfficePublisher;
+    private volatile String originalTabName;
+    private final String petOfficeContentHandleId = UUID.randomUUID().toString();
+    private volatile PetOfficeSessionRegistry.Registration petOfficeRegistration;
     private volatile String sessionId = null;
     // Stable PermissionService routing key, assigned once at construction.
     // Kept separate from sessionId, which is overwritten with AI session IDs
@@ -364,6 +370,9 @@ public class ClaudeChatWindow {
             @Override
             public void setSession(ClaudeSession s) {
                 session = s;
+                if (petOfficeRegistration != null) {
+                    petOfficeRegistration.replaceSession(s.getState());
+                }
                 persistTabSessionState();
             }
 
@@ -475,6 +484,16 @@ public class ClaudeChatWindow {
 
         setupSessionCallbacks();
         initializeSessionInfo();
+        try {
+            petOfficePublisher = PetOfficeSessionPublisher.getInstance();
+            petOfficeRegistration = petOfficePublisher
+                    .register(petOfficeContentHandleId, project, getPetOfficeTabName(), session.getState());
+            if (petOfficeRegistration != null) {
+                petOfficePublisher.navigator().register(petOfficeContentHandleId, this);
+            }
+        } catch (RuntimeException error) {
+            LOG.warn("[PetOffice] Local tab registration unavailable", error);
+        }
 
         // Delay JCEF browser creation to avoid service initialization conflicts
         // during JBCefApp$Holder class init (ProxyMigrationService dependency).
@@ -516,7 +535,15 @@ public class ClaudeChatWindow {
             }
 
             persistTabSessionState();
+            if (petOfficeRegistration != null) {
+                petOfficeRegistration.rename(getPetOfficeTabName());
+            }
         }
+    }
+
+    private String getPetOfficeTabName() {
+        String name = originalTabName;
+        return name == null || name.isBlank() ? "Chat" : name;
     }
 
     public void setOriginalTabName(String name) {
@@ -524,6 +551,9 @@ public class ClaudeChatWindow {
                 ? name.substring(0, name.length() - 3)
                 : name;
         LOG.debug("[TabLoading] Set original tab name: " + this.originalTabName);
+        if (petOfficeRegistration != null) {
+            petOfficeRegistration.rename(getPetOfficeTabName());
+        }
     }
 
     public boolean isDisposed() {
@@ -578,6 +608,58 @@ public class ClaudeChatWindow {
         } else {
             ApplicationManager.getApplication().invokeLater(activation);
         }
+    }
+
+    @Override
+    public PetOfficeTabNavigator.Result activateOfficeTarget(PetOfficeTabNavigator.Request request,
+                                                            java.util.function.BooleanSupplier stillValid) {
+        if (!SwingUtilities.isEventDispatchThread() || !stillValid.getAsBoolean()) {
+            return PetOfficeTabNavigator.Result.UNAVAILABLE;
+        }
+        if (disposed || project.isDisposed()
+                || !petOfficeContentHandleId.equals(PetOfficeSessionRegistry.parseKey(request.sourceKey()).contentHandleId())) {
+            return PetOfficeTabNavigator.Result.TARGET_GONE;
+        }
+        PetOfficeTabNavigator.Result binding = PetOfficeTabNavigator.validateBinding(request, session.getState().getExecutionSnapshot());
+        if (binding != PetOfficeTabNavigator.Result.ACTIVATED) {
+            return binding;
+        }
+        java.awt.Window host;
+        Content content = parentContent;
+        ContentManager manager = content == null ? null : content.getManager();
+        if (manager != null && manager.getIndexOfContent(content) >= 0) {
+            if (ClaudeSDKToolWindow.getChatWindowForContent(content) != this || !isOfficeRequestCurrent(request, stillValid)) {
+                return PetOfficeTabNavigator.Result.TARGET_GONE;
+            }
+            manager.setSelectedContent(content);
+            ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ClaudeSDKToolWindow.TOOL_WINDOW_ID);
+            if (toolWindow == null || toolWindow.getContentManager() != manager || !isOfficeRequestCurrent(request, stillValid)) {
+                return PetOfficeTabNavigator.Result.UNAVAILABLE;
+            }
+            toolWindow.show(null);
+            host = com.intellij.openapi.wm.WindowManager.getInstance().getFrame(project);
+        } else {
+            DetachedChatFrame detached = DetachedWindowManager.getDetachedFrame(project, this);
+            if (detached == null || !isOfficeRequestCurrent(request, stillValid)) {
+                return PetOfficeTabNavigator.Result.TARGET_GONE;
+            }
+            detached.setVisible(true);
+            host = detached;
+        }
+        if (!isOfficeRequestCurrent(request, stillValid)) {
+            return PetOfficeTabNavigator.Result.UNAVAILABLE;
+        }
+        if (host != null) {
+            host.toFront();
+            host.requestFocus();
+            mainPanel.requestFocusInWindow();
+        }
+        return host != null && host.isFocused() ? PetOfficeTabNavigator.Result.ACTIVATED : PetOfficeTabNavigator.Result.ATTENTION_REQUESTED;
+    }
+
+    private boolean isOfficeRequestCurrent(PetOfficeTabNavigator.Request request, java.util.function.BooleanSupplier stillValid) {
+        return !disposed && !project.isDisposed() && stillValid.getAsBoolean()
+                && PetOfficeTabNavigator.validateBinding(request, session.getState().getExecutionSnapshot()) == PetOfficeTabNavigator.Result.ACTIVATED;
     }
 
     public JPanel getContent() {
@@ -2928,6 +3010,14 @@ public class ClaudeChatWindow {
             return;
         }
         this.disposed = true;
+        if (petOfficePublisher != null) {
+            petOfficePublisher.navigator().unregister(petOfficeContentHandleId);
+            petOfficePublisher = null;
+        }
+        if (petOfficeRegistration != null) {
+            petOfficeRegistration.close();
+            petOfficeRegistration = null;
+        }
         this.webviewEventQueue.dispose();
         JBCefBrowser targetBrowser = this.browser;
         cancelScheduledOsrSurfaceRefresh();
@@ -3319,7 +3409,12 @@ public class ClaudeChatWindow {
             }
 
             @Override
-            public void setOriginalTabName(String name) {
+            private String getPetOfficeTabName() {
+        String name = originalTabName;
+        return name == null || name.isBlank() ? "Chat" : name;
+    }
+
+    public void setOriginalTabName(String name) {
                 ClaudeChatWindow.this.setOriginalTabName(name);
             }
 
