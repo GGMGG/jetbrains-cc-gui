@@ -942,6 +942,149 @@ public class ClawBotGatewayRuntimeServiceTest {
     }
 
     @Test
+    public void clearingSelectionSuppressesRunningProgressWithoutCancellingTaskOrFinalReply() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, true, true)) {
+            fixture.route("selection-off", "/use off");
+
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "after-off", "Progress"));
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "prompt-after-off", "Question", true));
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "reply-message:start", "Started"));
+            assertEquals(0, fixture.transport.requestCount);
+            assertEquals("reply-message", fixture.pending().messageId());
+            assertTrue(sessionRegistry(fixture.service).isInboundDispatched("session-1", "ide-instance", 4, "reply-message"));
+
+            assertTrue(fixture.reply());
+            assertEquals(1, fixture.transport.requestCount);
+            assertEquals("Final answer", fixture.transport.lastParams.get("text").getAsString());
+        }
+    }
+
+    @Test
+    public void reselectingSameTabDoesNotResumeOldProgress() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, true, true)) {
+            fixture.route("selection-off", "/use off");
+            fixture.route("selection-again", "/use session-1");
+
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "old-progress", "Old progress", true));
+            assertEquals(0, fixture.transport.requestCount);
+            assertTrue(fixture.reply());
+            fixture.route("new-question", "A new question");
+            assertTrue(fixture.client.validateInbound("session-1", "new-question"));
+            assertTrue(fixture.client.sendProgress("session-1", "new-question", "new-question:start", "Started"));
+            assertEquals(2, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void recoveredReplyCapabilityCannotRestoreClearedProgressSelection() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, true, true)) {
+            fixture.route("selection-off", "/use off");
+            sessionRegistry(fixture.service).clearPendingMessages();
+
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "recovered-progress", "Progress", true));
+            assertEquals(0, fixture.transport.requestCount);
+            assertTrue(fixture.reply());
+            assertEquals(1, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void clearingSelectionDiscardsQueuedStartAndDoesNotBlockFinalReply() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            fixture.route("selection-off", "/use off");
+            Method retry = ClawBotGatewayRuntimeService.class.getDeclaredMethod("retryPendingDeliveries");
+            retry.setAccessible(true);
+            retry.invoke(fixture.service);
+
+            assertEquals(0, fixture.transport.requestCount);
+            assertEquals(0, fixture.service.statusSnapshot().get("outboundQueuedCount").getAsInt());
+            assertTrue(fixture.reply());
+            assertEquals(1, fixture.transport.requestCount);
+            assertEquals("Final answer", fixture.transport.lastParams.get("text").getAsString());
+        }
+    }
+
+    @Test
+    public void progressRechecksSelectionAfterWaitingForTaskStart() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            fixture.transport.release = new CountDownLatch(1);
+            try {
+                java.util.concurrent.Future<Boolean> progress = worker.submit(() -> fixture.client.sendProgress(
+                        "session-1", "reply-message", "delayed-progress", "Progress after start", true));
+                assertTrue(fixture.transport.entered.await(5, TimeUnit.SECONDS));
+                fixture.route("selection-off", "/use off");
+                fixture.transport.release.countDown();
+
+                assertTrue(progress.get(5, TimeUnit.SECONDS));
+                assertEquals(1, fixture.transport.requestCount);
+                assertFalse(fixture.transport.sentTexts.contains("Progress after start"));
+            } finally {
+                fixture.transport.release.countDown();
+                worker.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    public void explicitOneShotProgressRemainsIndependentOfTabSelection() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false)) {
+            fixture.route("selection-before", "/use session-1");
+            fixture.route("selection-off", "/use off");
+
+            assertTrue(fixture.client.sendProgress("session-1", "reply-message", "one-shot-progress", "One-shot progress", true));
+            assertEquals(1, fixture.transport.requestCount);
+            assertEquals("One-shot progress", fixture.transport.lastParams.get("text").getAsString());
+        }
+    }
+
+    @Test
+    public void clearedStartCannotSendAfterConcurrentFinalReplyReleasesCapability() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            String startId = UUID.nameUUIDFromBytes("progress:reply-message:start".getBytes(StandardCharsets.UTF_8)).toString();
+            CountDownLatch beforeAdmission = new CountDownLatch(1);
+            CountDownLatch releaseAdmission = new CountDownLatch(1);
+            AtomicBoolean paused = new AtomicBoolean();
+            setField(fixture.service, "outboundEventStates", new java.util.concurrent.ConcurrentHashMap<String, String>() {
+                @Override
+                public String putIfAbsent(String key, String value) {
+                    if (startId.equals(key) && paused.compareAndSet(false, true)) {
+                        beforeAdmission.countDown();
+                        try {
+                            if (!releaseAdmission.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("Task-start admission release timed out");
+                            }
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(error);
+                        }
+                    }
+                    return super.putIfAbsent(key, value);
+                }
+            });
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            try (ClawBotIdeClient terminalClient = new ClawBotIdeClient(fixture.service.endpoint(), "ide-instance", 4)) {
+                java.util.concurrent.Future<Boolean> start = worker.submit(() -> fixture.client.sendProgress(
+                        "session-1", "reply-message", "reply-message:start", "Started"));
+                assertTrue(beforeAdmission.await(5, TimeUnit.SECONDS));
+                fixture.route("selection-off", "/use off");
+                assertTrue(fixture.reply(terminalClient));
+                assertTrue(new ClawBotPendingDeliveryStore(fixture.runtime, "reply-capabilities.enc")
+                        .pending("fixture-token").isEmpty());
+                releaseAdmission.countDown();
+
+                assertTrue(start.get(5, TimeUnit.SECONDS));
+                assertEquals(1, fixture.transport.requestCount);
+                assertEquals(List.of("Final answer"), fixture.transport.sentTexts);
+                assertEquals(0, fixture.service.statusSnapshot().get("outboundQueuedCount").getAsInt());
+            } finally {
+                releaseAdmission.countDown();
+                worker.shutdownNow();
+            }
+        }
+    }
+
+    @Test
     public void staleDeliverySnapshotCannotAcquireNewGeneration() throws Exception {
         try (ReplyFixture fixture = new ReplyFixture(false)) {
             fixture.transport.errorCode = "ILINK_SEND_REJECTED";
@@ -1262,6 +1405,10 @@ public class ClawBotGatewayRuntimeServiceTest {
         }
 
         private ReplyFixture(boolean control, boolean sendStart) throws Exception {
+            this(control, sendStart, false);
+        }
+
+        private ReplyFixture(boolean control, boolean sendStart, boolean routed) throws Exception {
             this.control = control;
             eventId = UUID.nameUUIDFromBytes(((control ? "control" : "terminal") + ":reply-message")
                     .getBytes(StandardCharsets.UTF_8)).toString();
@@ -1281,7 +1428,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             client = new ClawBotIdeClient(service.endpoint(), "ide-instance", 4);
             assertTrue(client.register(new ClawBotSessionRegistration(
                     "session-1", "ide-instance", "project", "Project", "codex",
-                    Set.of("INBOUND", "CONTROL"), ClawBotSessionStatus.ONLINE, 4, "Chat", "generation-1")));
+                    Set.of("INBOUND", "CONTROL", "ROUTING_V2"), ClawBotSessionStatus.ONLINE, 4, "Chat", "generation-1")));
             ClawBotInboundMessage message = new ClawBotInboundMessage("reply-message", "sender", "context", "question",
                     control ? ClawBotInboundAction.INTERRUPT : ClawBotInboundAction.MESSAGE)
                     .forTarget(client.listSessions().get(0));
@@ -1290,13 +1437,31 @@ public class ClawBotGatewayRuntimeServiceTest {
                 assertTrue(registry.enqueueCommand("session-1", message));
                 assertTrue(registry.markCommandDispatched("session-1", "ide-instance", 4, message.messageId()));
             } else {
-                assertTrue(registry.enqueueInbound("session-1", message));
-                assertTrue(registry.markInboundDispatched("session-1", "ide-instance", 4, message.messageId()));
+                if (routed) {
+                    route("select-before", "/use session-1");
+                    route(message.messageId(), message.text());
+                    assertTrue(client.validateInbound("session-1", message.messageId()));
+                    assertTrue(pending().routeRevision() > 0);
+                } else {
+                    assertTrue(registry.enqueueInbound("session-1", message));
+                    assertTrue(registry.markInboundDispatched("session-1", "ide-instance", 4, message.messageId()));
+                }
                 if (sendStart) {
                     assertTrue(client.sendProgress("session-1", "reply-message", "reply-message:start", "Started"));
                     transport.requestCount = 0;
                     transport.entered = new CountDownLatch(1);
                 }
+            }
+        }
+
+        private void route(String messageId, String text) throws Exception {
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("messageRouter");
+            field.setAccessible(true);
+            ClawBotMessageRouter router = (ClawBotMessageRouter) field.get(service);
+            ClawBotSessionRegistry registry = sessionRegistry(service);
+            synchronized (service) {
+                router.handle(new ClawBotInboundMessage(messageId, "sender", "context", text), registry.snapshot(),
+                        (recipient, context, reply) -> { }, registry::enqueueInbound);
             }
         }
 

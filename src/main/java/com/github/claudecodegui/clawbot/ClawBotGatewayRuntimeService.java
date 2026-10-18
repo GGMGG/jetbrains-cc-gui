@@ -41,6 +41,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     private static final long INBOUND_POLL_RETRY_DELAY_MILLIS = 1_000L;
     private static final long INBOUND_POLL_MAX_BACKOFF_MILLIS = 60_000L;
     private static final long PROGRESS_SETTINGS_REFRESH_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
+    private static final String PROGRESS_SUPPRESSED = "CLAWBOT_PROGRESS_SUPPRESSED";
 
     private final Path runtimeDirectory;
     private final String instanceId;
@@ -1420,6 +1421,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                         return errorResponse(request, "CLAWBOT_SESSION_MESSAGE_NOT_PENDING");
                     }
                 }
+                requireProgressRoute(message);
             }
             if (deliveredProgressEvents.contains(eventId)) {
                 return acceptedResponse(request, "SESSION_PROGRESS_RESULT", "SENT");
@@ -1445,7 +1447,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                         return acceptedResponse(request, "SESSION_PROGRESS_RESULT", "SUPPRESSED");
                     }
                     sendChannelText(message.fromUserId(), message.contextToken(), text,
-                            stableEventId(eventId, "progress"), true, true, !important);
+                            stableEventId(eventId, "progress"), true, true, !important, null, message);
                 }
                 rememberDeliveredProgressEvent(eventId);
             } catch (IOException error) {
@@ -1459,6 +1461,9 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             }
             return acceptedResponse(request, "SESSION_PROGRESS_RESULT", "SENT");
         } catch (IOException error) {
+            if (PROGRESS_SUPPRESSED.equals(error.getMessage())) {
+                return acceptedResponse(request, "SESSION_PROGRESS_RESULT", "SUPPRESSED");
+            }
             return errorResponse(request, safeErrorCode(error.getMessage(), "CLAWBOT_ILINK_SEND_FAILED"));
         } catch (IllegalArgumentException error) {
             return errorResponse(request, "CLAWBOT_ILINK_REQUEST_INVALID");
@@ -1828,6 +1833,11 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     message.contextToken(), capability.toString(), true, null), deliveryToken());
         }
         String eventId = stableEventId(message.messageId() + ":start", "progress");
+        // Final replies retain their capability after selection ends, but must not recreate progress.
+        if (!acceptsProgress(message)) {
+            discardTaskStart(eventId);
+            return null;
+        }
         if (!"SENT".equals(knownStableDeliveryStatus(eventId))) {
             pendingDeliveries.put(new ClawBotPendingDeliveryStore.Delivery(eventId, message.fromUserId(),
                     message.contextToken(), "任务已开始处理，IDE 正在生成响应。", true, null), deliveryToken());
@@ -1835,14 +1845,56 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         return eventId;
     }
 
+    private synchronized boolean acceptsProgress(ClawBotInboundMessage message) throws IOException {
+        messageRouter.sweep(sessionRegistry.snapshot());
+        return messageRouter.acceptsPending(message);
+    }
+
+    private void requireProgressRoute(ClawBotInboundMessage message) throws IOException {
+        if (!acceptsProgress(message)) {
+            throw new IOException(PROGRESS_SUPPRESSED);
+        }
+    }
+
+    private void discardTaskStart(String eventId) throws IOException {
+        pendingDeliveries.remove(eventId, deliveryToken());
+        deliveryRetryAt.remove(eventId);
+    }
+
+    private ClawBotInboundMessage validateTaskStartRoute(ClawBotPendingDeliveryStore.Delivery delivery) throws IOException {
+        for (var capability : replyCapabilities.pending(deliveryToken())) {
+            if (!delivery.id().equals(stableEventId(capability.id() + ":start", "progress"))) {
+                continue;
+            }
+            ClawBotInboundMessage source = ClawBotInboundMessage.fromJson(
+                    com.google.gson.JsonParser.parseString(capability.text()).getAsJsonObject());
+            if (!acceptsProgress(source)) {
+                discardTaskStart(delivery.id());
+                throw new IOException(PROGRESS_SUPPRESSED);
+            }
+            return source;
+        }
+        return null;
+    }
+
     private void ensureTaskStart(ClawBotInboundMessage message) throws IOException {
         String eventId;
         long generation;
+        ClawBotPendingDeliveryStore.Delivery delivery;
         synchronized (this) {
             generation = outboundGeneration;
             eventId = queueTaskStart(message);
+            if (eventId == null) {
+                throw new IOException(PROGRESS_SUPPRESSED);
+            }
+            if ("SENT".equals(knownStableDeliveryStatus(eventId))) {
+                return;
+            }
+            delivery = pendingDeliveries.pending(deliveryToken()).stream()
+                    .filter(value -> value.id().equals(eventId)).findFirst()
+                    .orElseThrow(() -> new IOException("CLAWBOT_OUTBOUND_CANCELLED"));
         }
-        sendReliableText(message.fromUserId(), message.contextToken(), "任务已开始处理，IDE 正在生成响应。", eventId, true, null, generation);
+        deliverPending(delivery, generation);
     }
 
     private JsonObject sendReliableText(String recipient, String context, String text, String id, boolean authorized) throws IOException {
@@ -1909,6 +1961,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
     }
 
     private JsonObject deliverPending(ClawBotPendingDeliveryStore.Delivery delivery, long deliveryGeneration) throws IOException {
+        ClawBotInboundMessage progressSource;
         synchronized (this) {
             ensureOutboundGeneration(deliveryGeneration);
             var current = pendingDeliveries.pending(deliveryToken()).stream()
@@ -1919,6 +1972,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 }
                 throw new IOException("CLAWBOT_OUTBOUND_CANCELLED");
             }
+            progressSource = validateTaskStartRoute(current);
             if (current.unknown()) {
                 archiveUnknownDelivery(current);
                 throw new IOException("CLAWBOT_OUTBOUND_UNKNOWN");
@@ -1951,12 +2005,18 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     throw new IOException("CLAWBOT_SEND_DEFERRED");
                 }
                 if (!previous.unknown()) {
-                    deliverPending(previous, deliveryGeneration);
+                    try {
+                        deliverPending(previous, deliveryGeneration);
+                    } catch (IOException error) {
+                        if (!PROGRESS_SUPPRESSED.equals(error.getMessage())) {
+                            throw error;
+                        }
+                    }
                     throw new IOException("CLAWBOT_SEND_DEFERRED");
                 }
             }
             JsonObject result = sendChannelText(delivery.recipient(), delivery.context(), delivery.text(),
-                    delivery.id(), true, delivery.requireAuthorization(), !delivery.requireAuthorization(), deliveryGeneration);
+                    delivery.id(), true, delivery.requireAuthorization(), !delivery.requireAuthorization(), deliveryGeneration, progressSource);
             synchronized (this) {
                 ensureOutboundGeneration(deliveryGeneration);
                 pendingDeliveries.remove(delivery.id(), deliveryToken());
@@ -1973,7 +2033,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             }
             // Rejected requests are safe to retry, but never hammer an expired context.
             if (!"CLAWBOT_SEND_DEFERRED".equals(error.getMessage())
-                    && !"CLAWBOT_DELIVERY_PENDING".equals(error.getMessage())) {
+                    && !"CLAWBOT_DELIVERY_PENDING".equals(error.getMessage())
+                    && !PROGRESS_SUPPRESSED.equals(error.getMessage())) {
                 long retryDelay = "ILINK_SEND_REJECTED".equals(error.getMessage()) ? 300_000L : 5_000L;
                 deliveryRetryAt.merge(delivery.id(), System.currentTimeMillis() + retryDelay, Math::max);
             }
@@ -2049,7 +2110,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 try {
                     deliverPending(delivery, deliveryGeneration);
                 } catch (IOException error) {
-                    if (!"CLAWBOT_SEND_DEFERRED".equals(error.getMessage()) && !"CLAWBOT_DELIVERY_PENDING".equals(error.getMessage())) {
+                    if (!"CLAWBOT_SEND_DEFERRED".equals(error.getMessage()) && !"CLAWBOT_DELIVERY_PENDING".equals(error.getMessage())
+                            && !PROGRESS_SUPPRESSED.equals(error.getMessage())) {
                         outboundLastError = describeOutboundError(error, "CLAWBOT_ILINK_SEND_FAILED");
                     }
                 }
@@ -2074,13 +2136,13 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             String toUserId, String contextToken, String text, String clientId,
             boolean stableEvent, boolean requireAuthorizedSender, boolean ordinary) throws IOException {
         return sendChannelText(toUserId, contextToken, text, clientId, stableEvent,
-                requireAuthorizedSender, ordinary, null);
+                requireAuthorizedSender, ordinary, null, null);
     }
 
     private JsonObject sendChannelText(
             String toUserId, String contextToken, String text, String clientId,
             boolean stableEvent, boolean requireAuthorizedSender, boolean ordinary,
-            Long expectedGeneration) throws IOException {
+            Long expectedGeneration, ClawBotInboundMessage progressSource) throws IOException {
         if (toUserId == null || toUserId.isBlank() || toUserId.length() > ClawBotInboundMessage.MAX_USER_ID_LENGTH
                 || contextToken == null || contextToken.isBlank()
                 || contextToken.length() > ClawBotInboundMessage.MAX_CONTEXT_TOKEN_LENGTH
@@ -2146,11 +2208,21 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                 if (stableEvent && requireAuthorizedSender && !senderAccessStore.isAllowed(toUserId)) {
                     throw new IOException("CLAWBOT_SENDER_NOT_AUTHORIZED");
                 }
+                // Recheck after prerequisites and retries without holding the gateway lock during network I/O.
+                if (progressSource != null) {
+                    requireProgressRoute(progressSource);
+                }
+                boolean queuedDelivery = false;
                 for (var queued : pendingDeliveries.pending(deliveryToken())) {
                     if (queued.id().equals(clientId)) {
+                        queuedDelivery = true;
                         validateRecoveryDelivery(queued);
+                        validateTaskStartRoute(queued);
                         break;
                     }
+                }
+                if (expectedGeneration != null && !queuedDelivery) {
+                    throw new IOException("CLAWBOT_OUTBOUND_CANCELLED");
                 }
                 if (ordinary && pendingDeliveries.pending(deliveryToken()).stream().anyMatch(
                         value -> value.requireAuthorization() && !isStableDeliveryState(outboundReceiptStore.statusOf(value.id())))) {
