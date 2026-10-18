@@ -664,7 +664,6 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 if (!result.success && result.error == null) {
                     result.error = streamedResult.error;
                 }
-                result.cancelled = "User interrupted".equals(result.error);
                 if (result.success || result.cancelled) {
                     if (!hadSendError.get()) {
                         callback.onComplete(result);
