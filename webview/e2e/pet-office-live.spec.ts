@@ -551,11 +551,16 @@ test('gentle focus follows selection and preserves aligned input after resize', 
   const canvas = page.locator('.office-scene-surface > canvas'), wrap = page.locator('.office-canvas-wrap');
   for (const size of info.project.name === 'chromium-full-hd' ? [{ width: 1920, height: 1080 }, { width: 1224, height: 861 }] : [page.viewportSize()!]) {
     await page.setViewportSize(size);
-    await expect.poll(async () => Number((await diagnostics(page))?.cameraHeight)).toBeLessThan(1040);
+    // Portrait layouts can focus horizontally while retaining the full room height.
+    await expect.poll(async () => {
+      const view = await diagnostics(page);
+      return Number(view?.cameraWidth) * Number(view?.cameraHeight);
+    }).toBeLessThan(1160 * 1040);
     expect((await canvas.boundingBox())!.width).toBeLessThanOrEqual((await wrap.boundingBox())!.width + 1);
     const d = (await diagnostics(page))!, bounds = (await canvas.boundingBox())!;
     expect(Number(d.cameraWidth)).toBeLessThanOrEqual(1160);
     expect(Number(d.cameraHeight)).toBeGreaterThanOrEqual(760);
+    expect(Number(d.cameraHeight)).toBeLessThanOrEqual(1040);
     const seat = OFFICE_ART_SEATS.forest[1];
     await canvas.click({ position: { x: bounds.width * (seat.x - Number(d.cameraX)) / Number(d.cameraWidth), y: bounds.height * (seat.label - Number(d.cameraY)) / Number(d.cameraHeight) } });
     await expect(page.getByRole('list', { name: 'Session list' }).getByRole('button').nth(1)).toHaveAttribute('aria-pressed', 'true');

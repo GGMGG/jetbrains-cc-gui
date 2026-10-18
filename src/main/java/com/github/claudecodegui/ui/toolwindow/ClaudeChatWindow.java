@@ -67,6 +67,7 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -3409,12 +3410,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             }
 
             @Override
-            private String getPetOfficeTabName() {
-        String name = originalTabName;
-        return name == null || name.isBlank() ? "Chat" : name;
-    }
-
-    public void setOriginalTabName(String name) {
+            public void setOriginalTabName(String name) {
                 ClaudeChatWindow.this.setOriginalTabName(name);
             }
 
