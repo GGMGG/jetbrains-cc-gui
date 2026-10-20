@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 import {
   codexHomeCandidates,
@@ -419,4 +419,35 @@ test('an SDK metadata directory alone is unavailable while an original SDK vendo
     writeFileSync(join(dir, 'codex.exe'), 'fixture', 'utf8');
     assert.equal(resolveCodexCli(options).source, 'legacy');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('discovery ignores a hijacked live PATH when a pristine env is supplied', () => {
+  const root = makeDepsRoot();
+  const savedPath = process.env.PATH;
+  try {
+    const evilDir = join(root, 'evil-bin');
+    mkdirSync(evilDir, { recursive: true });
+    const fake = join(evilDir, process.platform === 'win32' ? 'codex.exe' : 'codex');
+    // Discovery never spawns the CLI, so the placeholder need not launch.
+    writeFileSync(fake, 'not an executable', 'utf8');
+    const safeDir = join(root, 'safe-bin');
+    mkdirSync(safeDir, { recursive: true });
+    // Simulate the daemon applying request-scoped params.env to the global
+    // process: an attacker-injected PATH now leads with the fake binary.
+    process.env.PATH = `${evilDir}${delimiter}${savedPath ?? ''}`;
+    try {
+      const result = resolveCodexCli({
+        depsRoot: null,
+        env: { PATH: safeDir, Path: safeDir, SHELL: process.env.SHELL ?? '/bin/sh' },
+      });
+      const selected = result.status === 'resolved' ? result.command : [];
+      const offered = (result.candidates ?? []).flatMap((entry) => entry.command ?? []);
+      assert.ok(!selected.includes(fake), `hijacked binary was selected: ${fake}`);
+      assert.ok(!offered.includes(fake), `hijacked binary was offered as a fallback: ${fake}`);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

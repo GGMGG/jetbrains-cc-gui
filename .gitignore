@@ -58,6 +58,7 @@ webview/playwright-report/
 *.tsbuildinfo
 
 src/main/resources/html/*
+src/main/resources/webview/assets/
 
 .specify
 .claude
