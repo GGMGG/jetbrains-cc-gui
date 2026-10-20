@@ -13,6 +13,76 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    version: '0.6.1',
+    date: '2026-10-19',
+    content: {
+      en: `🔧 Improvements
+- **Load chat tabs faster on Remote JCEF**: the webview no longer ships as a ~10 MB single-file HTML sent to every tab; hashed, gzipped assets are served from a stable origin and cached across chat tabs, and a visible fallback message replaces the blank page if the compressed bootstrap ever fails to load (by @Jefung)
+
+🐛 Fixes
+- **Stop subagents from silently falling back to built-in model names**: every model tier configured in settings.json (opus / sonnet / haiku / small-fast / subagent) now reaches the CLI environment, so a subagent declaring e.g. \`model: opus\` resolves to the configured third-party model instead of an unrecognized built-in name that endpoints silently reroute; tiers no longer present in the settings are cleared, so switching providers cannot leave stale model names behind (by @8p98h2fgnd-max)
+- **Keep Codex Full Auto and the effective sandbox in sync**: Full Auto now maps to danger-full-access on every platform; a wiped or pre-scope snapshot re-derives its access scope from the permission mode without ever overriding an explicit user choice; Settings > Permissions shows only the runtime-confirmed sandbox ("not confirmed yet" until the app-server echoes it) instead of presenting the requested value as effective (by @zhukunpenglinyutong)
+- **Refine the Claude plan usage indicator**: the compact summary no longer crams reset dates into one line; full per-window reset times (local time), the plan level and a stale-data warning move into a keyboard-accessible tooltip (Arrow/PageUp/PageDown/Home/End scroll, Escape closes) that follows the input box while it is dragged and always stays inside the viewport (by @GGMGG)`,
+      zh: `🔧 优化
+- **远程 JCEF 下聊天标签页加载更快**：webview 不再以约 10 MB 的单文件 HTML 逐标签页传输；带内容哈希的 gzip 资源通过固定域名供给并跨标签页缓存，压缩引导加载失败时显示明确的错误提示，不再白屏（by @Jefung）
+
+🐛 修复
+- **堵住子智能体静默回退到内置模型名**：settings.json 中配置的所有模型档位（opus / sonnet / haiku / small-fast / subagent）现在都会同步到 CLI 环境变量，子智能体声明 \`model: opus\` 等档位时可正确解析到配置的第三方模型，不再回退为端点无法识别而被静默改路由的内置模型名；设置中已删除的档位会被同步清除，避免切换供应商后残留旧模型名（by @8p98h2fgnd-max）
+- **Codex Full Auto 与实际生效沙箱保持同步**：Full Auto 在所有平台都映射为 danger-full-access；本地快照被清空或不含沙箱字段时，访问范围会跟随权限模式重新推导，且绝不覆盖用户显式做出的选择；「设置 > 权限」仅显示运行时确认的沙箱（确认前显示「尚未确认」），不再把请求值当作已生效值展示（by @zhukunpenglinyutong）
+- **优化 Claude 额度指示器**：紧凑摘要不再把重置日期挤在一行内；各窗口的完整重置时间（本地时间）、套餐等级与数据过期警示移至支持键盘操作的浮窗（方向键 / PageUp / PageDown / Home / End 滚动，Escape 关闭），浮窗跟随输入框拖拽移动并始终保持在可视区域内（by @GGMGG）`,
+    },
+  },
+  {
+    version: '0.6.0',
+    date: '2026-10-18',
+    content: {
+      en: `✨ Features
+- **Upgrade Codex to a persistent native runtime**: conversations now use the Codex CLI's app-server, keeping the connection alive across turns and handling approvals and questions through native interactions. Codex installation and detection are now managed under Settings > Provider Management > CLI (by @gadfly3173, @GGMGG, @zhukunpenglinyutong)
+- **Plan and review with Codex inside the IDE**: native plans offer **Execute plan** and **Continue adjusting** actions; use \`/compact\` to compress context, \`/review\` to start a review, and \`/approvals\` to open permission settings (by @gadfly3173)
+- **Inspect Codex changes before approving them**: file approvals display the proposed diff; file-change cards support previews and undo, while \`/diff\` opens the current workspace's staged, unstaged and untracked changes without starting a model turn (by @gadfly3173, @jianhong-li)
+- **Answer Grok questions directly in the IDE**: \`ask_user_question\` requests now open an interactive question dialog, allowing the conversation to continue after you answer (by @toxeh)
+- **See OpenCode tool calls and thinking**: tool results and reasoning now appear in the conversation, the thinking toggle is passed to the CLI, and repeated event snapshots no longer duplicate text (by @57ggfk)
+- **Choose whether tool groups start collapsed**: separate settings control the default collapsed state of batch command and file-edit groups, with preferences retained across views (by @GGMGG)
+
+🔧 Improvements
+- **Bring Codex's native data into the plugin**: model and reasoning-effort choices, skills, MCP status and subagent activity now use native runtime data; tool output, images and context-compaction markers have more complete live and history displays (by @gadfly3173)
+- **Improve Claude compatibility with cc-switch**: aggregated and direct model routes resolve correctly, available reasoning-effort levels are preserved, and model capabilities stay isolated between providers (by @IcarusAegis)
+- **Detect more CLI installations reliably**: recognize standalone Codex installs and ZCode's bundled app-server, verify CLI versions, and try another detected Codex installation if the selected one fails to start (by @gadfly3173, @zhukunpenglinyutong)
+- **Keep history accurate after external changes**: Codex history caches detect rewritten files even when size and timestamps are unchanged; native message counts distinguish unknown counts from empty sessions, and unavailable native history can fall back to local records (by @gadfly3173, @GGMGG, @zhukunpenglinyutong)
+
+🐛 Fixes
+- **Prevent Codex sessions from getting stuck**: late callbacks from previous turns no longer clear a new turn's state; interrupted turns and failed send setup release their pending operations, and context compaction no longer hides an active reply's loading state (by @gadfly3173, @GGMGG, @jianhong-li, @zhukunpenglinyutong)
+- **Keep pasted images with the correct draft**: fix lost, duplicated or out-of-order attachments during asynchronous clipboard processing, prevent delayed paste results from entering another session, and retain early IDE pastes until the input is ready (by @gadfly3173, @zhukunpenglinyutong)
+- **Restore conversations and scroll position more reliably**: retire Claude and Codex session IDs whose source records were removed, preserve complete streamed replies during history reloads, and prevent layout changes or paginated reloads from jumping the message list (by @gadfly3173, @zhukunpenglinyutong)
+- **Accept the highlighted slash command with Enter**: pressing Enter while the completion menu is open selects its highlighted command instead of sending the unfinished text (by @toxeh)
+- **Fix Windows CLI startup failures**: Grok JavaScript entry points and \`.cmd\`/\`.bat\` launchers use the appropriate runtime, and service scripts installed through directory junctions no longer exit silently (by @toxeh, @zxc1213, @zhukunpenglinyutong)
+- **Handle permission and edit states correctly**: failed timeout responses no longer leave permission dialogs stuck, changing approval modes preserves the user's native Codex sandbox choice, and streaming updates keep edit previews open while denied edits count toward completed group progress (by @GGMGG, @zhukunpenglinyutong)
+- **Protect Codex CLI selection from request-level environment changes**: CLI discovery and startup use the daemon's original environment, preventing session-injected variables from redirecting execution to another binary (by @zhukunpenglinyutong)`,
+      zh: `✨ 新功能
+- **Codex 升级为常驻原生运行时**：通过 Codex CLI 的 app-server 持续连接会话，跨回合复用连接，并通过原生交互处理审批与提问。Codex 的安装与识别入口统一调整至「设置 > 提供商管理 > CLI」（by @gadfly3173、@GGMGG、@zhukunpenglinyutong）
+- **在 IDE 内使用 Codex 计划与审查能力**：原生计划支持「执行计划」与「继续调整」；可通过 \`/compact\` 压缩上下文、\`/review\` 发起审查、\`/approvals\` 打开权限设置（by @gadfly3173）
+- **审批前查看 Codex 文件改动**：文件审批弹窗展示待批准的差异，文件变更卡片支持预览与撤销；\`/diff\` 可直接查看当前工作区已暂存、未暂存及未跟踪文件的变更，无需发起模型回合（by @gadfly3173、@jianhong-li）
+- **直接在 IDE 内回答 Grok 的问题**：\`ask_user_question\` 请求现在会打开可交互的问答弹窗，回答后即可继续对话（by @toxeh）
+- **OpenCode 展示工具调用与思考过程**：对话中可查看工具结果与思考内容，思考开关会传递给 CLI，重复事件快照不再造成正文重复（by @57ggfk）
+- **支持设置工具组默认折叠**：可分别设置批量命令组和文件编辑组是否默认折叠，切换视图后仍保留偏好（by @GGMGG）
+
+🔧 优化
+- **接入 Codex 原生数据**：模型与推理强度选项、技能、MCP 状态及子代理活动改用原生运行时数据；工具输出、图片和上下文压缩标记在实时对话与历史记录中的展示更加完整（by @gadfly3173）
+- **改善 Claude 与 cc-switch 的兼容性**：正确识别聚合与直连模型路由，保留可用的推理强度选项，并避免不同提供商之间的模型能力互相影响（by @IcarusAegis）
+- **提高 CLI 安装识别与启动可靠性**：支持识别独立安装的 Codex 和 ZCode 内置 app-server，校验 CLI 版本；选中的 Codex 无法启动时，自动尝试其他已检测到的安装（by @gadfly3173、@zhukunpenglinyutong）
+- **历史记录更准确地跟随外部变化**：即使文件大小与时间戳未变，Codex 历史缓存也能识别内容重写；原生消息统计区分「尚未统计」和空会话，原生历史不可用时可回退读取本地记录（by @gadfly3173、@GGMGG、@zhukunpenglinyutong）
+
+🐛 修复
+- **修复 Codex 会话卡住或状态错乱**：上一回合迟到的回调不再清除新回合状态；回合中断或发送准备失败时会释放待处理操作，上下文压缩结束也不会提前关闭正在回复的加载状态（by @gadfly3173、@GGMGG、@jianhong-li、@zhukunpenglinyutong）
+- **粘贴图片始终跟随正确的草稿**：修复异步剪贴板处理造成的附件丢失、重复与顺序错乱，避免迟到的图片进入其他会话；输入框尚未准备好时，保留提前触发的 IDE 图片粘贴（by @gadfly3173、@zhukunpenglinyutong）
+- **改善会话恢复与滚动位置保持**：清除源记录已被删除的 Claude、Codex 会话 ID；重载历史时保留完整的流式回复，避免布局变化或分页重载造成消息列表跳动（by @gadfly3173、@zhukunpenglinyutong）
+- **回车正确选中高亮的斜杠命令**：补全菜单打开时，按 Enter 会选中高亮命令，不再直接发送尚未输入完整的文本（by @toxeh）
+- **修复 Windows 下的 CLI 启动失败**：Grok 的 JavaScript 入口与 \`.cmd\`/\`.bat\` 启动脚本改用对应运行方式；通过目录联接安装的服务脚本不再静默退出（by @toxeh、@zxc1213、@zhukunpenglinyutong）
+- **修复权限弹窗与编辑组状态异常**：超时决定发送失败不再卡住权限弹窗，切换审批模式时保留用户原生 Codex 沙箱配置；流式更新不再关闭已展开的编辑预览，被拒绝的编辑也会计入工具组完成进度（by @GGMGG、@zhukunpenglinyutong）
+- **防止请求级环境变量干扰 Codex CLI 选择**：CLI 查找与启动统一使用守护进程的原始环境，避免会话注入的变量将执行路径指向其他程序（by @zhukunpenglinyutong）`,
+    },
+  },
+  {
     version: '0.5.9',
     date: '2026-09-30',
     content: {

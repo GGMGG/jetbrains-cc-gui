@@ -2086,6 +2086,40 @@ test('an interrupted turn closes unfinished tool cards and drops only its cached
   } finally { await service.resetRuntime(); }
 });
 
+test('turn/aborted settles the bound operation instead of stalling the FIFO queue', async () => {
+  const { service, events, getClient, getPeer } = makeService({ scenario: 'never-respond' });
+  try {
+    const send = service.send({ input: [{ type: 'text', text: 'abort me' }] });
+    await waitFor(() => [...service.operations.values()][0]?.nativeTurnId);
+    const operation = [...service.operations.values()][0];
+    for (const id of getPeer().pendingAcks.keys()) getPeer().ackPending(id, { turn: { id: operation.nativeTurnId } });
+    getClient().emit('notification', { method: 'turn/aborted', params: {
+      threadId: operation.threadId, turn: { id: operation.nativeTurnId } } });
+    // No turn/completed follows: the abort alone must end the operation.
+    assert.equal((await send).outcome, 'interrupted');
+    assert.equal(operation.settled, true);
+    assert.equal(service.busy, false);
+    assert.equal(service.threads.get(operation.threadId)?.state, 'idle');
+    assert.equal(eventsOf(events, 'turnAborted').length, 1);
+    assert.equal(eventsOf(events, 'operationDone').length, 1);
+
+    // A late turn/completed for the aborted turn must not resurrect settled work.
+    getClient().emit('notification', { method: 'turn/completed', params: {
+      threadId: operation.threadId, turn: { id: operation.nativeTurnId, status: 'completed' } } });
+    assert.equal(eventsOf(events, 'orphanTurnTerminal').length, 1);
+    assert.equal(eventsOf(events, 'operationDone').length, 1);
+
+    // The released FIFO head lets the next operation dispatch immediately.
+    const next = service.send({ input: [{ type: 'text', text: 'after abort' }] });
+    await waitFor(() => [...service.operations.values()][0]?.nativeTurnId);
+    const successor = [...service.operations.values()][0];
+    for (const id of getPeer().pendingAcks.keys()) getPeer().ackPending(id, { turn: { id: successor.nativeTurnId } });
+    getClient().emit('notification', { method: 'turn/completed', params: {
+      threadId: successor.threadId, turn: { id: successor.nativeTurnId, status: 'completed' } } });
+    assert.equal((await next).outcome, 'completed');
+  } finally { await service.resetRuntime(); }
+});
+
 test('read-only native catalog and history calls bypass the operation FIFO', async () => {
   const { service, dispatchCounts } = makeService({ scenario: 'native-read-only' });
   try {
