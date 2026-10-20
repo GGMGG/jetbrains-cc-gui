@@ -6,6 +6,7 @@
 // ============================================================
 // Core Entity Types
 // ============================================================
+import { pickerModelSupports1MContext } from '../../utils/claudeModelCapabilities';
 
 /**
  * File tag information for backend context injection (Codex mode)
@@ -294,18 +295,21 @@ export interface ModelInfo {
   description?: string;
   /** Native Codex reasoning efforts advertised by model/list. */
   supportedReasoningEfforts?: string[];
+  /** Explicit context capability advertised by the Claude settings picker. */
+  supports1MContext?: boolean;
   /** True for user-defined models (Settings → custom models). */
   isCustom?: boolean;
 }
 
 /**
  * Check if a model supports 1M context window.
- * All models support 1M except Haiku (matched by name substring).
+ * Gateway routes require an explicit picker capability; built-ins retain their defaults.
  */
 export function modelSupports1MContext(modelId: string | undefined | null): boolean {
   if (!modelId) {
     return false;
   }
+  if (modelId.startsWith('ccs-claude-')) return pickerModelSupports1MContext(modelId);
   return !modelId.replace(/\[1m\]$/i, '').toLowerCase().includes('haiku');
 }
 

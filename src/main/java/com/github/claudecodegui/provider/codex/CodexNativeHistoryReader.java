@@ -101,6 +101,12 @@ public final class CodexNativeHistoryReader {
         return text.contains("runtime access is inactive") || text.contains("daemon is unavailable")
                 || text.contains("cli not found") || text.contains("no codex cli")
                 || text.contains("app-server child exited") || text.contains("app-server client closed")
+                // A wedged app-server answers a read-only page request with a
+                // timeout ("Native Codex history read timed out" locally, or
+                // "java.util.concurrent.TimeoutException" from the executor);
+                // the on-disk rollout stays readable, so degrade like any
+                // other unavailable transport.
+                || text.contains("timed out") || text.contains("timeoutexception")
                 // Prefix-tolerant: the runtime layer appends per-CLI diagnostics
                 // (and a "codex runtime failure: " prefix) to the same exit line,
                 // and a transport outage must keep the legacy read-only fallback

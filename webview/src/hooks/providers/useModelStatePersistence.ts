@@ -262,7 +262,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
         // table; only built-in retired ids are migrated to their replacement.
         const customIds = new Set(customs.map(m => m.id));
         const normalized = normalizeClaudeModelId(strip1MContextSuffix(modelId), customIds);
-        if (CLAUDE_MODELS.find(m => m.id === normalized) || customs.find(m => m.id === normalized)) {
+        if (normalized.startsWith('ccs-claude-') || CLAUDE_MODELS.find(m => m.id === normalized) || customs.find(m => m.id === normalized)) {
           restoredClaudeModel = normalized;
           setSelectedClaudeModel(normalized);
         }

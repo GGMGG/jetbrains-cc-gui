@@ -207,6 +207,28 @@ test('reasoningEffort is passed as SDK effort and disables fixed thinking tokens
   assert.match(context.runtimeSignature, /"effort":"xhigh"/);
 });
 
+test('aggregated routes keep the exact model id and forward the selected effort to the SDK', async () => {
+  const model = 'ccs-claude-provider-a--glm-pro[1m]';
+  const context = await __testing.buildRequestContext({
+    sessionId: '', runtimeSessionEpoch: 'epoch-aggregate-effort', cwd: process.cwd(),
+    message: 'gateway effort', model, reasoningEffort: 'low',
+  }, false);
+  assert.equal(context.options.model, model);
+  assert.equal(context.options.effort, 'low');
+  assert.equal(Object.hasOwn(context.options, 'maxThinkingTokens'), false);
+});
+
+for (const effort of ['xhigh', 'max']) {
+  test(`aggregated routes forward ${effort} to SDK options`, async () => {
+    const context = await __testing.buildRequestContext({
+      sessionId: '', runtimeSessionEpoch: `epoch-aggregate-${effort}`, cwd: process.cwd(),
+      message: 'gateway effort', model: 'ccs-claude-provider-a--glm-pro[1m]', reasoningEffort: effort,
+    }, false);
+    assert.equal(context.options.effort, effort);
+    assert.equal(context.options.model, 'ccs-claude-provider-a--glm-pro[1m]');
+  });
+}
+
 test('fixed thinking tokens remain configured when no reasoningEffort is provided', async () => {
   const context = await __testing.buildRequestContext({
     sessionId: '',

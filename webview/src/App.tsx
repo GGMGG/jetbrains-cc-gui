@@ -108,6 +108,10 @@ const App = () => {
           onAutoOpenFileEnabledChange={model.handleAutoOpenFileEnabledChange}
           permissionDialogTimeoutSeconds={permissionDialogTimeoutSeconds}
           onPermissionDialogTimeoutChange={setPermissionDialogTimeoutSeconds}
+          codexSandboxSelection={model.codexSandboxSelection}
+          codexSandboxSource={model.codexSandboxSource}
+          codexSandboxEffective={model.codexEffectiveSandbox}
+          onCodexSandboxSelectionChange={model.handleCodexSandboxSelectionChange}
         />
       ) : (
         <AppChatArea
