@@ -220,15 +220,12 @@ public class ProjectConfigHandler {
 
     public void handleGetCodexSandboxMode() {
         respondWithJson("window.updateCodexSandboxMode",
-            () -> {
-                JsonObject result = jsonOf(
-                    "sandboxMode", settingsService.getCodexSandboxMode(context.getProject().getBasePath()));
-                result.addProperty("sandboxSource", "legacy");
-                result.addProperty("sandboxDesired", result.get("sandboxMode").getAsString());
-                result.addProperty("sandboxEffective", result.get("sandboxMode").getAsString());
-                result.addProperty("sandboxConflict", false);
-                return result;
-            },
+            () ->
+                // Legacy project-level record only. It never takes part in a turn,
+                // so it must not be reported as the desired or effective policy:
+                // the live scope travels with each send, and the app-server echoes
+                // the confirmed policy back through thread/settings/updated.
+                sandboxPayload(settingsService.getCodexSandboxMode(context.getProject().getBasePath()), "legacy"),
             sandboxPayload("workspace-write", "default"),
             "Failed to get Codex sandbox mode");
     }
@@ -254,9 +251,6 @@ public class ProjectConfigHandler {
     private static JsonObject sandboxPayload(String mode, String source) {
         JsonObject result = jsonOf("sandboxMode", mode);
         result.addProperty("sandboxSource", source);
-        result.addProperty("sandboxDesired", mode);
-        result.addProperty("sandboxEffective", mode);
-        result.addProperty("sandboxConflict", false);
         return result;
     }
 

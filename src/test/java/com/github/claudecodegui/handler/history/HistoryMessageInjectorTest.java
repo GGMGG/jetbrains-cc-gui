@@ -3,6 +3,10 @@ package com.github.claudecodegui.handler.history;
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader;
 import com.github.claudecodegui.session.ClaudeSession;
+import com.github.claudecodegui.session.MessageParser;
+import com.github.claudecodegui.session.SessionCallbackFacade;
+import com.github.claudecodegui.session.SessionMessageOrchestrator;
+import com.github.claudecodegui.session.SessionState;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -15,6 +19,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.lang.reflect.Proxy;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -25,6 +33,101 @@ import static org.junit.Assert.assertTrue;
  * Unit tests for provider-aware history loading, pagination, and frontend conversion.
  */
 public class HistoryMessageInjectorTest {
+    /** Earlier pages must follow the selected session's directory rather than the IDE project root. */
+    @Test
+    public void delegatesEarlierClaudePagesWithTheSessionsCustomDirectory() throws Exception {
+        HandlerContext context = createContext("D:/project/demo");
+        AtomicReference<String> forwarded = new AtomicReference<>();
+        CountDownLatch requestForwarded = new CountDownLatch(1);
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                null, new SessionState(), new MessageParser(), new SessionCallbackFacade(null), null) {
+            /** Record only delegation so the fixture never launches a provider process. */
+            @Override
+            public CompletableFuture<Void> loadEarlierClaudeHistoryPage(String sessionId, String cwd, int beforeTurn) {
+                forwarded.set(sessionId + "|" + cwd + "|" + beforeTurn);
+                requestForwarded.countDown();
+                return CompletableFuture.completedFuture(null);
+            }
+        };
+        ClaudeSession session = new ClaudeSession(null, null, null, null) {
+            /** Keep the handler on the recording history reader. */
+            @Override
+            public SessionMessageOrchestrator getOrchestrator() {
+                return orchestrator;
+            }
+        };
+        session.setSessionInfo("custom-session", "D:/custom/workspace");
+        context.setSession(session);
+        HistoryMessageInjector injector = new HistoryMessageInjector(context);
+
+        injector.loadEarlierClaudeHistoryPage("{\"sessionId\":\"custom-session\",\"beforeTurn\":30}");
+
+        assertTrue(requestForwarded.await(5, TimeUnit.SECONDS));
+        assertEquals("custom-session|D:/custom/workspace|30", forwarded.get());
+    }
+
+    /** The browser fixture must match the actual full and paged legacy projection. */
+    @Test
+    public void keepsReloadedBatchFixtureAlignedWithTheHistoryReader() throws Exception {
+        for (String name : List.of("codex-reloaded-tool-batch", "codex-interrupted-command-history")) {
+            JsonObject fixture = com.google.gson.JsonParser.parseString(Files.readString(
+                    findFixture(name))).getAsJsonObject();
+            JsonArray records = fixture.getAsJsonArray("records");
+            List<JsonObject> complete = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(records);
+            assertEquals(name, fixture.get("messages"), new com.google.gson.Gson().toJsonTree(complete));
+            var page = HistoryMessageInjector.paginateCodexMessages(records, null, 30);
+            assertEquals(1, page.totalTurns);
+            assertEquals(complete, page.messages);
+        }
+    }
+
+    /**
+     * The shared browser fixtures live under webview/e2e, outside the JVM test roots;
+     * locate them upward so the check does not depend on the working directory.
+     */
+    private static Path findFixture(String name) throws java.io.IOException {
+        Path dir = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        for (int depth = 0; depth < 4 && dir != null; depth++, dir = dir.getParent()) {
+            Path candidate = dir.resolve("webview").resolve("e2e").resolve("fixtures").resolve(name + ".json");
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+        }
+        throw new java.io.IOException("Browser fixture not found: " + name);
+    }
+
+    /** Reloaded commentary and hidden reasoning share the tools' recorded turn identity. */
+    @Test
+    public void preservesRecordedScopeAroundNativeToolBatches() {
+        JsonArray records = new JsonArray();
+        records.add(com.google.gson.JsonParser.parseString("{\"type\":\"session_meta\",\"payload\":{\"id\":\"root\"}}"));
+        JsonObject commentary = responseItemAssistantMessage("2026-10-09T03:31:00Z", "Checking the local changes");
+        commentary.getAsJsonObject("payload").add("internal_chat_message_metadata_passthrough",
+                com.google.gson.JsonParser.parseString("{\"turn_id\":\"own\"}"));
+        records.add(commentary);
+        records.add(com.google.gson.JsonParser.parseString("""
+                {"type":"event_msg","payload":{"type":"item_completed","thread_id":"root","turn_id":"own",
+                "item":{"type":"CommandExecution","id":"first","status":"completed","command":"git diff","exit_code":0}}}
+                """));
+        records.add(com.google.gson.JsonParser.parseString("""
+                {"type":"response_item","payload":{"type":"reasoning","id":"hidden-reasoning","summary":[],
+                "internal_chat_message_metadata_passthrough":{"turn_id":"own"}}}
+                """));
+        records.add(com.google.gson.JsonParser.parseString("""
+                {"type":"event_msg","payload":{"type":"item_completed","thread_id":"root","turn_id":"own",
+                "item":{"type":"CommandExecution","id":"second","status":"completed","command":"git status","exit_code":0}}}
+                """));
+        List<JsonObject> messages = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(records);
+        assertEquals(6, messages.size());
+        for (JsonObject message : messages) {
+            JsonObject raw = message.getAsJsonObject("raw");
+            assertEquals("root", HistoryMessageInjector.getStringProperty(raw, "codexThreadId"));
+            assertEquals("own", HistoryMessageInjector.getStringProperty(raw, "codexTurnId"));
+        }
+        assertEquals("hidden-reasoning", messages.get(3).getAsJsonObject("raw").get("uuid").getAsString().substring("codex-legacy:".length()));
+        assertEquals("", getOnlyRawContentBlock(messages.get(3)).get("thinking").getAsString());
+    }
+
     /** Native activity keeps path-only launch receipts tied to the real child thread. */
     @Test
     public void restoresNativeSubagentActivityWithoutOverwritingTheLaunch() {
@@ -169,6 +272,31 @@ public class HistoryMessageInjectorTest {
         JsonObject tool = getOnlyRawContentBlock(HistoryMessageInjector.convertCodexMessagesToFrontendBatch(records).get(0));
         assertEquals("apply_patch", tool.get("name").getAsString());
         assertTrue(tool.getAsJsonObject("input").get("patch").getAsString().contains("${name}"));
+    }
+
+    /** Running and completed process owners must charge their command text to the replay budget. */
+    @Test
+    public void accountsForCommandOwnersUntilTheirNativeCompletionArrives() {
+        var accumulator = new HistoryMessageInjector.CodexFrontendMessageAccumulator(message -> { }, message -> { });
+        String command = "printf " + "x".repeat(20_000);
+        accumulator.accept(customToolCall("2026-10-02T00:00:00Z", "started", "exec",
+                "text(await tools.exec_command({cmd:" + new com.google.gson.Gson().toJson(command) + "}));"));
+        accumulator.accept(customToolCallOutput("2026-10-02T00:00:01Z", "started", "{\"session_id\":11,\"output\":\"running\"}"));
+        accumulator.accept(responseItemAssistantMessage("2026-10-02T00:00:02Z", "flushed card"));
+        assertTrue(accumulator.retainedBytes() >= 3L * command.length());
+        accumulator.accept(customToolCall("2026-10-02T00:00:03Z", "poll", "exec",
+                "text(await tools.write_stdin({session_id:11,chars:''}));"));
+        accumulator.accept(customToolCallOutput("2026-10-02T00:00:04Z", "poll", "{\"exit_code\":0,\"output\":\"stopped\"}"));
+        accumulator.accept(responseItemAssistantMessage("2026-10-02T00:00:05Z", "flushed outcome"));
+        assertTrue(accumulator.retainedBytes() >= 3L * command.length());
+        JsonObject completion = com.google.gson.JsonParser.parseString("""
+                {"type":"event_msg","payload":{"type":"item_completed",
+                "item":{"type":"CommandExecution","id":"native-started","status":"completed","exit_code":0,"process_id":"11"}}}
+                """).getAsJsonObject();
+        completion.getAsJsonObject("payload").getAsJsonObject("item").addProperty("command", command);
+        accumulator.accept(completion);
+        accumulator.accept(responseItemAssistantMessage("2026-10-02T00:00:06Z", "flushed native receipt"));
+        assertTrue(accumulator.retainedBytes() < command.length());
     }
 
     /** Includes unmatched replay inputs in retained state after visible messages have been flushed. */

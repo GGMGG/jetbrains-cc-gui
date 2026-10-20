@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CodexAppServerService } from './codex-appserver-service.js';
 
 // The persistent service writes process-level NDJSON via
 // process.stdout._originalStdoutWrite when present; install a capture writer
@@ -28,15 +29,43 @@ const {
   codexRespondInteractionPersistent,
   codexAbortTurnPersistent,
   codexResetRuntimePersistent,
+  codexReleaseThreadPersistent,
   codexShutdownPersistentRuntimes,
   getCodexRuntimeSnapshot,
   filterCodexProjectThreads,
   projectThreadFileChanges,
   codexReadThreadPersistent,
+  codexCountThreadMessagesPersistent,
   setCodexPristineBaseEnv,
+  buildTurnSettings,
 } = await import('./persistent-codex-service.js');
 
 setCodexPristineBaseEnv({ ...process.env, CODEX_HOME: join(testCwd, 'native-home') });
+
+// The webview mirrors this mapping when it derives an access scope from the
+// permission mode (deriveCodexAccessScopeFromMode). A drift here is what made a
+// Full Auto session keep running inside the workspace sandbox.
+test('Full Auto maps to danger-full-access without approvals', () => {
+  const settings = buildTurnSettings({ permissionMode: 'bypassPermissions' });
+  assert.equal(settings.approvalPolicy, 'never');
+  assert.equal(settings.sandbox, 'danger-full-access');
+});
+
+test('native auto review stays inside the workspace sandbox', () => {
+  const settings = buildTurnSettings({ permissionMode: 'auto' });
+  assert.equal(settings.approvalPolicy, 'on-request');
+  assert.equal(settings.approvalsReviewer, 'auto_review');
+  assert.equal(settings.sandbox, 'workspace-write');
+});
+
+test('an explicit per-turn sandbox selection wins over the mode mapping', () => {
+  const settings = buildTurnSettings({
+    permissionMode: 'default',
+    sandboxSelection: 'danger-full-access',
+  });
+  assert.equal(settings.sandbox, 'danger-full-access');
+  assert.equal(settings.approvalPolicy, 'on-request');
+});
 
 test('a warm managed to CLI Login switch resolves missing credentials for the new native child', async () => {
   const codexHome = mkdtempSync(join(tmpdir(), 'codex-native-env-'));
@@ -94,7 +123,7 @@ test('the persistent channel clears Fast with explicit standard input and keeps 
   }
 });
 
-test('first successful conversation names its native thread asynchronously and survives a cold metadata read', async () => {
+test('the opening conversation names its native thread asynchronously and survives a cold metadata read', async () => {
   const data = { channelId: 'title-session', cwd: testCwd, codexCommandPrefix: peerCommandPrefix('session-title'),
     message: '修复命令卡片', clientMessageId: 'title-message' };
   const result = await codexSendPersistent(data, { titleDependencies: { enabled: async () => true, readCustomTitle: async () => null } });
@@ -107,6 +136,100 @@ test('first successful conversation names its native thread asynchronously and s
   assert.equal(event?.payload?.threadName, '修复命令卡片');
   const saved = await codexReadThreadPersistent({ ...data, threadId: event.threadId, params: { includeTurns: false } });
   assert.equal(saved.thread.name, '修复命令卡片');
+});
+
+test('the first thread is named while its opening turn is still running', async () => {
+  const data = { channelId: 'early-title', cwd: testCwd, codexCommandPrefix: peerCommandPrefix('early-title'),
+    message: '先行命名', clientMessageId: 'early-title-message' };
+  const sendPromise = codexSendPersistent(data, { titleDependencies: { enabled: async () => true, readCustomTitle: async () => null } });
+  const events = () => codexEvents().filter(event => event.channelId === 'early-title');
+  let named = false;
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    named = events().some(event => event.kind === 'threadNameUpdated');
+    if (named) {
+      break;
+    }
+    await new Promise(done => setTimeout(done, 10));
+  }
+  assert.ok(named, 'name set while the send is still pending');
+  assert.equal(events().some(event => event.kind === 'turnCompleted'), false,
+    'main turn has not reached its terminal yet');
+  const interaction = events().find(event => event.kind === 'interactionRequested');
+  assert.ok(interaction, 'approval still holding the turn open');
+  await codexRespondInteractionPersistent({ channelId: 'early-title', rpcId: interaction.payload.rpcId,
+    result: { decision: 'accept' } });
+  const result = await sendPromise;
+  assert.equal(result.outcome, 'completed');
+});
+
+test('an immediate retry after failed bootstrap still names the opening thread', async (context) => {
+  const data = { channelId: 'title-bootstrap-retry', cwd: testCwd,
+    codexCommandPrefix: peerCommandPrefix('title-bootstrap-retry'), message: '修复命令卡片' };
+  let attempts = 0;
+  const dependencies = { titleDependencies: {
+    enabled: async () => { attempts += 1; return true; }, readCustomTitle: async () => null,
+  } };
+  await codexPreconnectPersistent(data);
+  // Freeze the old polling timer so retrying before it wakes is deterministic.
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    assert.equal((await codexSendPersistent(data, dependencies)).outcome, 'failed');
+    assert.equal((await codexSendPersistent(data, dependencies)).outcome, 'completed');
+    context.mock.timers.tick(25);
+  } finally {
+    context.mock.timers.reset();
+  }
+  const deadline = Date.now() + 2000;
+  while (!codexEvents().some(event => event.kind === 'threadNameUpdated') && Date.now() < deadline) {
+    await new Promise(done => setTimeout(done, 10));
+  }
+  const names = codexEvents().filter(event => event.kind === 'threadNameUpdated');
+  assert.equal(attempts, 1, 'the successful retry must get one title attempt');
+  assert.ok(names.length > 0, 'the generated title must be saved');
+  assert.equal(names[0].payload.threadName, '修复命令卡片');
+});
+
+test('a queued opening send can claim the title after the preceding bootstrap fails', async () => {
+  const data = { channelId: 'queued-title-retry', cwd: testCwd,
+    codexCommandPrefix: peerCommandPrefix('title-bootstrap-retry'), message: '修复命令卡片' };
+  let attempts = 0;
+  const dependencies = { titleDependencies: {
+    enabled: async () => { attempts += 1; return true; }, readCustomTitle: async () => null,
+  } };
+  const first = codexSendPersistent(data, dependencies);
+  const second = codexSendPersistent(data, dependencies);
+  assert.equal((await first).outcome, 'failed');
+  assert.equal((await second).outcome, 'completed');
+  const deadline = Date.now() + 2000;
+  while (!codexEvents().some(event => event.kind === 'threadNameUpdated') && Date.now() < deadline) {
+    await new Promise(done => setTimeout(done, 10));
+  }
+  assert.equal(attempts, 1);
+  assert.equal(codexEvents().find(event => event.kind === 'threadNameUpdated')?.payload.threadName, '修复命令卡片');
+});
+
+test('a delayed title check cannot revive a crashed conversation runtime', async () => {
+  const data = { channelId: 'title-after-crash', cwd: testCwd,
+    codexCommandPrefix: peerCommandPrefix('disconnect-mid-turn'), message: 'inspect the failure' };
+  let releaseCheck;
+  let checked = false;
+  const enabled = new Promise(resolveCheck => { releaseCheck = resolveCheck; });
+  try {
+    const result = await codexSendPersistent(data, { titleDependencies: {
+      enabled: () => { checked = true; return enabled; }, readCustomTitle: async () => null,
+    } });
+    assert.equal(result.outcome, 'failed');
+    assert.ok(checked, 'the title check began before the native child failed');
+    assert.equal(getCodexRuntimeSnapshot().sessions[0].state, 'failed');
+    releaseCheck(true);
+    await new Promise(done => setImmediate(done));
+    const snapshot = getCodexRuntimeSnapshot().sessions[0];
+    assert.equal(snapshot.state, 'failed', 'optional naming must leave recovery to the next user operation');
+    assert.equal(snapshot.runtimeGeneration, 1);
+  } finally {
+    releaseCheck(false);
+  }
 });
 
 test('an authoritative completed plan remains executable and rejects substituted text', async () => {
@@ -162,6 +285,248 @@ test('project history hides guardian review sources without hiding user reviews 
   ];
   assert.deepEqual(filterCodexProjectThreads(threads, testCwd).map(thread => thread.id), ['user', 'review']);
   assert.deepEqual(filterCodexProjectThreads(threads, null).map(thread => thread.id), ['user', 'review']);
+});
+
+test('native message counts use the read-only host without claiming a thread writer', async () => {
+  const data = { channelId: 'history-count', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  assert.deepEqual(await codexCountThreadMessagesPersistent(data), { threadId: data.threadId, messageCount: 5 });
+  assert.deepEqual(await codexCountThreadMessagesPersistent(data), { threadId: data.threadId, messageCount: 5 });
+  assert.equal(getCodexRuntimeSnapshot().sessions[0].rootThreadId, null);
+  assert.equal(getCodexRuntimeSnapshot().sessions[0].busy, false);
+  assert.equal(codexEvents().some(event => event.kind === 'turnStarted'), false);
+});
+
+test('native message counts cannot survive a change of runtime storage or CLI', async () => {
+  const data = { channelId: 'history-count-config', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  assert.equal((await codexCountThreadMessagesPersistent(data)).messageCount, 5);
+  // The same native id/revision can exist in another CODEX_HOME or reader runtime.
+  assert.equal((await codexCountThreadMessagesPersistent({ ...data,
+    codexCommandPrefix: peerCommandPrefix('native-items') })).messageCount, 1);
+});
+
+test('resetting a native runtime retires its message-count cache before the next read', async () => {
+  const data = { channelId: 'history-count-reset', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  assert.equal((await codexCountThreadMessagesPersistent(data)).messageCount, 5);
+  await codexResetRuntimePersistent(data);
+  assert.equal(getCodexRuntimeSnapshot().sessions[0].state, 'stopped');
+  assert.equal((await codexCountThreadMessagesPersistent(data)).messageCount, 5);
+  assert.equal(getCodexRuntimeSnapshot().sessions[0].state, 'ready', 'the fresh count must traverse native history again');
+});
+
+test('parallel counts share a fresh reader while its runtime is starting or restarting', async () => {
+  const data = { channelId: 'history-count-parallel', cwd: testCwd,
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  for (const [scenario, expected] of [['early-notification', 5], ['native-items', 1]]) {
+    const responses = await Promise.all(['first', 'second', 'third', 'fourth'].map(threadId =>
+      codexCountThreadMessagesPersistent({ ...data, threadId, codexCommandPrefix: peerCommandPrefix(scenario) })));
+    assert.deepEqual(responses.map(response => response.messageCount), [expected, expected, expected, expected]);
+  }
+  assert.equal(getCodexRuntimeSnapshot().sessions[0].runtimeGeneration, 2);
+});
+
+test('a cold restart cannot reuse counts cached by a crashed native reader', async () => {
+  const data = { channelId: 'history-count-crash', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('disconnect-mid-turn'), params: { updatedAt: 1 } };
+  assert.equal((await codexCountThreadMessagesPersistent(data)).messageCount, 5);
+  const generation = getCodexRuntimeSnapshot().sessions[0].runtimeGeneration;
+  const result = await codexSendPersistent({ ...data, message: 'crash the fixture peer' },
+    { titleDependencies: { enabled: async () => false } });
+  assert.equal(result.outcome, 'failed');
+  assert.equal((await codexCountThreadMessagesPersistent(data)).messageCount, 5);
+  assert.ok(getCodexRuntimeSnapshot().sessions[0].runtimeGeneration > generation);
+  assert.equal(getCodexRuntimeSnapshot().sessions[0].state, 'ready');
+});
+
+test('an in-flight count cannot join pages from different native runtimes', async () => {
+  const data = { channelId: 'history-count-race', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  const originalRead = CodexAppServerService.prototype.readOnly;
+  let announceRead;
+  let releaseRead;
+  const readStarted = new Promise(resolve => { announceRead = resolve; });
+  const continueRead = new Promise(resolve => { releaseRead = resolve; });
+  let pauseFirstRead = true;
+  CodexAppServerService.prototype.readOnly = async function (method, params) {
+    const response = await originalRead.call(this, method, params);
+    if (pauseFirstRead) {
+      pauseFirstRead = false;
+      announceRead();
+      await continueRead;
+    }
+    return response;
+  };
+  try {
+    const obsolete = assert.rejects(codexCountThreadMessagesPersistent(data), /runtime changed/);
+    await readStarted;
+    assert.equal((await codexCountThreadMessagesPersistent({ ...data,
+      codexCommandPrefix: peerCommandPrefix('native-items') })).messageCount, 1);
+    releaseRead();
+    await obsolete;
+  } finally {
+    releaseRead();
+    CodexAppServerService.prototype.readOnly = originalRead;
+  }
+});
+
+test('a reset or released runtime is never resurrected by an in-flight count', async () => {
+  const data = { channelId: 'history-count-resurrect', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  const originalRead = CodexAppServerService.prototype.readOnly;
+  const originalEnsureRuntime = CodexAppServerService.prototype.ensureRuntime;
+  let announceRead;
+  let releaseRead;
+  const readStarted = new Promise(resolve => { announceRead = resolve; });
+  const continueRead = new Promise(resolve => { releaseRead = resolve; });
+  let pauseFirstRead = true;
+  let runtimeResurrected = false;
+  CodexAppServerService.prototype.readOnly = async function (method, params) {
+    const response = await originalRead.call(this, method, params);
+    if (pauseFirstRead) {
+      pauseFirstRead = false;
+      announceRead();
+      await continueRead;
+    }
+    return response;
+  };
+  CodexAppServerService.prototype.ensureRuntime = async function (...args) {
+    if (runtimeResurrected) throw new Error('ensureRuntime must not run for a retired runtime');
+    return await originalEnsureRuntime.apply(this, args);
+  };
+  try {
+    const obsolete = assert.rejects(codexCountThreadMessagesPersistent(data), /runtime changed/);
+    await readStarted;
+    await codexResetRuntimePersistent({ ...data, dispose: true });
+    runtimeResurrected = true;
+    releaseRead();
+    await obsolete;
+    assert.equal(getCodexRuntimeSnapshot().sessions.length, 0);
+  } finally {
+    releaseRead();
+    CodexAppServerService.prototype.readOnly = originalRead;
+    CodexAppServerService.prototype.ensureRuntime = originalEnsureRuntime;
+  }
+});
+
+test('shutdown retires a count paused after its cold start without resurrecting an untracked runtime', async () => {
+  const data = { channelId: 'history-count-shutdown', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  const originalEnsureRuntime = CodexAppServerService.prototype.ensureRuntime;
+  let announceStart;
+  let releaseStart;
+  let service;
+  let pauseFirstStart = true;
+  let retiring = false;
+  let resurrected = false;
+  const startReady = new Promise(resolve => { announceStart = resolve; });
+  const continueStart = new Promise(resolve => { releaseStart = resolve; });
+  CodexAppServerService.prototype.ensureRuntime = async function (...args) {
+    if (retiring) {
+      resurrected = true;
+      throw new Error('ensureRuntime must not run for a retired runtime');
+    }
+    await originalEnsureRuntime.apply(this, args);
+    if (pauseFirstStart) {
+      pauseFirstStart = false;
+      service = this;
+      announceStart();
+      await continueStart;
+    }
+  };
+  try {
+    const obsolete = assert.rejects(codexCountThreadMessagesPersistent(data), /runtime changed/);
+    await startReady;
+    await codexShutdownPersistentRuntimes();
+    retiring = true;
+    releaseStart();
+    await obsolete;
+    assert.equal(resurrected, false, 'the removed session must not start another native child');
+    assert.equal(getCodexRuntimeSnapshot().sessions.length, 0);
+  } finally {
+    releaseStart();
+    CodexAppServerService.prototype.ensureRuntime = originalEnsureRuntime;
+    await service?.resetRuntime({ reason: 'test-cleanup' });
+  }
+});
+
+test('a release drain never answers a late count by cold-starting its retired runtime', async () => {
+  const data = { channelId: 'history-count-release-drain', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  assert.equal((await codexCountThreadMessagesPersistent(data)).messageCount, 5);
+  const originalResetRuntime = CodexAppServerService.prototype.resetRuntime;
+  const originalEnsureRuntime = CodexAppServerService.prototype.ensureRuntime;
+  let announceDrain;
+  let releaseDrain;
+  const drainStarted = new Promise(resolve => { announceDrain = resolve; });
+  const continueDrain = new Promise(resolve => { releaseDrain = resolve; });
+  let retiring = false;
+  CodexAppServerService.prototype.resetRuntime = async function (...args) {
+    announceDrain();
+    await continueDrain;
+    return await originalResetRuntime.apply(this, args);
+  };
+  CodexAppServerService.prototype.ensureRuntime = async function (...args) {
+    if (retiring) throw new Error('ensureRuntime must not run for a retiring runtime');
+    return await originalEnsureRuntime.apply(this, args);
+  };
+  try {
+    const releasing = codexReleaseThreadPersistent(data);
+    await drainStarted;
+    retiring = true;
+    await assert.rejects(codexCountThreadMessagesPersistent(data), /runtime changed/);
+    releaseDrain();
+    await releasing;
+    assert.equal(getCodexRuntimeSnapshot().sessions.length, 0,
+      'the released session must stay released with no resurrected runtime');
+  } finally {
+    releaseDrain();
+    CodexAppServerService.prototype.resetRuntime = originalResetRuntime;
+    CodexAppServerService.prototype.ensureRuntime = originalEnsureRuntime;
+  }
+});
+
+test('an in-flight count fails instead of paging a runtime that a release retired', async () => {
+  const data = { channelId: 'history-count-release-race', cwd: testCwd, threadId: 'th-test-root-0001',
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+  const originalRead = CodexAppServerService.prototype.readOnly;
+  const originalEnsureRuntime = CodexAppServerService.prototype.ensureRuntime;
+  let announceRead;
+  let releaseRead;
+  const readStarted = new Promise(resolve => { announceRead = resolve; });
+  const continueRead = new Promise(resolve => { releaseRead = resolve; });
+  let pauseFirstRead = true;
+  let runtimeResurrected = false;
+  CodexAppServerService.prototype.readOnly = async function (method, params) {
+    const response = await originalRead.call(this, method, params);
+    if (pauseFirstRead) {
+      pauseFirstRead = false;
+      announceRead();
+      await continueRead;
+    }
+    return response;
+  };
+  CodexAppServerService.prototype.ensureRuntime = async function (...args) {
+    if (runtimeResurrected) throw new Error('ensureRuntime must not run for a retired runtime');
+    return await originalEnsureRuntime.apply(this, args);
+  };
+  try {
+    // The paused read belongs to the only count this session ever issues, so no
+    // warm cache can satisfy it; the release below must retire its runtime.
+    const obsolete = assert.rejects(codexCountThreadMessagesPersistent(data), /runtime changed/);
+    await readStarted;
+    await codexReleaseThreadPersistent(data);
+    runtimeResurrected = true;
+    releaseRead();
+    await obsolete;
+    assert.equal(getCodexRuntimeSnapshot().sessions.length, 0,
+      'the released session must stay released with no resurrected runtime');
+  } finally {
+    releaseRead();
+    CodexAppServerService.prototype.readOnly = originalRead;
+    CodexAppServerService.prototype.ensureRuntime = originalEnsureRuntime;
+  }
 });
 
 function peerCommandPrefix(scenario) {

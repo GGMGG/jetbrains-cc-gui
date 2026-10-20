@@ -113,6 +113,7 @@ public class ClaudeSession {
         default void onStatusMessage(String message) {
         }
 
+        /** Publishes an identity, or an empty string when a missing transcript retires it. */
         void onSessionIdReceived(String sessionId);
 
         void onPermissionRequested(PermissionRequest request);

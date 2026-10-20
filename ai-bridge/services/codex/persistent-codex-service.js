@@ -32,6 +32,7 @@ import { getCodemossDir } from '../../utils/path-utils.js';
 import { join } from 'node:path';
 import { CodexPrivacyIndex } from './codex-privacy-index.js';
 import { readNativeHistoryPage } from './codex-native-history.js';
+import { createNativeHistoryCounter } from './codex-history-message-count.js';
 import { readNativeSubagent } from './codex-native-subagents.js';
 import { projectCodexItemMessages } from './codex-item-projection.js';
 import { isGuardianReviewThread } from './codex-thread-visibility.js';
@@ -45,6 +46,9 @@ import { prepareCodexRuntimeEnvironment } from './codex-native-runtime-env.js';
 
 /** sessionKey → {service, launchOptions, fingerprint, createdAt} */
 const sessionServices = new Map();
+const nativeHistoryCounters = new WeakMap();
+/** Services retired by a thread release: never cold-started again, only collected. */
+const retiredSessionServices = new WeakSet();
 
 /**
  * Pristine base environment for codex runtime construction, captured once
@@ -252,6 +256,8 @@ function ensureSessionService(stdinData, { nativeEnvironmentDependencies = {} } 
     existing.commandPrefix = commandPrefix;
     existing.nativeRuntime = runtime;
     existing.titleAbort?.abort();
+    // Counts belong to the old CLI/storage/auth runtime, not just to a reusable host object.
+    nativeHistoryCounters.delete(existing.service);
     existing.service.clientFactory = createClient;
     existing.service.startupAttempts = cliPlan.candidates.length;
     existing.service.notifyLaunchConfigChange(launchOptions, fingerprint);
@@ -311,7 +317,15 @@ function getServiceOrNull(stdinData) {
 // Operation settings assembly
 // =============================================================================
 
-function buildTurnSettings(stdinData) {
+/**
+ * Translate one turn's stdin payload into native app-server settings.
+ *
+ * Exported because this mapping is the contract the webview mirrors when it
+ * derives an access scope from the permission mode: Full Auto means
+ * danger-full-access + `never` on every platform. Divergence here is what made
+ * a Full Auto session run sandboxed, so the mapping is pinned by tests.
+ */
+export function buildTurnSettings(stdinData) {
   const settings = {};
   const permissionMode = typeof stdinData?.permissionMode === 'string'
     ? stdinData.permissionMode.trim() : '';
@@ -420,6 +434,31 @@ function buildNativeInput(stdinData) {
 // Daemon command surface
 // =============================================================================
 
+/**
+ * Bootstrap announces the thread before the opening turn completes. Listening
+ * avoids a polling claim that can outlive a failed send and block its retry.
+ */
+function waitForOperationThreadId(service, operation, signal) {
+  return new Promise(resolve => {
+    let finished = false;
+    const finish = threadId => {
+      if (finished) return;
+      finished = true;
+      service.off('codex_event', onEvent);
+      signal.removeEventListener('abort', onAbort);
+      resolve(signal.aborted ? null : threadId ?? null);
+    };
+    const onEvent = event => {
+      if (event.kind === 'threadStarted' && service.activeOperationId === operation.clientOperationId
+          && !operation.settled) finish(event.threadId);
+    };
+    const onAbort = () => finish(null);
+    service.on('codex_event', onEvent);
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.promise.then(() => finish(operation.threadId), () => finish(null));
+  });
+}
+
 /** Long operation: runs inside the daemon commandQueue until terminal. */
 export async function codexSendPersistent(stdinData, { titleDependencies = {}, nativeEnvironmentDependencies = {} } = {}) {
   const { service, sessionKey } = ensureSessionService(stdinData, { nativeEnvironmentDependencies });
@@ -439,27 +478,40 @@ export async function codexSendPersistent(stdinData, { titleDependencies = {}, n
   // identity even while background events flow through the process channel.
   captureOperationMarkers(operation);
   markerLine('[MESSAGE_START]');
-  const result = await operation.promise;
-  if (firstNewThread && result.outcome === 'completed' && !entry.titleAttempted) {
-    entry.titleAttempted = true;
-    const threadId = operation.threadId;
-    const generation = service.runtimeGeneration;
-    const fingerprint = entry.fingerprint;
-    entry.titleAbort = new AbortController();
-    const canApply = () => sessionServices.get(sessionKey) === entry && !entry.titleAbort.signal.aborted
-      && entry.fingerprint === fingerprint && service.runtimeGeneration === generation && service.rootThreadId === threadId;
-    entry.titleTask = settleCodexSessionTitle({ service, threadId, userMessage: stdinData.message, canApply,
-      generateText: input => generateCodexText({ ...input, model: stdinData.model }, {
-        runtimeState: () => ({ access: entry.launchOptions.authMode }),
-        resolveCli: () => ({ status: 'resolved', command: entry.currentCliCommand?.() ?? entry.commandPrefix }),
-        nativeRuntime: { ...entry.nativeRuntime, env: { ...entry.nativeRuntime.env,
-          ...(entry.launchOptions.codexHome ? { CODEX_HOME: entry.launchOptions.codexHome } : {}) } },
-        baseEnv: pristineBaseEnv ?? process.env, nativeEnvironmentDependencies,
-        cwd: stdinData.cwd, timeoutMs: 15_000, signal: entry.titleAbort.signal,
-      }),
-    }, titleDependencies);
+  // Name the thread while the turn runs: the title request uses its own
+  // app-server child and thread/name/set is a direct RPC, so neither competes
+  // with the live operation. Waiting for the turn to settle delayed the title
+  // by the whole run — minutes on long tasks.
+  if (firstNewThread && !entry.titleAttempted) {
+    if (!entry.titleAbort || entry.titleAbort.signal.aborted) entry.titleAbort = new AbortController();
+    const { signal } = entry.titleAbort;
+    const titleTask = (async () => {
+      const threadId = await waitForOperationThreadId(service, operation, signal);
+      if (!threadId || signal.aborted || entry.titleAttempted) return;
+      // Claim only a created thread, so failed bootstraps leave queued retries eligible.
+      entry.titleAttempted = true;
+      const generation = service.runtimeGeneration;
+      const fingerprint = entry.fingerprint;
+      // Optional metadata reads must not restart a failed or retiring writer.
+      const canApply = () => sessionServices.get(sessionKey) === entry && !signal.aborted
+        && service.state === 'ready' && service.client?.alive
+        && entry.fingerprint === fingerprint && service.runtimeGeneration === generation && service.rootThreadId === threadId;
+      await settleCodexSessionTitle({ service, threadId, userMessage: stdinData.message, canApply,
+        generateText: input => generateCodexText({ ...input, model: stdinData.model }, {
+          runtimeState: () => ({ access: entry.launchOptions.authMode }),
+          resolveCli: () => ({ status: 'resolved', command: entry.currentCliCommand?.() ?? entry.commandPrefix }),
+          nativeRuntime: { ...entry.nativeRuntime, env: { ...entry.nativeRuntime.env,
+            ...(entry.launchOptions.codexHome ? { CODEX_HOME: entry.launchOptions.codexHome } : {}) } },
+          baseEnv: pristineBaseEnv ?? process.env, nativeEnvironmentDependencies,
+          cwd: stdinData.cwd, timeoutMs: 15_000, signal,
+        }),
+      }, titleDependencies);
+    })();
+    // Several sends can queue before bootstrap; teardown must cancel and await
+    // all their listeners even though only the first created thread gets named.
+    entry.titleTask = Promise.all([entry.titleTask, titleTask]).then(() => {});
   }
-  return result;
+  return await operation.promise;
 }
 
 /** Execute one current native plan item as a fresh default-mode turn. */
@@ -590,6 +642,41 @@ export async function codexListThreadsPersistent(stdinData) {
   return { ...result, data: filterCodexProjectThreads(result.data, projectPath) };
 }
 
+/** Counts history independently so listing metadata never waits for full transcripts. */
+export async function codexCountThreadMessagesPersistent(stdinData) {
+  const { service } = ensureSessionService(stdinData);
+  let counter = nativeHistoryCounters.get(service);
+  if (!counter || counter.generation !== null && (counter.generation !== service.runtimeGeneration
+      || ['failed', 'stopped', 'draining'].includes(service.state))) {
+    counter = { generation: null, count: null };
+    const owner = counter;
+    const stillOwnsRuntime = () => nativeHistoryCounters.get(service) === owner
+      && service.runtimeGeneration === owner.generation;
+    owner.count = createNativeHistoryCounter(async (method, params) => {
+      // A reset, release or reconfiguration must not resurrect its runtime just
+      // to fail one page read; an unbound counter still owns its cold start. A
+      // service retired by a thread release must never be cold-started again:
+      // its session entry is gone, so a runtime spawned here would be untracked.
+      if (nativeHistoryCounters.get(service) !== owner
+          || retiredSessionServices.has(service)
+          || owner.generation !== null && ['failed', 'stopped', 'draining'].includes(service.state)) {
+        throw new Error('Native message-count runtime changed; retry the count');
+      }
+      // Startup stays inside the counter's total deadline, not ahead of its timeout.
+      await service.ensureRuntime();
+      if (owner.generation === null) owner.generation = service.runtimeGeneration;
+      // A multi-page traversal must not splice an old runtime's page into a replacement reader.
+      if (!stillOwnsRuntime()) throw new Error('Native message-count runtime changed; retry the count');
+      const response = await service.readOnly(method, params);
+      if (!stillOwnsRuntime()) throw new Error('Native message-count runtime changed; retry the count');
+      return response;
+    });
+    nativeHistoryCounters.set(service, owner);
+  }
+  const threadId = stdinData.threadId;
+  return { threadId, messageCount: await counter.count({ ...stdinData.params, id: threadId }) };
+}
+
 /** Keeps descendant directories while honoring Windows case and project boundaries. */
 export function filterCodexProjectThreads(threads, projectPath) {
   const normalize = (path) => String(path ?? '').replaceAll('\\', '/').replace(/\/$/, '')
@@ -689,6 +776,9 @@ export async function codexAbortTurnPersistent(stdinData) {
   if (!service) {
     return { stopped: false, reason: 'no-runtime' };
   }
+  // The user asked this turn to stop, so its auxiliary naming work stops too;
+  // a lingering title child would otherwise keep an app-server process alive.
+  sessionServices.get(sessionKeyOf(stdinData))?.titleAbort?.abort();
   const activeId = service.activeOperationId;
   if (!activeId) {
     const queued = service.queue[0];
@@ -752,6 +842,11 @@ export async function codexReleaseThreadPersistent(stdinData) {
   }
   const entry = sessionServices.get(sessionKeyOf(stdinData));
   entry?.titleAbort?.abort();
+  // An in-flight count must not keep paging (or cold-start) a runtime this
+  // release is retiring; release does not bump the runtime generation, so the
+  // bound counter would otherwise consider the retired runtime still its own.
+  nativeHistoryCounters.delete(service);
+  retiredSessionServices.add(service);
   try {
     return await service.releaseThread(stdinData?.threadId || null);
   } finally {
@@ -768,6 +863,10 @@ export async function codexResetRuntimePersistent(stdinData) {
     return { reset: false };
   }
   entry.titleAbort?.abort();
+  nativeHistoryCounters.delete(entry.service);
+  // A disposing reset retires the service like a release does; a plain reset
+  // keeps it, and its next count legitimately cold-starts the same host.
+  if (stdinData?.dispose) retiredSessionServices.add(entry.service);
   await entry.service.resetRuntime({ reason: stdinData?.reason ?? 'requested' });
   await entry.titleTask;
   if (stdinData?.dispose) {
@@ -803,6 +902,10 @@ export async function codexShutdownPersistentRuntimes() {
   const teardowns = [];
   for (const [sessionKey, entry] of [...sessionServices]) {
     entry.titleAbort?.abort();
+    // Shutdown removes the host too; a count returning from startup or IO must
+    // lose ownership before it can ask the retired service to start again.
+    nativeHistoryCounters.delete(entry.service);
+    retiredSessionServices.add(entry.service);
     teardowns.push(
       Promise.all([entry.service.resetRuntime({ reason: 'shutdown' }).catch(() => {}), entry.titleTask])
     );

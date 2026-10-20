@@ -822,7 +822,12 @@ public class ProviderManager {
                         "ANTHROPIC_MODEL",
                         "ANTHROPIC_DEFAULT_SONNET_MODEL",
                         "ANTHROPIC_DEFAULT_OPUS_MODEL",
-                        "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+                        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+                        "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+                        "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"
                     };
                     for (String key : modelMappingKeys) {
                         if (fullEnv.has(key) && !fullEnv.get(key).isJsonNull()) {

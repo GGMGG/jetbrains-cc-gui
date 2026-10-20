@@ -418,10 +418,10 @@ public class HistoryMessageInjector {
                 }
 
                 // Delegate to the session orchestrator which handles the actual pagination
-                ClaudeSession session = context.getSession();
+                ClaudeSession session = this.context.getSession();
                 if (session != null && sessionId.equals(session.getSessionId())) {
-                    String cwd = context.getProject() != null ? context.getProject().getBasePath() : null;
-                    session.getOrchestrator().loadEarlierClaudeHistoryPage(sessionId, cwd, beforeTurn);
+                    // Paging must use the same custom working directory as the accepted transcript.
+                    session.getOrchestrator().loadEarlierClaudeHistoryPage(sessionId, session.getCwd(), beforeTurn);
                 } else {
                     LOG.warn("[HistoryHandler] Claude history page request for inactive session: " + sessionId);
                 }
@@ -795,7 +795,7 @@ public class HistoryMessageInjector {
             String callId = getStringProperty(payload, "call_id");
             String payloadType = getStringProperty(payload, "type");
             if (this.knownExec != null) {
-                if (this.knownExec.rememberNative(rawMessage)) {
+                if (this.knownExec.rememberNative(rawMessage, this.processCalls)) {
                     if (this.retainedBytes() > MAX_REPLAY_BYTES) {
                         this.flushKnownExec(null);
                     }
@@ -831,14 +831,22 @@ public class HistoryMessageInjector {
             if (replay == null) {
                 return;
             }
-            List<JsonObject> messages = null;
+            // A record stashed while the wrapper was open belongs after the wrapper's
+            // own cards, matching its position in the transcript.
+            JsonObject stashed = this.pending;
+            this.pending = null;
+            boolean projected = false;
             try {
-                messages = replay.project(output, this.processCalls);
+                List<JsonObject> messages = replay.project(output, this.processCalls);
+                if (messages != null) {
+                    messages.forEach(this::acceptConverted);
+                    projected = true;
+                }
             } catch (RuntimeException ignored) {
                 // Malformed independent results cannot establish a complete replacement.
             }
-            if (messages != null) {
-                messages.forEach(this::acceptConverted);
+            if (projected) {
+                this.acceptConverted(stashed);
                 return;
             }
             if (replay.keepsOriginalWrapper()) {
@@ -855,20 +863,21 @@ public class HistoryMessageInjector {
                 if (output != null) {
                     this.acceptOpaqueExecRecord(output, replay.callId(), true);
                 }
-                return;
+            } else {
+                this.acceptLegacy(replay.original());
+                replay.nativeRecords().forEach(this::acceptLegacy);
+                if (output != null) {
+                    this.acceptLegacy(output);
+                }
             }
-            this.acceptLegacy(replay.original());
-            replay.nativeRecords().forEach(this::acceptLegacy);
-            if (output != null) {
-                this.acceptLegacy(output);
-            }
+            this.acceptConverted(stashed);
         }
 
         private void acceptOpaqueExecRecord(JsonObject record, String callId, boolean result) {
             JsonObject message = convertCodexMessageToFrontend(record);
             if (message != null) {
                 message.getAsJsonObject("raw").addProperty("uuid", "codex-legacy:" + callId + (result ? ":result" : ""));
-                this.acceptConverted(message);
+                this.acceptConverted(message, record);
             }
         }
 
@@ -947,7 +956,7 @@ public class HistoryMessageInjector {
                                 callId, patches.get(index), index, timestamp);
                         preview.getAsJsonObject("raw").getAsJsonArray("content").get(0)
                                 .getAsJsonObject().getAsJsonObject("input").addProperty("status", "unknown");
-                        this.acceptConverted(preview);
+                        this.acceptConverted(preview, rawMessage);
                     }
                 }
             }
@@ -963,17 +972,17 @@ public class HistoryMessageInjector {
                         && (!commands.isEmpty() || planInput != null || !patches.isEmpty())) {
                     if (planInput != null) {
                         this.planCalls.add(callId);
-                        this.acceptConverted(CodexExecHistoryReplay.createPlanToolUseMessage(callId, planInput, timestamp));
+                        this.acceptConverted(CodexExecHistoryReplay.createPlanToolUseMessage(callId, planInput, timestamp), rawMessage);
                     }
                     if (!commands.isEmpty()) {
                         this.shellCalls.put(callId, commands);
-                        this.acceptConverted(CodexExecHistoryReplay.createToolUseMessage(callId, commands, timestamp));
+                        this.acceptConverted(CodexExecHistoryReplay.createToolUseMessage(callId, commands, timestamp), rawMessage);
                     }
                     if (!patches.isEmpty()) {
                         this.patchCalls.put(callId, patches);
                         for (int index = 0; index < patches.size(); index++) {
                             this.acceptConverted(CodexExecHistoryReplay.createPatchToolUseMessage(
-                                    callId, patches.get(index), index, timestamp));
+                                    callId, patches.get(index), index, timestamp), rawMessage);
                         }
                     }
                     return;
@@ -986,15 +995,15 @@ public class HistoryMessageInjector {
                 if (commands != null || plan || patches != null) {
                     CodexExecHistoryReplay.Output output = new CodexExecHistoryReplay.Output(payload, timestamp);
                     if (plan) {
-                        this.acceptConverted(CodexExecHistoryReplay.createPlanToolResultMessage(callId, output, timestamp));
+                        this.acceptConverted(CodexExecHistoryReplay.createPlanToolResultMessage(callId, output, timestamp), rawMessage);
                     }
                     if (commands != null) {
-                        this.acceptConverted(CodexExecHistoryReplay.createToolResultMessage(callId, commands, output, timestamp));
+                        this.acceptConverted(CodexExecHistoryReplay.createToolResultMessage(callId, commands, output, timestamp), rawMessage);
                     }
                     if (patches != null) {
                         for (int index = 0; index < patches.size(); index++) {
                             this.acceptConverted(CodexExecHistoryReplay.createPatchToolResultMessage(
-                                    callId, index, output, timestamp));
+                                    callId, index, output, timestamp), rawMessage);
                         }
                     }
                     return;
@@ -1007,6 +1016,7 @@ public class HistoryMessageInjector {
             }
             JsonObject raw = incoming.getAsJsonObject("raw");
             if (raw != null) {
+                this.carryRecordedScope(incoming, rawMessage);
                 String nativeId = getStringProperty(payload, "id");
                 String identity = nativeId != null ? nativeId : callId != null ? callId
                         : (timestamp == null ? "record" : timestamp) + ":" + this.recordNumber;
@@ -1068,6 +1078,41 @@ public class HistoryMessageInjector {
             rememberLatestAssistant(incoming);
         }
 
+        private void acceptConverted(JsonObject incoming, JsonObject record) {
+            this.carryRecordedScope(incoming, record);
+            this.acceptConverted(incoming);
+        }
+
+        private void carryRecordedScope(JsonObject incoming, JsonObject record) {
+            if (incoming == null || !incoming.has("raw") || !incoming.get("raw").isJsonObject()) {
+                return;
+            }
+            JsonObject raw = incoming.getAsJsonObject("raw");
+            JsonObject payload = getResponseItemPayload(record);
+            if (payload == null) {
+                return;
+            }
+            JsonObject metadata = payload.has("internal_chat_message_metadata_passthrough")
+                    && payload.get("internal_chat_message_metadata_passthrough").isJsonObject()
+                    ? payload.getAsJsonObject("internal_chat_message_metadata_passthrough") : null;
+            String turnId = getStringProperty(payload, "turn_id");
+            if (turnId == null) {
+                turnId = getStringProperty(metadata, "turn_id");
+            }
+            String threadId = getStringProperty(payload, "thread_id");
+            if (threadId == null) {
+                threadId = this.rootThreadId;
+            }
+            // Native tools and response items must share their recorded ownership on reload.
+            // Hidden reasoning without that scope would divide an otherwise continuous tool batch.
+            if (getStringProperty(raw, "codexTurnId") == null && turnId != null) {
+                raw.addProperty("codexTurnId", turnId);
+            }
+            if (getStringProperty(raw, "codexThreadId") == null && threadId != null) {
+                raw.addProperty("codexThreadId", threadId);
+            }
+        }
+
         private void rememberLatestAssistant(JsonObject incoming) {
             if ("assistant".equals(getStringProperty(incoming, "type"))) {
                 latestAssistant = incoming;
@@ -1100,7 +1145,13 @@ public class HistoryMessageInjector {
 
         List<JsonObject> pendingMessages() {
             if (this.knownExec != null) {
-                return this.knownExec.snapshot(this.processCalls);
+                List<JsonObject> messages = new ArrayList<>(this.knownExec.snapshot(this.processCalls));
+                JsonObject message = this.pendingMessage();
+                // A record stashed while the wrapper was open follows the wrapper's own cards.
+                if (message != null) {
+                    messages.add(message);
+                }
+                return messages;
             }
             JsonObject message = this.pendingMessage();
             return message == null ? List.of() : List.of(message);
@@ -1124,7 +1175,8 @@ public class HistoryMessageInjector {
             }
             for (var process : this.processCalls.entrySet()) {
                 bytes += 3L * (process.getKey().length() + process.getValue().toolId().length()
-                        + process.getValue().metadata().toString().length());
+                        + process.getValue().metadata().toString().length()
+                        + (process.getValue().command() == null ? 0 : process.getValue().command().length()));
             }
             for (String callId : this.shellCalls.keySet()) {
                 bytes += 3L * callId.length();
@@ -1148,7 +1200,12 @@ public class HistoryMessageInjector {
             if (this.knownExec != null) {
                 List<JsonObject> pendingKnown = this.knownExec.snapshot(this.processCalls);
                 this.knownExec = null;
+                // A record stashed while the wrapper was open follows the wrapper's own
+                // cards, matching its position in the transcript and the paged index.
+                JsonObject stashed = this.pending;
+                this.pending = null;
                 pendingKnown.forEach(this::acceptConverted);
+                this.acceptConverted(stashed);
             }
             emitPending();
         }

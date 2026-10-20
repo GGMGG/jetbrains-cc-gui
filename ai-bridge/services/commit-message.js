@@ -17,8 +17,6 @@
  *   [COMMIT_ERROR]<msg>          — failure
  */
 
-import { pathToFileURL } from 'node:url';
-
 import {
   loadClaudeSdk,
   isClaudeSdkAvailable,
@@ -31,7 +29,7 @@ import {
   getCliUserAgent,
 } from '../config/api-config.js';
 import { resolveModelFromSettings, resolveSdkModelName } from '../utils/model-utils.js';
-import { getRealHomeDir } from '../utils/path-utils.js';
+import { getRealHomeDir, isMainEntryModule } from '../utils/path-utils.js';
 import { getClaudeCliPathOverride } from '../utils/claude-cli-path.js';
 import { ensureAnthropicSdk } from './claude/message-utils.js';
 import { generateCodexText } from './codex/codex-text-service.js';
@@ -251,6 +249,8 @@ export function buildClaudeAgentCommitOptions({
     model: sdkModelName,
     maxTurns: 1,
     env: buildCliEnv(),
+    // settingsEnv is deliberately omitted: this call runs maxTurns: 1 with a deny-all
+    // canUseTool, so it never spawns a subagent and tier resolution cannot apply here.
     settings: buildWebviewControlledSettingsOverride(model),
     settingSources: ['user'],
     // Only MCP servers passed via the `mcpServers` option are used, and we pass
@@ -418,6 +418,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainEntryModule(import.meta.url)) {
   main();
 }
