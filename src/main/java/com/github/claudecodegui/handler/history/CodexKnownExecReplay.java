@@ -31,9 +31,13 @@ final class CodexKnownExecReplay {
 
     record Action(String kind, JsonObject input, int position, int resultIndex) { }
     record IndexLabel(Pattern pattern, boolean settledReceipt) { }
-    record Process(String toolId, JsonObject metadata, String command) {
+    record Process(String toolId, JsonObject metadata, String command, boolean completed) {
         Process(String toolId, JsonObject metadata) {
-            this(toolId, metadata, null);
+            this(toolId, metadata, null, false);
+        }
+
+        Process(String toolId, JsonObject metadata, String command) {
+            this(toolId, metadata, command, false);
         }
     }
 
@@ -129,6 +133,10 @@ final class CodexKnownExecReplay {
     }
 
     boolean rememberNative(JsonObject record) {
+        return this.rememberNative(record, Map.of());
+    }
+
+    boolean rememberNative(JsonObject record, Map<String, Process> processes) {
         JsonObject payload = object(record, "payload");
         JsonObject item = object(payload, "item");
         if (!"event_msg".equals(string(record, "type")) || !"item_completed".equals(string(payload, "type"))
@@ -140,7 +148,8 @@ final class CodexKnownExecReplay {
         String thread = string(payload, "thread_id");
         String turn = string(payload, "turn_id");
         if (this.rootThreadId != null && thread != null && !this.rootThreadId.equals(thread)
-                || this.turnId != null && turn != null && !this.turnId.equals(turn)) {
+                || this.turnId != null && turn != null && !this.turnId.equals(turn)
+                && !isOwnedProcessCompletion(record, processes)) {
             return true;
         }
         for (int index = 0; index < this.nativeRecords.size(); index++) {
@@ -158,7 +167,7 @@ final class CodexKnownExecReplay {
 
     List<JsonObject> project(JsonObject outputRecord, Map<String, Process> processes) {
         this.opaqueFallback = false;
-        JsonObject replayScope = this.recordedScope();
+        JsonObject replayScope = this.recordedScope(processes);
         if (replayScope == null) {
             return this.keepWrapperForReview();
         }
@@ -200,9 +209,11 @@ final class CodexKnownExecReplay {
                     return this.keepWrapperForReview();
                 }
                 labeledIndex = null;
-            } else if (value.has("i")) {
-                Integer index = integer(value.get("i"));
-                if (index == null || index < 0 || this.actions.stream().noneMatch(action -> action.resultIndex == index)) {
+            } else if (value.has("i") || value.has("index")) {
+                // Both envelopes occur in persisted wrappers; ignoring either replays native work twice.
+                Integer index = integer(value.get(value.has("i") ? "i" : "index"));
+                if (index == null || value.has("i") && value.has("index") && !index.equals(integer(value.get("index")))
+                        || index < 0 || !this.hasResultIndex(index)) {
                     return this.keepWrapperForReview();
                 }
                 JsonElement result = unwrapIndexedResult(value);
@@ -233,7 +244,7 @@ final class CodexKnownExecReplay {
                 .filter(action -> action.resultIndex < 0 || !indexed.containsKey(action.resultIndex)).toList();
         if (!direct.isEmpty() && directActions.size() > 1 && directActions.stream().anyMatch(action -> action.resultIndex >= 0)
                 && directActions.stream().anyMatch(action -> action.kind.equals("write_stdin")
-                || this.findNativeCommand(command(action.input), new HashSet<>()) == null)) {
+                || this.findNativeCommand(command(action.input), null, processes, new HashSet<>()) == null)) {
             // An unindexed batch needs a unique recipient or independent native outcomes.
             return this.keepWrapperForReview();
         }
@@ -246,7 +257,8 @@ final class CodexKnownExecReplay {
                     && command.equals(command(candidate.input))).count();
             long receipts = this.nativeRecords.stream().filter(record -> {
                 JsonObject item = object(object(record, "payload"), "item");
-                return "CommandExecution".equals(string(item, "type")) && command.equals(nativeCommand(item));
+                return "CommandExecution".equals(string(item, "type")) && command.equals(nativeCommand(item))
+                        && !isOwnedProcessCompletion(record, processes);
             }).count();
             if (receipts > calls) {
                 // Extra executions of the same literal can represent a loop, not a different background command.
@@ -371,14 +383,46 @@ final class CodexKnownExecReplay {
             if (action.kind.equals("write_stdin")) {
                 String sessionId = string(action.input, "session_id");
                 Process process = nextProcesses.get(sessionId);
-                if (process != null && result != null && isTerminal(result)) {
+                if (process != null && process.completed && !firstText(action.input, "chars").isEmpty()) {
+                    // Retained ownership proves a late receipt, not a new write to a closed process.
+                    return this.keepWrapperForReview();
+                }
+                JsonObject completion = this.findNativeProcessCompletion(sessionId, nextProcesses, usedNativeIds);
+                if (this.opaqueFallback) {
+                    return null;
+                }
+                if (completion != null) {
+                    JsonObject item = object(object(completion, "payload"), "item");
+                    if (process != null && (!nativeCommand(item).equals(process.command)
+                            || !recognizesProcessCompletion(process, sessionId, completion))) {
+                        return this.keepWrapperForReview();
+                    }
+                    // Ctrl+C can emit its native receipt before the wrapper returns. Consume it
+                    // here so the later background sweep cannot recreate the interrupted command.
+                    if (process == null) {
+                        messages.addAll(readNativeCommand(completion, nextProcesses));
+                    } else {
+                        messages.add(resultMessage(completion, process, nativeCommandResult(item)));
+                        nextProcesses.remove(sessionId);
+                    }
+                } else if (!firstText(action.input, "chars").isEmpty()
+                        && (process == null || result == null || !isProcessResult(result)
+                        || !isTerminal(result) && !sessionId.equals(string(result, "session_id")))) {
+                    // Literal input changes a process; preserve the wrapper when its target is unknown.
+                    return this.keepWrapperForReview();
+                } else if (process != null && result != null && isTerminal(result) && !process.completed) {
                     messages.add(resultMessage(outputRecord, process, result));
-                    nextProcesses.remove(sessionId);
+                    // The native completion can follow this wrapper's terminal reply. Keep its
+                    // ownership until then so that receipt updates this card instead of inventing one.
+                    nextProcesses.put(sessionId, new Process(process.toolId, process.metadata, process.command, true));
                 }
                 continue;
             }
             String command = command(action.input);
-            JsonObject nativeRecord = this.findNativeCommand(command, usedNativeIds);
+            JsonObject nativeRecord = this.findNativeCommand(command, string(result, "session_id"), nextProcesses, usedNativeIds);
+            if (this.opaqueFallback) {
+                return null;
+            }
             String toolId = nativeRecord == null ? this.callId() + ":command:" + index
                     : string(object(object(nativeRecord, "payload"), "item"), "id");
             JsonObject metadata = nativeRecord == null ? replayScope : metadata(nativeRecord,
@@ -394,13 +438,7 @@ final class CodexKnownExecReplay {
             messages.add(message(this.original, metadata, "assistant", toolId, tool));
             if (nativeRecord != null) {
                 JsonObject item = object(object(nativeRecord, "payload"), "item");
-                JsonObject nativeResult = new JsonObject();
-                nativeResult.addProperty("output", nativeOutput(item));
-                if (item.has("exit_code")) {
-                    nativeResult.add("exit_code", item.get("exit_code"));
-                }
-                nativeResult.addProperty("is_error", !"completed".equals(string(item, "status")));
-                messages.add(resultMessage(nativeRecord, process, nativeResult));
+                messages.add(resultMessage(nativeRecord, process, nativeCommandResult(item)));
             } else if (result == null || !isProcessResult(result)) {
                 return null;
             } else if (isTerminal(result)) {
@@ -426,6 +464,13 @@ final class CodexKnownExecReplay {
                 messages.addAll(readNativeCommand(record, nextProcesses));
             }
         }
+        // Completed owners awaiting an optional native receipt must not crowd out running commands.
+        var retained = nextProcesses.entrySet().iterator();
+        while (nextProcesses.size() > 256 && retained.hasNext()) {
+            if (retained.next().getValue().completed) {
+                retained.remove();
+            }
+        }
         processes.clear();
         nextProcesses.forEach((id, process) -> {
             if (processes.size() < 256) {
@@ -447,9 +492,11 @@ final class CodexKnownExecReplay {
             return List.of();
         }
         JsonObject scope = metadata(record, null, null);
+        String processId = string(item, "process_id");
         List<Map.Entry<String, Process>> matching = processes.entrySet().stream().filter(entry -> {
             Process process = entry.getValue();
-            return command.equals(process.command) && compatibleScope(process.metadata, scope);
+            return (processId == null || processId.equals(entry.getKey()))
+                    && command.equals(process.command) && recognizesProcessCompletion(process, entry.getKey(), record);
         }).toList();
         Process process;
         List<JsonObject> messages = new ArrayList<>();
@@ -468,14 +515,32 @@ final class CodexKnownExecReplay {
             tool.add("input", commandInput(input));
             messages.add(message(record, scope, "assistant", process.toolId, tool));
         }
+        messages.add(resultMessage(record, process, nativeCommandResult(item)));
+        return messages;
+    }
+
+    private static JsonObject nativeCommandResult(JsonObject item) {
         JsonObject result = new JsonObject();
         result.addProperty("output", nativeOutput(item));
         if (item.has("exit_code")) {
             result.add("exit_code", item.get("exit_code"));
         }
         result.addProperty("is_error", !"completed".equals(string(item, "status")));
-        messages.add(resultMessage(record, process, result));
-        return messages;
+        return result;
+    }
+
+    private static boolean recognizesProcessCompletion(Process process, String processId, JsonObject record) {
+        JsonObject scope = metadata(record, null, null);
+        String recordedProcessId = string(object(object(record, "payload"), "item"), "process_id");
+        if (recordedProcessId == null) {
+            return compatibleScope(process.metadata, scope);
+        }
+        String ownerThread = string(process.metadata, "codexThreadId");
+        String receiptThread = string(scope, "codexThreadId");
+        // A background process can finish in a later turn. Its id proves ownership,
+        // but never permits a receipt from another thread to close it.
+        return recordedProcessId.equals(processId)
+                && (ownerThread == null || receiptThread == null || ownerThread.equals(receiptThread));
     }
 
     private static boolean compatibleScope(JsonObject first, JsonObject second) {
@@ -662,11 +727,26 @@ final class CodexKnownExecReplay {
         return value != null && value.has("codexExecRejected") && value.get("codexExecRejected").getAsBoolean();
     }
 
-    private JsonObject recordedScope() {
+    private static boolean isOwnedProcessCompletion(JsonObject record, Map<String, Process> processes) {
+        JsonObject item = object(object(record, "payload"), "item");
+        String processId = string(item, "process_id");
+        Process owner = processId == null ? null : processes.get(processId);
+        return "CommandExecution".equals(string(item, "type")) && owner != null
+                && owner.command != null && owner.command.equals(nativeCommand(item))
+                && recognizesProcessCompletion(owner, processId, record);
+    }
+
+    private JsonObject recordedScope(Map<String, Process> processes) {
         JsonObject scope = metadata(this.original, this.rootThreadId, this.turnId);
         for (JsonObject record : this.nativeRecords) {
             JsonObject payload = object(record, "payload");
+            boolean ownedCompletion = isOwnedProcessCompletion(record, processes);
             for (String field : List.of("thread", "turn")) {
+                // A proved background receipt keeps its own turn; it cannot lend that turn to this wrapper.
+                // Thread conflicts still fail closed, even when a numeric process id has been reused.
+                if (ownedCompletion && "turn".equals(field)) {
+                    continue;
+                }
                 String key = "codex" + (field.equals("thread") ? "ThreadId" : "TurnId");
                 String received = string(payload, field + "_id");
                 String known = string(scope, key);
@@ -705,20 +785,93 @@ final class CodexKnownExecReplay {
         return kind.startsWith("mcp__") && kind.indexOf("__", "mcp__".length()) > "mcp__".length();
     }
 
-    private JsonObject findNativeCommand(String command, Set<String> usedIds) {
-        for (JsonObject record : this.nativeRecords) {
+    private JsonObject findNativeCommand(String command, String expectedProcessId, Map<String, Process> processes, Set<String> usedIds) {
+        List<JsonObject> candidates = this.nativeRecords.stream().filter(record -> {
             JsonObject item = object(object(record, "payload"), "item");
             String id = string(item, "id");
-            if (!"CommandExecution".equals(string(item, "type")) || id == null || usedIds.contains(id)) {
-                continue;
-            }
-            boolean matches = command.equals(nativeCommand(item));
-            if (matches && List.of("completed", "failed", "interrupted").contains(String.valueOf(string(item, "status")))) {
-                usedIds.add(id);
-                return record;
+            // A process id keeps its receipt only when the command and thread prove the same owner.
+            return "CommandExecution".equals(string(item, "type")) && id != null && !usedIds.contains(id)
+                    && !isOwnedProcessCompletion(record, processes) && command.equals(nativeCommand(item))
+                    && List.of("completed", "failed", "interrupted").contains(String.valueOf(string(item, "status")));
+        }).toList();
+        boolean identified = false;
+        if (expectedProcessId != null) {
+            List<JsonObject> matches = candidates.stream()
+                    .filter(record -> expectedProcessId.equals(string(object(object(record, "payload"), "item"), "process_id"))).toList();
+            if (!matches.isEmpty()) {
+                candidates = matches;
+                identified = true;
+            } else {
+                candidates = candidates.stream().filter(record -> string(object(object(record, "payload"), "item"), "process_id") == null).toList();
             }
         }
-        return null;
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        // Parallel commands can finish out of order, so identical source text cannot assign their receipts.
+        long owners = this.actions.stream().filter(action -> List.of("exec_command", "shell_command").contains(action.kind)
+                && command.equals(command(action.input))).count();
+        boolean parallel = this.actions.stream().anyMatch(action -> action.resultIndex >= 0
+                && List.of("exec_command", "shell_command").contains(action.kind) && command.equals(command(action.input)));
+        if (identified && candidates.size() != 1 || !identified && owners > 1 && (parallel || expectedProcessId != null)) {
+            this.opaqueFallback = true;
+            return null;
+        }
+        JsonObject receipt = candidates.get(0);
+        JsonObject item = object(object(receipt, "payload"), "item");
+        JsonObject scope = metadata(receipt, null, null);
+        if (string(item, "process_id") == null && processes.values().stream().anyMatch(process -> command.equals(process.command)
+                && compatibleScope(process.metadata, scope))) {
+            this.opaqueFallback = true;
+            return null;
+        }
+        usedIds.add(string(item, "id"));
+        return receipt;
+    }
+
+    private JsonObject findNativeProcessCompletion(String processId, Map<String, Process> processes, Set<String> usedIds) {
+        List<JsonObject> candidates = this.nativeRecords.stream().filter(record -> {
+            JsonObject item = object(object(record, "payload"), "item");
+            String id = string(item, "id");
+            return "CommandExecution".equals(string(item, "type")) && id != null && !usedIds.contains(id)
+                    && nativeCommand(item) != null
+                    && List.of("completed", "failed", "interrupted").contains(String.valueOf(string(item, "status")));
+        }).toList();
+        List<JsonObject> matches = candidates.stream()
+                .filter(record -> processId.equals(string(object(object(record, "payload"), "item"), "process_id"))).toList();
+        if (matches.isEmpty()) {
+            Process process = processes.get(processId);
+            if (process == null || process.command == null) {
+                return null;
+            }
+            matches = candidates.stream().filter(record -> {
+                JsonObject item = object(object(record, "payload"), "item");
+                return string(item, "process_id") == null && process.command.equals(nativeCommand(item))
+                        && compatibleScope(process.metadata, metadata(record, null, null));
+            }).toList();
+            if (matches.size() == 1) {
+                // Older receipts omit process ids; shared command text cannot prove which process ended.
+                JsonObject scope = metadata(matches.get(0), null, null);
+                long owners = processes.values().stream().filter(candidate -> process.command.equals(candidate.command)
+                        && compatibleScope(candidate.metadata, scope)).count();
+                boolean siblingCommand = this.actions.stream().anyMatch(action -> List.of("exec_command", "shell_command").contains(action.kind)
+                        && process.command.equals(command(action.input)));
+                if (owners != 1 || siblingCommand) {
+                    this.opaqueFallback = true;
+                    return null;
+                }
+            }
+        }
+        if (matches.size() > 1) {
+            this.opaqueFallback = true;
+            return null;
+        }
+        if (matches.size() != 1) {
+            return null;
+        }
+        JsonObject completion = matches.get(0);
+        usedIds.add(string(object(object(completion, "payload"), "item"), "id"));
+        return completion;
     }
 
     private static List<Action> readActions(String script, JsonObject payload) {
@@ -766,8 +919,8 @@ final class CodexKnownExecReplay {
                     }
                     String literal = CodexExecHistoryReplay.normalizeJavaScriptLiteralToJson(script.substring(start, end + 1));
                     input = literal == null ? null : parseObject(literal);
-                    if (input == null || kind.equals("write_stdin") && (!"".equals(string(input, "chars"))
-                            && string(input, "chars") != null || string(input, "session_id") == null)
+                    if (input == null || kind.equals("write_stdin") && (input.has("chars")
+                            && literalText(input, "chars") == null || string(input, "session_id") == null)
                             || kind.equals("view_image") && string(input, "path") == null
                             || isClock(kind) && input.size() != 0
                             || !List.of("write_stdin", "view_image").contains(kind) && !isWeb(kind) && !isMcp(kind) && !isClock(kind) && command(input) == null) {

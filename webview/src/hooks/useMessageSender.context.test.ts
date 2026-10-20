@@ -1,6 +1,8 @@
+import { updateClaudeModelCapabilities } from '../utils/claudeModelCapabilities';
 import { act, renderHook } from '@testing-library/react';
 import { useMessageSender } from './useMessageSender';
 import type { UseMessageSenderOptions } from './useMessageSender';
+import { writeClaudeModelMapping } from '../utils/claudeModelMapping';
 
 describe('useMessageSender - /context command', () => {
   const t = ((key: string, opts?: any) => opts?.defaultValue ?? key) as any;
@@ -47,7 +49,43 @@ describe('useMessageSender - /context command', () => {
   };
 
   beforeEach(() => {
+    updateClaudeModelCapabilities([]);
+    localStorage.clear();
     window.sendToJava = vi.fn();
+  });
+
+  it.each([false, true])('rechecks route capability before sending (attachments: %s)', attachments => {
+    const id = 'ccs-claude-haiku-provider--glm-flash';
+    const { result } = renderHook(() => useMessageSender(createOptions({ selectedModel: id, longContextEnabled: true })));
+    for (const supports1MContext of [true, false]) {
+      window.sendToJava = vi.fn();
+      updateClaudeModelCapabilities([{ id, supports1MContext }]);
+      act(() => result.current.handleSubmit('hello', attachments
+        ? [{ id: 'a', fileName: 'a.txt', mediaType: 'text/plain', data: 'aGk=' }] : undefined));
+      const calls = vi.mocked(window.sendToJava!).mock.calls.map(([message]) => message);
+      const modelCall = calls.findIndex(message => message.startsWith('set_model:'));
+      const sendCall = calls.findIndex(message => message.startsWith('send_message'));
+      expect(calls[modelCall]).toBe('set_model:' + id + (supports1MContext ? '[1m]' : ''));
+      expect(sendCall).toBeGreaterThan(modelCall);
+    }
+    updateClaudeModelCapabilities([]);
+  });
+
+  it.each(['xhigh', 'max'] as const)('forwards %s in aggregate, route and direct modes', (effort) => {
+    for (const mode of ['aggregate', 'route', 'direct']) {
+      localStorage.clear();
+      window.sendToJava = vi.fn();
+      if (mode !== 'aggregate') {
+        writeClaudeModelMapping({ sonnet: mode === 'route' ? 'claude-sonnet-5' : 'glm-pro' });
+      }
+      const { result, unmount } = renderHook(() => useMessageSender(createOptions({
+        selectedModel: mode === 'aggregate' ? 'ccs-claude-provider-a--glm-pro' : 'claude-sonnet-5',
+        reasoningEffort: effort,
+      })));
+      act(() => result.current.handleSubmit('hello'));
+      expect(getBridgePayload('send_message').reasoningEffort).toBe(effort);
+      unmount();
+    }
   });
 
   it.each([false, true])('ends a refused Codex message dispatch without sending a text fallback (attachments: %s)', withAttachments => {
@@ -327,6 +365,15 @@ describe('useMessageSender - /context command', () => {
 
     const payload = getBridgePayload('send_message');
     expect(payload.reasoningEffort).toBe('high');
+  });
+
+  it.each([false, true])('forwards cc-switch reasoning effort with attachments=%s', (withAttachment) => {
+    const { result } = renderHook(() => useMessageSender(createOptions({
+      selectedModel: 'ccs-claude-provider-a--glm-pro', reasoningEffort: 'low',
+    })));
+    act(() => result.current.handleSubmit('hello', withAttachment
+      ? [{ id: 'att-1', fileName: 'note.txt', mediaType: 'text/plain', data: 'aGVsbG8=' }] : undefined));
+    expect(getBridgePayload(withAttachment ? 'send_message_with_attachments' : 'send_message').reasoningEffort).toBe('low');
   });
 
   it('includes explicit Claude high reasoning effort in attachment message payload', () => {

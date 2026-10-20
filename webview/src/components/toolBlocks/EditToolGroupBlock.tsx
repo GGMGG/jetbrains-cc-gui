@@ -8,6 +8,8 @@ import { useResolvedFileLinkTooltip } from '../../hooks/useResolvedFileLinkToolt
 import { useIsToolDenied } from '../../hooks/useIsToolDenied';
 import { readPatchFiles, readPatchOutcome } from '../../utils/codexPatch';
 import { PATCH_TOOL_NAMES, isToolName } from '../../utils/toolConstants';
+import { editGroupCollapsePreference } from '../../utils/editGroupCollapsePreference';
+import { usePreferredExpanded } from '../../hooks/usePreferredExpanded';
 import EditDiffView, { type DiffResult } from './EditDiffView';
 import GenericToolBlock from './GenericToolBlock';
 import ToolDetailsAccordion from './ToolDetailsAccordion';
@@ -263,6 +265,11 @@ function getFileIconSvg(fileName: string): string {
   return getFileIcon(extension ?? '', fileName);
 }
 
+/** Stable row identity across re-parses: one tool can patch several files. */
+function previewKeyOf(item: EditItem): string {
+  return `${item.toolId ?? ''}:${item.filePath}`;
+}
+
 interface EditFileItemProps {
   item: EditItem;
   onFileClick: (item: EditItem, e: React.MouseEvent) => void;
@@ -343,8 +350,10 @@ const EditFileItem = ({ item, onFileClick, onShowDiff, onRefresh, t, previewExpa
 };
 
 const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
-  const [expanded, setExpanded] = useState(true);
-  const [previewItem, setPreviewItem] = useState<EditItem | null>(null);
+  const { expanded, toggleExpanded } = usePreferredExpanded(editGroupCollapsePreference);
+  // Track a stable row key, not the parsed object: every streaming update
+  // rebuilds the EditItem objects, so an identity-based preview closes itself.
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
   const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const prevItemCountRef = useRef(0);
@@ -375,9 +384,19 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
   // Calculate totals
   const totalAdditions = editItems.reduce((sum, item) => sum + item.additions, 0);
   const totalDeletions = editItems.reduce((sum, item) => sum + item.deletions, 0);
+  // Match EditFileItem's error semantics: a denied tool counts as failed.
+  const isItemDenied = (item: EditItem) => item.toolId
+    ? window.__deniedToolIds?.has(item.toolId) ?? false
+    : false;
+  // A denied row is terminal (the user rejected it): count it as settled so the
+  // header progress does not stick below total forever.
+  const completedCount = editItems.filter(item => item.isCompleted || isItemDenied(item)).length;
+  const errorCount = editItems.filter(item => item.isError || isItemDenied(item)).length;
+  const allSucceeded = completedCount === editItems.length && errorCount === 0
+    && editItems.every(item => !item.isUnknown);
 
   // Calculate list height
-  const needsScroll = editItems.length > MAX_VISIBLE_ITEMS || previewItem !== null;
+  const needsScroll = editItems.length > MAX_VISIBLE_ITEMS || previewKey !== null;
   const listHeight = needsScroll
     ? MAX_VISIBLE_ITEMS * ITEM_HEIGHT
     : editItems.length * ITEM_HEIGHT;
@@ -405,9 +424,10 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
   const handleShowDiff = (item: EditItem, e: React.MouseEvent) => {
     e.stopPropagation();
     if (item.diff) {
-      // Track the item itself: an index drifts when native snapshots insert
-      // or reorder rows while a preview is open.
-      setPreviewItem(previous => previous === item ? null : item);
+      // Track the row key: an index drifts when native snapshots insert or
+      // reorder rows, and the item object itself is rebuilt on every update.
+      const key = previewKeyOf(item);
+      setPreviewKey(previous => previous === key ? null : key);
       return;
     }
     showDiff(item.openPath, item.oldString, item.newString, t('tools.editPrefix', { fileName: item.fileName }));
@@ -422,8 +442,17 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
   const batch = editItems.length > 0 ? (
     <div className="task-container" style={CONTAINER_STYLE}>
       <div
-        className="task-header"
-        onClick={() => setExpanded((prev) => !prev)}
+        className="task-header edit-group-header"
+        role="button"
+        tabIndex={0}
+        onClick={toggleExpanded}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleExpanded();
+          }
+        }}
+        aria-expanded={expanded}
         style={headerStyle}
       >
         <div className="task-title-section" style={TITLE_SECTION_STYLE}>
@@ -443,6 +472,24 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
             </span>
           )}
         </div>
+        <div className="edit-group-summary" role="status">
+          {allSucceeded ? (
+            <span className="edit-group-progress completed">
+              <span className="codicon codicon-check" aria-hidden="true" />
+              {t('tools.editGroupAllCompleted')}
+            </span>
+          ) : (
+            <span className="edit-group-progress">
+              {t('tools.editGroupProgress', { completed: completedCount, total: editItems.length })}
+            </span>
+          )}
+          {errorCount > 0 && (
+            <span className="edit-group-progress error">
+              <span className="codicon codicon-warning" aria-hidden="true" />
+              {t('tools.editGroupFailed', { count: errorCount })}
+            </span>
+          )}
+        </div>
       </div>
 
       {expanded && (
@@ -459,7 +506,7 @@ const EditToolGroupBlock = ({ items }: EditToolGroupBlockProps) => {
               onShowDiff={handleShowDiff}
               onRefresh={handleRefresh}
               t={t}
-              previewExpanded={previewItem === item}
+              previewExpanded={previewKey === previewKeyOf(item)}
             />
           ))}
         </div>

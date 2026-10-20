@@ -935,6 +935,25 @@ public class DaemonBridge {
                 break;
             }
 
+            case "session_resume_expired": {
+                // Startup and send failures share the same stale-resume recovery.
+                String expiredSessionId = obj.has("sessionId") && obj.get("sessionId").isJsonPrimitive()
+                        ? obj.get("sessionId").getAsString() : null;
+                if (expiredSessionId == null || expiredSessionId.isEmpty()) {
+                    LOG.warn("[DaemonBridge] session_resume_expired event missing sessionId, skipping");
+                    break;
+                }
+                LOG.warn("[DaemonBridge] Session resume expired: sessionId=" + expiredSessionId);
+                for (DaemonEventListener listener : eventListeners) {
+                    try {
+                        listener.onDaemonEvent(event, obj);
+                    } catch (Exception ex) {
+                        LOG.warn("[DaemonBridge] Listener threw while handling " + event, ex);
+                    }
+                }
+                break;
+            }
+
             case "task_event": {
                 // Async subagent lifecycle event (task_notification for a
                 // background Agent invoked with run_in_background:true). Emitted

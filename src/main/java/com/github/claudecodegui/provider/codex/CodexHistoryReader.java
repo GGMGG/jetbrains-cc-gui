@@ -9,6 +9,7 @@ import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -32,6 +33,7 @@ public class CodexHistoryReader {
     private final CodexHistoryIndexService indexService;
     private final CodexHistorySessionService sessionService;
     private final ThreadLocal<String> privacyThread = new ThreadLocal<>();
+    private final ThreadLocal<Consumer<ByteBuffer>> sourceBytesObserver = new ThreadLocal<>();
 
     private static Path defaultSessionsDir() {
         return Paths.get(NodeDetector.resolveHomeForFileOps(), ".codex", "sessions");
@@ -194,13 +196,20 @@ public class CodexHistoryReader {
         return normalized;
     }
 
+    /**
+     * Returns the privacy-filtered transcript, or null when the rollout file is
+     * missing and the caller should treat the session id as stale.
+     */
     public String getSessionMessagesAsJson(String sessionId) {
         logSessionAccessWithoutLocalConfigAuthorization();
+        String source = this.sessionService.getSessionMessagesAsJson(sessionId);
+        if (source == null) {
+            return null;
+        }
         CodexHistoryPrivacy privacy = new CodexHistoryPrivacy(sessionId);
-        com.google.gson.JsonArray source = this.gson.fromJson(
-                this.sessionService.getSessionMessagesAsJson(sessionId), com.google.gson.JsonArray.class);
+        com.google.gson.JsonArray sourceArray = this.gson.fromJson(source, com.google.gson.JsonArray.class);
         com.google.gson.JsonArray result = new com.google.gson.JsonArray();
-        for (var entry : source) {
+        for (var entry : sourceArray) {
             result.add(entry.isJsonObject() ? privacy.protect(entry.getAsJsonObject()) : entry);
         }
         return this.gson.toJson(result);
@@ -228,12 +237,22 @@ public class CodexHistoryReader {
         return file.toRealPath();
     }
 
+    /** Streams a bounded byte range while keeping rendered records behind the history privacy filter. */
     public int forEachSessionMessage(Path file, long offset, long end,
                                      java.util.function.BooleanSupplier active,
                                      Consumer<JsonObject> consumer) throws IOException {
         CodexHistoryPrivacy privacy = new CodexHistoryPrivacy(this.privacyThread.get());
-        return this.sessionService.forEachSessionMessage(file, offset, end, active,
-                message -> consumer.accept(privacy.protect(this.gson.toJsonTree(message).getAsJsonObject())));
+        Consumer<ByteBuffer> observer = this.sourceBytesObserver.get();
+        // Nested reads started by a record consumer must not feed this read's fingerprint.
+        this.sourceBytesObserver.remove();
+        try {
+            return this.sessionService.forEachSessionMessage(file, offset, end, active, observer,
+                    message -> consumer.accept(privacy.protect(this.gson.toJsonTree(message).getAsJsonObject())));
+        } finally {
+            if (observer != null) {
+                this.sourceBytesObserver.set(observer);
+            }
+        }
     }
 
     /** Keeps thread identity available while the existing bounded file-reader extension point runs. */
@@ -248,6 +267,26 @@ public class CodexHistoryReader {
                 this.privacyThread.remove();
             } else {
                 this.privacyThread.set(previous);
+            }
+        }
+    }
+
+    /**
+     * Observes the bytes used for parsing without bypassing the bounded reader or privacy context.
+     * The observer must consume each read-only buffer before returning because its storage is reused.
+     */
+    public int forEachSessionMessage(String sessionId, Path file, long offset, long end,
+                                     java.util.function.BooleanSupplier active, Consumer<JsonObject> consumer,
+                                     Consumer<ByteBuffer> sourceBytesObserver) throws IOException {
+        Consumer<ByteBuffer> previous = this.sourceBytesObserver.get();
+        this.sourceBytesObserver.set(sourceBytesObserver);
+        try {
+            return this.forEachSessionMessage(sessionId, file, offset, end, active, consumer);
+        } finally {
+            if (previous == null) {
+                this.sourceBytesObserver.remove();
+            } else {
+                this.sourceBytesObserver.set(previous);
             }
         }
     }
