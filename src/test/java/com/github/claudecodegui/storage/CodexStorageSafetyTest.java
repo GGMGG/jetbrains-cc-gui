@@ -35,7 +35,12 @@ public class CodexStorageSafetyTest {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("remove", "/project", 100);
         var file = f.rollout("remove", null, false);
-        f.sql("state_5.sqlite", "UPDATE threads SET rollout_path='Z:/outside/undeclared.jsonl' WHERE id='remove'");
+        var outside = temporary.newFolder().toPath().toRealPath().resolve("undeclared.jsonl");
+        try (var connection = CodexStorageDatabase.open(f.root.resolve("state_5.sqlite"), false);
+             var statement = connection.prepareStatement("UPDATE threads SET rollout_path=? WHERE id='remove'")) {
+            statement.setString(1, outside.toString());
+            statement.executeUpdate();
+        }
         var result = f.service().deleteSessions(List.of("remove"), UUID.randomUUID().toString(), false);
         assertEquals("FAILED_CLEAN", result.get("state").getAsString());
         assertEquals("DATABASE_DEPENDENCY_UNSUPPORTED", result.get("error").getAsString());

@@ -31,7 +31,8 @@ final class CodexStorageFileLock implements AutoCloseable {
     private interface Posix extends Library {
         Posix INSTANCE = Native.load(Platform.C_LIBRARY_NAME, Posix.class,
                 Map.of(Library.OPTION_STRING_ENCODING, "UTF-8"));
-        int open(String path, int flags, int mode);
+        // The creation mode uses the variadic ABI, which differs on macOS ARM64.
+        int open(String path, int flags, Object... mode);
         int flock(int descriptor, int operation);
         int close(int descriptor);
     }

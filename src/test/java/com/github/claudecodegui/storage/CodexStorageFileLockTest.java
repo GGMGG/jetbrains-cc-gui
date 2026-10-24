@@ -21,6 +21,10 @@ public class CodexStorageFileLockTest {
         var file = paths.root().resolve("test.lock");
         try (var first = CodexStorageFileLock.tryAcquire(paths, file, true)) {
             assertNotNull(first);
+            if (Platform.isLinux() || Platform.isMac()) {
+                assertEquals(java.util.Set.of(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_WRITE), Files.getPosixFilePermissions(file));
+            }
             assertNull(CodexStorageFileLock.tryAcquire(paths, file, false));
         }
         try (var next = CodexStorageFileLock.tryAcquire(paths, file, false)) {
