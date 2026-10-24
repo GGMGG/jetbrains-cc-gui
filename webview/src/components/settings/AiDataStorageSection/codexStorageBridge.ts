@@ -13,6 +13,12 @@ export interface CodexStorageSession {
   readable: boolean;
   deletionUnavailableReason?: string;
   metadataWarning?: string;
+  subagent?: boolean;
+  parentId?: string;
+  parentTitle?: string;
+  parentAvailable?: boolean;
+  parentIsSubagent?: boolean;
+  childCount?: number;
 }
 
 export interface CodexStorageUsage {
@@ -183,7 +189,13 @@ function validData(action: keyof StorageData, value: unknown): boolean {
         && typeof item.title === 'string' && typeof item.cwd === 'string' && typeof item.storageMode === 'string'
         && typeof item.running === 'boolean' && typeof item.archived === 'boolean' && typeof item.readable === 'boolean'
         && typeof item.fileSize === 'number' && typeof item.lastTimestamp === 'number' && typeof item.firstTimestamp === 'number'
-        && (item.deletionUnavailableReason === undefined || typeof item.deletionUnavailableReason === 'string'))
+        && (item.deletionUnavailableReason === undefined || typeof item.deletionUnavailableReason === 'string')
+        && (item.subagent === undefined || typeof item.subagent === 'boolean')
+        && (item.parentId === undefined || typeof item.parentId === 'string' && item.parentId.trim().length > 0)
+        && (item.parentTitle === undefined || typeof item.parentTitle === 'string')
+        && (item.parentAvailable === undefined || typeof item.parentAvailable === 'boolean')
+        && (item.parentIsSubagent === undefined || typeof item.parentIsSubagent === 'boolean')
+        && (item.childCount === undefined || typeof item.childCount === 'number' && Number.isInteger(item.childCount) && item.childCount >= 0))
         && typeof value.total === 'number' && Number.isInteger(value.total) && value.total >= 0
         && typeof value.page === 'number' && Number.isInteger(value.page) && value.page >= 1
         && typeof value.pageSize === 'number' && Number.isInteger(value.pageSize) && value.pageSize >= 1 && value.pageSize <= 100

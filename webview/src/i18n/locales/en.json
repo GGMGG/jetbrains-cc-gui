@@ -448,6 +448,16 @@
         "idle": "Idle"
       },
       "sessionSizeHint": "Lists files on disk, including archived and child sessions. Sizes exclude the database.",
+      "relations": {
+        "subagent": "Subagent",
+        "mainSession": "Main session",
+        "parentSession": "Parent session",
+        "childCount_one": "{{count}} subagent",
+        "childCount_other": "{{count}} subagents",
+        "childCountHint": "Direct subagents with session files, including archived sessions",
+        "parentMissing": "(no session file)",
+        "parentUnknown": "Parent session unavailable"
+      },
       "selectVisible": "Select deletable sessions on this page",
       "selectSession": "Select session: {{title}}",
       "running": "Running, deletion unavailable",
