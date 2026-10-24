@@ -160,6 +160,7 @@ class ClaudeProcessInvoker {
                     process.waitFor();
 
                     int exitCode = process.exitValue();
+                    result.processExited = true;
                     boolean wasInterrupted = processManager.wasInterrupted(channelId);
                     log.debug("[ProcessInvoker] Process exited, exitCode=" + exitCode
                             + ", wasInterrupted=" + wasInterrupted + ", hadSendError=" + hadSendError.get());

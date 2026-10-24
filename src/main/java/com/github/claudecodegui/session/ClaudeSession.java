@@ -850,11 +850,14 @@ public class ClaudeSession {
                             nativeCodexSettings,
                             turnOwner
                     )
-            ).thenCompose(v -> syncUserMessageUuidsAfterSend());
+            ).thenCompose(v -> state.isCurrentTurn(turnOwner)
+                    ? syncUserMessageUuidsAfterSend() : CompletableFuture.completedFuture(null));
         }).exceptionally(ex -> {
+            if (execution != null) {
+                execution.observeFailure(ex);
+            }
             synchronized (state.getMessageStateLock()) {
                 if (state.isCurrentTurn(turnOwner)) {
-                    state.getExecutionState().finish(state.executionTurnForOwner(turnOwner), SessionExecutionState.Outcome.FAILED);
                     state.setError(ex.getMessage());
                     state.setBusy(false);
                     state.setLoading(false);

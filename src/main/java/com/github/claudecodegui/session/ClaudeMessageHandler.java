@@ -303,7 +303,8 @@ public class ClaudeMessageHandler implements MessageCallback {
             } else {
                 state.getExecutionState().finish(executionTurn,
                         result.cancelled ? SessionExecutionState.Outcome.CANCELLED
-                                : result.success ? SessionExecutionState.Outcome.SUCCEEDED : SessionExecutionState.Outcome.FAILED);
+                                : result.success ? SessionExecutionState.Outcome.SUCCEEDED : SessionExecutionState.Outcome.FAILED,
+                        result.processExited);
             }
             flushPendingDelta();
             if (streamEndedThisTurn) {

@@ -345,6 +345,7 @@ public abstract class BaseSDKBridge {
                     process.waitFor();
 
                     int exitCode = process.exitValue();
+                    result.processExited = true;
                     boolean wasInterrupted = processManager.wasInterrupted(channelId);
 
                     result.finalResult = assistantContent.toString();

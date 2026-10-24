@@ -115,4 +115,23 @@ public class SessionExecutionOwnershipTest {
         state.beginTurn();
         return state;
     }
+
+    @Test
+    public void exitedProcessResultSettlesDetachedStopWithoutChangingReplacement() {
+        SessionState session = running();
+        SessionExecutionOwnership old = session.currentExecutionOwnership();
+        CompletableFuture<SDKResult> backend = new CompletableFuture<>();
+        old.bindResult(backend);
+        old.state().activity(old.turn(), SessionExecutionState.Phase.STOPPING);
+        old.state().finish(old.turn(), SessionExecutionState.Outcome.FAILED);
+        session.setProvider("codex");
+        session.beginTurn();
+        SessionExecutionState.Snapshot replacement = session.getExecutionSnapshot();
+        SDKResult exit = SDKResult.error("Clean exit after interruption");
+        exit.processExited = true;
+        backend.complete(exit);
+        assertEquals(SessionExecutionState.Outcome.FAILED, old.state().snapshot().outcome());
+        assertEquals(replacement, session.getExecutionSnapshot());
+        assertTrue(session.isBusy());
+    }
 }

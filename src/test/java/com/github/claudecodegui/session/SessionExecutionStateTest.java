@@ -222,4 +222,36 @@ public class SessionExecutionStateTest {
         assertFalse(state.isCurrentTurn(owner));
         assertEquals(SessionExecutionState.Phase.IDLE, state.getExecutionSnapshot().phase());
     }
+
+    @Test
+    public void rebindingClearsRetiredTurnFlagsButPreservesClaimedHistoryLoading() {
+        for (boolean historyLoading : new boolean[]{false, true}) {
+            for (String change : new String[]{"provider", "session", "restored", "runtime"}) {
+                SessionState state = new SessionState();
+                state.setSessionId("original");
+                Object owner = state.beginTurn();
+                Object history = new Object();
+                if (historyLoading) {
+                    state.claimLoading(history);
+                }
+                switch (change) {
+                    case "provider" -> state.setProvider("codex");
+                    case "session" -> state.setSessionId("replacement");
+                    case "restored" -> state.setRestoredSessionId("replacement");
+                    case "runtime" -> state.rotateRuntimeSessionEpoch();
+                    default -> throw new AssertionError(change);
+                }
+                assertFalse(change, state.isCurrentTurn(owner));
+                assertFalse(change, state.isBusy());
+                assertEquals(change, historyLoading, state.isLoading());
+                if (historyLoading) {
+                    assertTrue(state.ownsLoading(history));
+                    assertTrue(state.releaseLoading(history));
+                }
+                state.beginTurn();
+                assertTrue(state.isBusy());
+                assertTrue(state.isLoading());
+            }
+        }
+    }
 }

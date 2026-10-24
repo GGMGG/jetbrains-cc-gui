@@ -31,7 +31,8 @@ public record SessionExecutionOwnership(SessionExecutionState state, SessionExec
                 state.activity(turn, SessionExecutionState.Phase.UNKNOWN);
             } else {
                 state.finish(turn, result.cancelled ? SessionExecutionState.Outcome.CANCELLED
-                        : result.success ? SessionExecutionState.Outcome.SUCCEEDED : SessionExecutionState.Outcome.FAILED);
+                        : result.success ? SessionExecutionState.Outcome.SUCCEEDED : SessionExecutionState.Outcome.FAILED,
+                        result.processExited);
             }
         });
     }
