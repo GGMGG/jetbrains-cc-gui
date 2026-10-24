@@ -18,6 +18,8 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 
+import java.io.IOException;
+
 /**
  * Handles project-level configuration: working directory, streaming, sandbox mode,
  * auto-open file, send shortcut, commit prompt, IDE theme, editor font config, and usage statistics.
@@ -533,6 +535,48 @@ public class ProjectConfigHandler {
         dispatchUiFontConfigUpdate();
     }
 
+    /**
+     * Save an explicit scale choice and acknowledge it through the existing font configuration channel.
+     *
+     * @param content JSON payload containing an integer fontSizeLevel from 1 to 6 and an optional fontSizeRequestId
+     */
+    public void handleSetFontSizeLevel(String content) {
+        try {
+            this.dispatchUiFontConfigUpdate(this.setFontSizeLevelAndCreateResponse(content));
+        } catch (Exception e) {
+            LOG.warn("[ProjectConfigHandler] Failed to save font size level", e);
+            this.showError("Failed to save font size level: " + e.getMessage());
+        }
+    }
+
+    JsonObject setFontSizeLevelAndCreateResponse(String content) throws IOException {
+        JsonObject json = this.gson.fromJson(content, JsonObject.class);
+        JsonElement value = json == null ? null : json.get("fontSizeLevel");
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException("Font size level must be a number");
+        }
+        int level;
+        try {
+            level = value.getAsBigDecimal().intValueExact();
+        } catch (ArithmeticException e) {
+            // Gson's "Rounding necessary" is not a readable rejection for the user.
+            throw new IllegalArgumentException("Font size level must be an integer between 1 and 6");
+        }
+        if (level < 1 || level > 6) {
+            throw new IllegalArgumentException("Font size level must be an integer between 1 and 6");
+        }
+        JsonElement requestId = json.get("fontSizeRequestId");
+        if (requestId != null && (!requestId.isJsonPrimitive() || !requestId.getAsJsonPrimitive().isString())) {
+            throw new IllegalArgumentException("Font size request ID must be a string");
+        }
+        this.settingsService.setFontSizeLevel(level);
+        JsonObject response = FontConfigService.getResolvedUiFontConfig(this.settingsService);
+        if (requestId != null) {
+            response.add("fontSizeRequestId", requestId.deepCopy());
+        }
+        return response;
+    }
+
     public void handleSetUiFontConfig(String content) {
         try {
             JsonObject json = gson.fromJson(content, JsonObject.class);
@@ -783,11 +827,18 @@ public class ProjectConfigHandler {
 
     private void dispatchUiFontConfigUpdate() {
         try {
-            String uiFontConfigJson = FontConfigService.getResolvedUiFontConfigJson(settingsService);
-            ApplicationManager.getApplication().invokeLater(() -> {
-                context.callJavaScript("window.onUiFontConfigReceived", context.escapeJs(uiFontConfigJson));
-                context.callJavaScript("window.applyUiFontConfig", context.escapeJs(uiFontConfigJson));
-            });
+            this.dispatchUiFontConfigUpdate(FontConfigService.getResolvedUiFontConfig(this.settingsService));
+        } catch (Exception e) {
+            LOG.error("[ProjectConfigHandler] Failed to dispatch UI font config: " + e.getMessage(), e);
+        }
+    }
+
+    private void dispatchUiFontConfigUpdate(JsonObject uiFontConfig) {
+        try {
+            String uiFontConfigJson = uiFontConfig.toString();
+            // The queue schedules EDT delivery and must capture this page before the handler returns.
+            this.context.callJavaScript("window.onUiFontConfigReceived", this.context.escapeJs(uiFontConfigJson));
+            this.context.callJavaScript("window.applyUiFontConfig", this.context.escapeJs(uiFontConfigJson));
         } catch (Exception e) {
             LOG.error("[ProjectConfigHandler] Failed to dispatch UI font config: " + e.getMessage(), e);
         }
