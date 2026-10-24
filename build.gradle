@@ -209,6 +209,8 @@ tasks.named('compileTestJava', JavaCompile) {
 }
 
 tasks.named('test', Test) {
+    // Unit fixtures override the user home; never let the host CODEX_HOME redirect them to live data.
+    environment 'CODEX_HOME', ''
     // Disabled instrumentation can leave old test bytecode ahead of the current classes.
     // Keep the platform runtime, but discover and load the current compiler output first.
     def currentTestClasses = tasks.named('compileTestJava', JavaCompile).flatMap { it.destinationDirectory }
