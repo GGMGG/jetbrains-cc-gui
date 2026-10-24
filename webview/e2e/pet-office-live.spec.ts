@@ -218,8 +218,48 @@ for (const [id, name] of [
   });
 }
 
-test('room fits the viewport and percentage zoom preserves exact desk selection', async ({ page }) => {
+test('percentage zoom dropdown exposes every option and supports keyboard selection', async ({ page }) => {
   await scene(page, liveSceneFixture(Array.from({ length: 12 }, () => 'RUNNING')));
+  const size = page.viewportSize()!;
+  const zoom = page.getByRole('group', { name: 'Scene zoom' });
+  const zoomSelect = zoom.getByRole('combobox', { name: 'Scene zoom' });
+  await expect(zoomSelect).toBeVisible();
+  await expect(zoom.getByRole('button', { name: /%$/ })).toHaveCount(0);
+  const header = (await page.locator('.office-scene-header').boundingBox())!;
+  const selectBounds = (await zoomSelect.boundingBox())!;
+  expect(selectBounds.x).toBeGreaterThanOrEqual(header.x);
+  expect(selectBounds.x + selectBounds.width).toBeLessThanOrEqual(header.x + header.width);
+  await zoomSelect.click();
+  const values = ['75%', '90%', '100%', '110%', '125%', '150%'];
+  const options = page.getByRole('option');
+  await expect(options).toHaveCount(6);
+  await expect(options).toHaveText(values);
+  const optionBounds = await options.evaluateAll(nodes => nodes.map(node => {
+    const bounds = node.getBoundingClientRect(), style = getComputedStyle(node);
+    return { text: node.textContent?.trim(), y: bounds.y, height: bounds.height,
+      visible: bounds.width > 0 && bounds.height > 0 && style.visibility === 'visible' && style.display !== 'none' };
+  }));
+  for (const option of optionBounds) {
+    expect(option.visible, option.text).toBe(true);
+    expect(option.y, option.text).toBeGreaterThanOrEqual(0);
+    expect(option.y + option.height, option.text).toBeLessThanOrEqual(size.height);
+  }
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox')).not.toBeVisible();
+  await expect(zoom.locator('.ant-select')).toHaveText('100%');
+  await zoomSelect.press('ArrowDown');
+  await expect(page.getByRole('listbox')).toBeVisible();
+  for (const value of ['110%', '125%', '150%']) {
+    await zoomSelect.press('ArrowDown');
+    await expect(page.locator('.ant-select-item-option-active')).toHaveText(value);
+  }
+  await zoomSelect.press('Enter');
+  await expect(zoom.locator('.ant-select')).toHaveText('150%');
+});
+
+test('room fits the viewport and percentage zoom preserves exact desk selection', async ({ page }) => {
+  const fixture = liveSceneFixture(Array.from({ length: 12 }, () => 'RUNNING'));
+  await scene(page, fixture);
   const canvas = page.locator('.office-scene-surface > canvas'), viewport = page.locator('.office-canvas-wrap');
   const view = await viewport.boundingBox(), room = await canvas.boundingBox();
   expect(view).not.toBeNull(); expect(room).not.toBeNull();
@@ -228,23 +268,21 @@ test('room fits the viewport and percentage zoom preserves exact desk selection'
   if (size.width > 880 && size.height > 640) {
     expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(size.height + 1);
   }
-  const zoom = page.getByRole('combobox', { name: 'Scene zoom' });
-  await zoom.click();
-  const menu = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');
-  await expect(menu).toBeVisible(); expect((await menu.boundingBox())!.width).toBeGreaterThanOrEqual(135);
-  expect((await menu.boundingBox())!.height).toBeLessThanOrEqual(180);
-  await expect.poll(async () => {
-    const bounds = await menu.boundingBox();
-    return !!bounds && bounds.y >= -1 && bounds.y + bounds.height <= size.height + 1;
-  }).toBe(true);
-  for (const value of ['75%', '90%', '100%', '110%', '125%', '150%']) await expect(menu.getByText(value, { exact: true })).toBeVisible();
-  await menu.getByText('150%', { exact: true }).click();
-  await expect(page.locator('.office-zoom-control')).toContainText('150%');
-  const enlarged = await canvas.boundingBox(); expect(enlarged!.width).toBeGreaterThan(room!.width * 1.49);
+  const zoom = page.getByRole('group', { name: 'Scene zoom' });
+  // Renew the host snapshot before measuring geometry so expiry cannot change the fitted room height.
+  await scene(page, fixture, 2);
+  await expect.poll(async () => (await diagnostics(page))?.stale).toBe(false);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const fitted = (await canvas.boundingBox())!;
+  await zoom.getByRole('combobox', { name: 'Scene zoom' }).click();
+  await page.getByRole('option', { name: '150%', exact: true }).click();
+  await expect(zoom.locator('.ant-select')).toHaveText('150%');
+  await expect.poll(async () => (await canvas.boundingBox())!.width / fitted.width).toBeCloseTo(1.5, 2);
+  const enlarged = await canvas.boundingBox();
   const height = Number((await diagnostics(page))?.logicalHeight);
   await canvas.click({ position: { x: enlarged!.width * OFFICE_ART_SEATS.loft[0].x / OFFICE_SCENE_WIDTH, y: enlarged!.height * OFFICE_ART_SEATS.loft[0].label / height } });
   await expect(page.getByRole('list', { name: 'Session list' }).getByRole('button').first()).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: 'Fit window' }).click(); await expect(page.locator('.office-zoom-control')).toContainText('100%');
+  await page.getByRole('button', { name: 'Fit window' }).click(); await expect(zoom.locator('.ant-select')).toHaveText('100%');
   expect(await commands(page, 'navigate')).toHaveLength(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -551,11 +589,11 @@ test('gentle focus follows selection and preserves aligned input after resize', 
   const canvas = page.locator('.office-scene-surface > canvas'), wrap = page.locator('.office-canvas-wrap');
   for (const size of info.project.name === 'chromium-full-hd' ? [{ width: 1920, height: 1080 }, { width: 1224, height: 861 }] : [page.viewportSize()!]) {
     await page.setViewportSize(size);
-    // Portrait layouts can focus horizontally while retaining the full room height.
+    // Narrow viewports focus horizontally while retaining the full room height.
     await expect.poll(async () => {
-      const view = await diagnostics(page);
-      return Number(view?.cameraWidth) * Number(view?.cameraHeight);
-    }).toBeLessThan(1160 * 1040);
+      const camera = await diagnostics(page);
+      return Math.min(Number(camera?.cameraWidth) / 1160, Number(camera?.cameraHeight) / 1040);
+    }).toBeLessThan(1);
     expect((await canvas.boundingBox())!.width).toBeLessThanOrEqual((await wrap.boundingBox())!.width + 1);
     const d = (await diagnostics(page))!, bounds = (await canvas.boundingBox())!;
     expect(Number(d.cameraWidth)).toBeLessThanOrEqual(1160);
@@ -619,7 +657,7 @@ test('selected desk focus follows distant rows and floors without moving stable 
   await rows.nth(12).click(); await expect(page.getByText('Floor 2 / 2', { exact: true })).toBeVisible();
   await expect.poll(async () => Number((await diagnostics(page))?.cameraY)).toBe(0);
   await page.getByRole('combobox', { name: 'Scene zoom' }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByRole('option', { name: '150%', exact: true }).click();
+  await page.getByRole('option', { name: '150%', exact: true }).click();
   await rows.nth(11).click();
   const viewport = (await page.locator('.office-canvas-wrap').boundingBox())!;
   await expect.poll(async () => {

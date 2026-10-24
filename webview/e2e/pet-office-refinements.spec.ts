@@ -13,7 +13,7 @@ type Fixture = ReturnType<typeof liveSceneFixture>;
 const sequences = new WeakMap<Page, number>();
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 function defaults(): OfficeSharedState {
-  return { schemaVersion: 1, revision: 'initial', preferences: { limitMiB: 50, floors: Array.from({ length: 22 }, () => 'loft'), floor: 0,
+  return { schemaVersion: 1, revision: 'initial', preferences: { officeName: '', limitMiB: 50, floors: Array.from({ length: 22 }, () => 'loft'), floor: 0,
     product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100,
     presentation: { effects: true, attention: true, ambience: true, depth: true }, appearanceOverrides: {} },
   bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
@@ -73,6 +73,51 @@ async function expectCompactSidebar(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
+test('office naming trims, persists, rolls back failed saves and restores the default titles', async ({ context }) => {
+  let saved = defaults(), rejectNext = false;
+  await context.exposeFunction('officeRefinementHost', (message: string) => {
+    const request = JSON.parse(message) as { command: string; operation: string; requestId: string; pageGeneration: string; payload: string };
+    if (request.command !== 'storage') return [];
+    const packet = (type: string, fields = {}) => ({ requestId: request.requestId, pageGeneration: request.pageGeneration, type, ...fields });
+    if (request.operation === 'backgroundRead') return [packet('value', { empty: true })];
+    if (request.operation !== 'preferences') throw new Error('Unexpected storage operation');
+    if (rejectNext) { rejectNext = false; return [packet('error', { code: 'OFFICE_PREFERENCES_UNAVAILABLE' })]; }
+    const payload = JSON.parse(request.payload) as { expectedRevision: string; preferences: OfficeSharedState['preferences'] };
+    if (payload.expectedRevision !== saved.revision) return [packet('error', { code: 'OFFICE_PREFERENCES_CONFLICT', state: saved })];
+    saved = { ...saved, revision: randomUUID(), preferences: payload.preferences };
+    return [packet('value', { state: saved })];
+  });
+  let page = await open(context, saved, 'zh');
+  const name = '研发办公室 🐾 <team>';
+  await page.getByRole('button', { name: '工作室设置', exact: true }).click();
+  await page.getByRole('textbox', { name: '办公室名称', exact: true }).fill(`  ${name}  `);
+  await page.getByRole('textbox', { name: '办公室名称', exact: true }).press('Enter');
+  await expect.poll(() => saved.preferences.officeName).toBe(name);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(name); await expect(page).toHaveTitle(name);
+  await expect(page.getByRole('textbox', { name: '办公室名称', exact: true })).toHaveValue(name);
+  await page.keyboard.press('Escape'); await page.close(); page = await open(context, saved, 'zh');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(name); await expect(page).toHaveTitle(name);
+  await page.getByRole('button', { name: '工作室设置', exact: true }).click();
+  const input = page.getByRole('textbox', { name: '办公室名称', exact: true });
+  await input.fill('Unsaved draft'); await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
+  await page.getByRole('button', { name: '工作室设置', exact: true }).click(); await expect(input).toHaveValue(name);
+  if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: test.info().outputPath('office-name-settings-zh.png'), animations: 'disabled' });
+  rejectNext = true;
+  await input.fill('Failed save'); await page.getByRole('button', { name: '应用名称', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: '共享设置保存失败' })).toBeVisible();
+  await expect(input).toHaveValue(name); await expect(page).toHaveTitle(name);
+  expect(saved.preferences.officeName).toBe(name);
+  await input.fill(''); await page.getByRole('button', { name: '应用名称', exact: true }).click();
+  await expect.poll(() => saved.preferences.officeName).toBe('');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Pet 办公室'); await expect(page).toHaveTitle('Pet 办公室');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: test.info().outputPath('office-inline-zoom-zh.png'), animations: 'disabled' });
+  await page.close();
+});
+
 test('hover previews follow live metadata without selecting or navigating and dismiss safely', async ({ context }) => {
   const commands: string[] = [];
   await context.exposeFunction('officeRefinementHost', (message: string) => { commands.push((JSON.parse(message) as { command: string }).command); return []; });
@@ -85,8 +130,8 @@ test('hover previews follow live metadata without selecting or navigating and di
   expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.y).toBeGreaterThanOrEqual(0);
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width + 1); expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height + 1);
   if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: '../.codex/office-neon-compact-20261017/screenshots/desk-hover.png' });
-  await page.getByRole('combobox', { name: 'Scene zoom', exact: true }).click();
-  await page.locator('.ant-select-item-option-content').filter({ hasText: /^150%$/ }).click();
+  await page.getByRole('combobox', { name: 'Scene zoom' }).click();
+  await page.getByRole('option', { name: '150%', exact: true }).click();
   await hoverDesk(page, 1); await expect(preview).toContainText('Project A / AI 2');
   await publish(page, liveSceneFixture(['RUNNING', 'RUNNING']));
   await expect(preview).toContainText('Working'); await expect(preview).not.toContainText('Question');
@@ -304,7 +349,7 @@ test('fitted room furniture and input stay still even with a legacy enabled dept
   await page.close();
 });
 
-test('one row of scene controls stays reachable and decorative effects use only spare margins', async ({ context }) => {
+test('scene controls wrap to stay visible and decorative effects use only spare margins', async ({ context }) => {
   const commands: string[] = [];
   await context.exposeFunction('officeRefinementHost', (message: string) => { commands.push((JSON.parse(message) as { command: string }).command); return []; });
   const page = await open(context); await publish(page, liveSceneFixture(['RUNNING', 'WAITING_USER', 'FAILED', 'RUNNING', 'RUNNING', 'RUNNING', 'RUNNING', 'RUNNING', 'RUNNING', 'RUNNING', 'RUNNING', 'RUNNING']));
@@ -313,19 +358,14 @@ test('one row of scene controls stays reachable and decorative effects use only 
   if (size.width >= 1600) expect(sidebar.width).toBeGreaterThanOrEqual(430);
   if (size.width >= 1180) expect(sidebar.width).toBeGreaterThanOrEqual(350);
   const header = (await page.locator('.office-scene-header').boundingBox())!;
-  expect(header.height).toBeLessThan(70);
-  const headerFits = await page.locator('.office-scene-header').evaluate(node => node.scrollWidth <= node.clientWidth);
-  if (headerFits) {
+  expect(await page.locator('.office-scene-header').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  if (size.width >= 1600) {
     const floor = (await page.locator('.office-floor-navigation').boundingBox())!;
     expect(Math.abs(floor.x + floor.width / 2 - header.x - header.width / 2)).toBeLessThanOrEqual(2);
   }
-  const centers = await page.locator('.office-scene-header .ant-btn, .office-scene-header .ant-select').evaluateAll(nodes => nodes.map(node => {
-    const box = node.getBoundingClientRect(); return box.y + box.height / 2;
-  }));
-  expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
   for (const name of ['Choose background', 'Margin effects', 'Studio settings']) {
     const button = page.locator('.office-scene-header').getByRole('button', { name, exact: true });
-    await button.focus();
+    await expect(button).toBeVisible();
     const box = (await button.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(header.x);
     expect(box.x + box.width).toBeLessThanOrEqual(header.x + header.width + 1);
@@ -407,6 +447,10 @@ test('margin effects switch cleanly, freeze with the room and remember off witho
     }
     if (mode === 'matrix') await page.screenshot({ path: test.info().outputPath('code-rain.png') });
   }
+  // Refresh the simulated host lease after the screenshot-heavy mode checks.
+  await publish(page, fixture);
+  await expect.poll(async () => (await diagnostics()).stale).toBe(false);
+  await expect.poll(async () => (await diagnostics()).marginEffectActive).toBe(true);
   await page.getByRole('button', { name: 'Pause animation', exact: true }).click();
   const paused = await diagnostics(), image = await canvas.evaluate(node => (node as HTMLCanvasElement).toDataURL());
   await page.waitForTimeout(450);
@@ -438,8 +482,8 @@ test('margin effects switch cleanly, freeze with the room and remember off witho
   await expect(canvas).not.toBeVisible(); expect((await diagnostics()).marginEffectActive).toBe(false);
   await page.emulateMedia({ reducedMotion: 'no-preference' }); await publish(page, fixture);
   await expect(canvas).toBeVisible();
-  await page.getByRole('combobox', { name: 'Scene zoom', exact: true }).click();
-  await page.locator('.ant-select-item-option-content').filter({ hasText: /^150%$/ }).click();
+  await page.getByRole('combobox', { name: 'Scene zoom' }).click();
+  await page.getByRole('option', { name: '150%', exact: true }).click();
   await expect(canvas).not.toBeVisible(); expect((await diagnostics()).marginEffectBytes).toBe(0);
   await page.getByRole('button', { name: 'Fit window', exact: true }).click(); await expect(canvas).toBeVisible();
   await page.getByRole('searchbox', { name: 'Search project, tab or provider' }).fill('no-such-project');
@@ -533,8 +577,8 @@ test('window scenery respects ambience, pause, visibility, reduced motion and cu
   await page.emulateMedia({ reducedMotion: 'no-preference' }); await publish(page, fixture);
   await expect(scenery).toHaveAttribute('visibility', 'visible');
   const actors = await scenery.locator('[data-window-motion]').count();
-  await page.getByRole('combobox', { name: 'Scene zoom', exact: true }).click();
-  await page.locator('.ant-select-item-option-content').filter({ hasText: /^150%$/ }).click();
+  await page.getByRole('combobox', { name: 'Scene zoom' }).click();
+  await page.getByRole('option', { name: '150%', exact: true }).click();
   expect(await scenery.locator('[data-window-motion]').count()).toBe(actors);
   const views = await page.locator('.office-vector-scene').evaluateAll(nodes => nodes.map(node => node.getAttribute('viewBox')));
   expect(new Set(views).size).toBe(1);

@@ -14,6 +14,52 @@ import static org.junit.Assert.*;
 public class PetOfficePreferencesStoreTest {
     @Rule public final TemporaryFolder temporary = new TemporaryFolder();
 
+    @Test public void officeNameSurvivesTakeoverAndBoundsUpdatesWithLegacyDefaultsAndWindowTitles() throws Exception {
+        var root = PetOfficeTestRoot.create(temporary);
+        var store = new PetOfficePreferencesStore(root);
+        var json = new Gson();
+        var legacy = json.toJsonTree(PetOfficePreferencesStore.defaults()).getAsJsonObject();
+        legacy.getAsJsonObject("preferences").remove("officeName");
+        try (var lease = PetOfficeRuntimeLease.tryAcquire(root).orElseThrow()) {
+            new PetOfficeEndpointStore(root).writePrivate(PetOfficePreferencesStore.FILE, legacy, lease);
+            var restored = store.read();
+            assertFalse(restored.recovered());
+            assertEquals("", restored.state().preferences().officeName());
+            assertEquals(com.github.claudecodegui.i18n.ClaudeCodeGuiBundle.message("petOffice.prototype.title"),
+                    PetOfficePrototypeService.windowTitle(restored.state().preferences()));
+            var p = restored.state().preferences();
+            var named = new PetOfficePreferencesStore.Preferences(p.limitMiB(), p.floors(), p.floor(), p.product(), p.search(),
+                    p.showIdle(), p.paused(), p.topmost(), p.zoom(), p.presentation(), p.appearanceOverrides(), "研发办公室 🐾 <team>");
+            var saved = store.update(restored.state().revision(), named, null, lease);
+            assertEquals(named.officeName(), PetOfficePrototypeService.windowTitle(new PetOfficePreferencesStore(root).read().state().preferences()));
+            var moved = store.update(saved.revision(), null, new PetOfficePreferencesStore.Bounds(50, 60, 1000, 700, true), lease);
+            assertEquals(named, moved.preferences());
+        }
+        assertEquals("研发办公室 🐾 <team>", new PetOfficePreferencesStore(root).read().state().preferences().officeName());
+    }
+
+    @Test public void malformedOfficeNamesAreRejectedBeforeReplacingTheSavedRecord() throws Exception {
+        var root = PetOfficeTestRoot.create(temporary);
+        var store = new PetOfficePreferencesStore(root);
+        var json = new Gson();
+        try (var lease = PetOfficeRuntimeLease.tryAcquire(root).orElseThrow()) {
+            for (var invalid : new Object[]{null, 100, true, "x".repeat(65), "line\nbreak", "control\u0085"}) {
+                var raw = json.toJsonTree(store.read().state().preferences()).getAsJsonObject();
+                raw.add("officeName", json.toJsonTree(invalid));
+                assertThrows(IOException.class, () -> PetOfficePreferencesStore.preferences(raw));
+            }
+            var raw = json.toJsonTree(store.read().state().preferences()).getAsJsonObject();
+            raw.addProperty("officeName", "🐾".repeat(64));
+            var named = PetOfficePreferencesStore.preferences(raw);
+            var saved = store.update("initial", named, null, lease);
+            assertEquals(named, new PetOfficePreferencesStore(root).read().state().preferences());
+            var invalid = new PetOfficePreferencesStore.Preferences(named.limitMiB(), named.floors(), named.floor(), named.product(), named.search(),
+                    named.showIdle(), named.paused(), named.topmost(), named.zoom(), named.presentation(), named.appearanceOverrides(), "x".repeat(65));
+            assertThrows(IOException.class, () -> store.update(saved.revision(), invalid, null, lease));
+            assertEquals(saved, store.read().state());
+        }
+    }
+
     @Test public void defaultsAndEverySupportedPreferenceSurviveANewOwnerWithRevisionChecks() throws Exception {
         var root = PetOfficeTestRoot.create(temporary); var store = new PetOfficePreferencesStore(root);
         assertEquals(50, store.read().state().preferences().limitMiB());

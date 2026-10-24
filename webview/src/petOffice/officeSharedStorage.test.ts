@@ -8,7 +8,7 @@ import { OFFICE_MAX_FLOORS } from './officeModel';
 
 const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 function state(revision = 'initial'): OfficeSharedState {
-  return { schemaVersion: 1, revision, preferences: { limitMiB: 50, floors: Array.from({ length: OFFICE_MAX_FLOORS }, () => OFFICE_THEME_IDS[0]),
+  return { schemaVersion: 1, revision, preferences: { officeName: '', limitMiB: 50, floors: Array.from({ length: OFFICE_MAX_FLOORS }, () => OFFICE_THEME_IDS[0]),
     floor: 0, product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: false }, appearanceOverrides: {} },
   bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
 }
@@ -28,6 +28,16 @@ function native() {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); delete window.petOfficeStorageResult; });
 
 describe('shared native Office storage', () => {
+  it('restores legacy names and rejects malformed names without losing other preferences', () => {
+    const original = state(), { officeName: _ignored, ...legacy } = original.preferences;
+    expect(parseOfficeSharedState({ ...original, preferences: legacy })).toEqual(original);
+    const named = { ...original, preferences: { ...original.preferences, officeName: '研发办公室 🐾 <team>' } };
+    expect(parseOfficeSharedState(named)).toEqual(named);
+    for (const officeName of [null, 100, {}, 'x'.repeat(65), 'line\nbreak', 'control\u0085']) {
+      expect(() => parseOfficeSharedState({ ...original, preferences: { ...original.preferences, officeName } })).toThrow();
+    }
+  });
+
   it('migrates legacy preferences to inheritance and preserves binding-scoped choices', () => {
     const original = state(), { appearanceOverrides: _ignored, ...legacy } = original.preferences;
     expect(parseOfficeSharedState({ ...original, preferences: legacy }).preferences.appearanceOverrides).toEqual({});

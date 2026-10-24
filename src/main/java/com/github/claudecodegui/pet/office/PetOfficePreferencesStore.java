@@ -24,7 +24,7 @@ final class PetOfficePreferencesStore {
     private static final Set<String> THEMES = Set.of("loft", "cyberpunk", "cultivation", "space", "forest", "library", "ocean", "zen", "retro");
     record Presentation(boolean effects, boolean attention, boolean ambience, boolean depth) { }
     record Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
-                       boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides) {
+                       boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides, String officeName) {
         Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
                     boolean showIdle, boolean paused, boolean topmost, int zoom) {
             this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, new Presentation(true, true, true, true));
@@ -32,6 +32,10 @@ final class PetOfficePreferencesStore {
         Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
                     boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation) {
             this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, presentation, Map.of());
+        }
+        Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
+                    boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides) {
+            this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, presentation, appearanceOverrides, "");
         }
         Preferences {
             var normalized = new ArrayList<>(floors);
@@ -92,7 +96,11 @@ final class PetOfficePreferencesStore {
         if (!value.has("appearanceOverrides")) {
             value.add("appearanceOverrides", new JsonObject());
         }
-        fields(value, "limitMiB", "floors", "floor", "product", "search", "showIdle", "paused", "topmost", "zoom", "presentation", "appearanceOverrides");
+        if (!value.has("officeName")) {
+            value.addProperty("officeName", "");
+        }
+        fields(value, "limitMiB", "floors", "floor", "product", "search", "showIdle", "paused", "topmost", "zoom", "presentation", "appearanceOverrides", "officeName");
+        string(value, "officeName", 64);
         if (!value.get("presentation").isJsonObject()) {
             throw new IOException("OFFICE_PREFERENCES_INVALID");
         }

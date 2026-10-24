@@ -39,6 +39,7 @@ import { OfficeFeedback } from './officeFeedback';
 import { OfficeFeedbackLayer } from './officeFeedbackLayer';
 import { OfficeSettings } from './OfficeSettings';
 import type { OfficePresentationSetting } from './OfficeSettings';
+import { parseOfficeName, readOfficeName, writeOfficeName } from './officeName';
 import { OfficeEffectsControl } from './OfficeEffectsControl';
 import { OfficeMarginEffects, officeMarginLayout, readOfficeMarginPreferences, writeOfficeMarginPreferences } from './officeMarginEffects';
 import type { OfficeMarginLayout, OfficeMarginPreferences } from './officeMarginEffects';
@@ -53,6 +54,12 @@ export function LiveOffice() {
   const [sharedInitial] = useState(() => window.__PET_OFFICE_BOOTSTRAP__?.sharedPreferences
     ? parseOfficeSharedState(window.__PET_OFFICE_BOOTSTRAP__.sharedPreferences) : null);
   const initial = sharedInitial?.preferences;
+  const [officeNamePreferences, setOfficeNamePreferences] = useState(() => initial ? { name: initial.officeName, error: false } : readOfficeName());
+  const officeName = officeNamePreferences.name;
+  const [officeNameDraft, setOfficeNameDraft] = useState(officeName);
+  let validOfficeName = true;
+  try { parseOfficeName(officeNameDraft); } catch { validOfficeName = false; }
+  const officeTitle = officeName || t('title');
   const [sharedError, setSharedError] = useState(false);
   const [presentationPending, setPresentationPending] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -216,6 +223,7 @@ export function LiveOffice() {
           const p = state.preferences;
           setShowIdle(p.showIdle); setProduct(p.product); setSearch(p.search); setFloor(p.floor); setPaused(p.paused); setPinned(p.topmost); setZoom(p.zoom);
           setPresentation(p.presentation); setAppearanceOverrides(p.appearanceOverrides);
+          setOfficeNamePreferences({ name: p.officeName, error: false }); setOfficeNameDraft(p.officeName);
           setThemePreferences({ floors: p.floors, error: false }); setCachePreferences({ limitMiB: p.limitMiB, error: false }); setCacheDraft(p.limitMiB);
           cacheBudgetRef.current = p.limitMiB * OFFICE_MIB;
           pool.reconfigureBudget(); backgrounds.reconfigureBudget();
@@ -275,8 +283,10 @@ export function LiveOffice() {
   }, [paint, sharedInitial]);
 
   useEffect(() => {
-    sharedRef.current?.save({ limitMiB: cachePreferences.limitMiB, floors: themePreferences.floors, floor, product, search, showIdle, paused, topmost: pinned, zoom, presentation, appearanceOverrides });
-  }, [cachePreferences.limitMiB, themePreferences.floors, floor, product, search, showIdle, paused, pinned, zoom, presentation, appearanceOverrides]);
+    sharedRef.current?.save({ officeName, limitMiB: cachePreferences.limitMiB, floors: themePreferences.floors, floor, product, search, showIdle, paused, topmost: pinned, zoom, presentation, appearanceOverrides });
+  }, [officeName, cachePreferences.limitMiB, themePreferences.floors, floor, product, search, showIdle, paused, pinned, zoom, presentation, appearanceOverrides]);
+
+  useEffect(() => { document.title = officeTitle; }, [officeTitle]);
 
   const loadPetChoices = useCallback(async () => {
     const storage = nativeStorageRef.current;
@@ -395,6 +405,12 @@ export function LiveOffice() {
     setCachePreferences({ limitMiB: cacheDraft, error: !sharedInitial && !writeOfficeCachePreferences(cacheDraft) });
     poolRef.current?.reconfigureBudget(); backgroundRef.current?.reconfigureBudget();
   };
+  const applyOfficeName = () => {
+    if (!validOfficeName) return;
+    const name = officeNameDraft.trim();
+    setOfficeNameDraft(name);
+    setOfficeNamePreferences({ name, error: !sharedInitial && !writeOfficeName(name) });
+  };
   const changePresentation = (name: OfficePresentationSetting, enabled: boolean) => {
     const next = { ...presentation, [name]: enabled };
     if (!enabled && (name === 'effects' || name === 'attention')) feedbackRef.current.clearEffects();
@@ -410,7 +426,7 @@ export function LiveOffice() {
     borderRadius: 8, fontSize: 14, fontFamily: '"Segoe UI", "Microsoft YaHei", sans-serif' } }}>
     <main className="pet-office office-live" data-ui-theme={background.custom ? 'custom' : currentTheme} style={officeUiStyle(palette)} onKeyDown={event => { if (event.key === 'Escape') setDiagnosticsOpen(false); }}>
       <header className="office-header">
-        <div className="office-brand"><div className="office-brand-icon" aria-hidden>▣</div><div><h1>{t('title')}</h1><p>{t('subtitle')} {t('localNotice')}</p></div></div>
+        <div className="office-brand"><div className="office-brand-icon" aria-hidden>▣</div><div><h1>{officeTitle}</h1><p>{t('subtitle')} {t('localNotice')}</p></div></div>
         <div className="office-header-actions">
           <div className="office-scene-actions"><Button onClick={() => { receiverRef.current?.resync(); poolRef.current?.retry(); }}>{t('refreshScene')}</Button><Button aria-pressed={paused || reducedMotion} disabled={reducedMotion} title={reducedMotion ? t('reducedMotionHint') : undefined} onClick={() => setPaused(value => !value)}>{t(paused || reducedMotion ? 'resume' : 'pause')}</Button></div>
           <div className="office-native-actions"><Button disabled={presentationPending} onClick={() => { void finishPresentation('hide'); }}>{t('hide')}</Button><Button disabled={presentationPending} onClick={() => { void finishPresentation('exit'); }}>{t('closeOffice')}</Button><Button className={`office-pin ${pinned ? 'is-pinned' : ''}`} aria-pressed={pinned} onClick={() => { if (sharedInitial) setPinned(value => !value); else sendOfficeRequest('setTopmost', { topmost: !pinned }); }}>{t(pinned ? 'unpinOffice' : 'pinOffice')}</Button></div>
@@ -453,7 +469,7 @@ export function LiveOffice() {
         </div>
         <div className="office-scene-actions"><div className="office-view-controls"><Button size="small" className="office-focus-button" aria-pressed={focusDesks} disabled={background.custom} onClick={() => setFocusDesks(value => !value)} title={t('focusHint')}>{t('focusDesks')}</Button><OfficeZoomControl zoom={zoom} onChange={setZoom} compact /></div>
         <OfficeEffectsControl value={marginEffects} error={marginEffectsError} onChange={changeMarginEffects} />
-        <Button size="small" className="office-settings-trigger" aria-label={t('studioSettings')} title={t('studioSettings')} onClick={() => { setDiagnosticsOpen(false); setSettingsOpen(true); }} icon={<svg aria-hidden="true" viewBox="0 0 20 20"><path d="m8 2-.5 2-2 .9-1.8-.6-2 3.4 1.4 1.5v2l-1.4 1.5 2 3.4 1.8-.6 2 .9.5 2h4l.5-2 2-.9 1.8.6 2-3.4-1.4-1.5v-2l1.4-1.5-2-3.4-1.8.6-2-.9-.5-2Z" /><circle cx="10" cy="10" r="2.7" /></svg>}><span className="office-settings-text">{t('studioSettings')}</span></Button>
+        <Button size="small" className="office-settings-trigger" aria-label={t('studioSettings')} title={t('studioSettings')} onClick={() => { setDiagnosticsOpen(false); setOfficeNameDraft(officeName); setSettingsOpen(true); }} icon={<svg aria-hidden="true" viewBox="0 0 20 20"><path d="m8 2-.5 2-2 .9-1.8-.6-2 3.4 1.4 1.5v2l-1.4 1.5 2 3.4 1.8-.6 2 .9.5 2h4l.5-2 2-.9 1.8.6 2-3.4-1.4-1.5v-2l1.4-1.5-2-3.4-1.8.6-2-.9-.5-2Z" /><circle cx="10" cy="10" r="2.7" /></svg>}><span className="office-settings-text">{t('studioSettings')}</span></Button>
         </div></div></header>
         {background.error ? <p className="office-background-error" role="alert">{t(background.error, { defaultValue: t('backgroundImageError') })}</p> : null}
         {themePreferences.error ? <p className="office-background-error" role="alert">{t('themeStorageError')}</p> : null}
@@ -488,6 +504,7 @@ export function LiveOffice() {
       </aside></div>
       {preview && previewSource ? <OfficeDeskPreview source={previewSource} anchor={preview} /> : null}
       <OfficeSettings open={settingsOpen} onClose={() => setSettingsOpen(false)}
+        officeName={{ value: officeName, draft: officeNameDraft, error: officeNamePreferences.error, valid: validOfficeName, onDraft: setOfficeNameDraft, onApply: applyOfficeName }}
         cache={{ limitMiB: cachePreferences.limitMiB, draft: cacheDraft, error: cachePreferences.error, busy: background.busy, onDraft: setCacheDraft, onApply: applyCacheLimit }}
         presentation={{ value: presentation, error: presentationError, reducedMotion, onChange: changePresentation }}
         shared={!!sharedInitial} recovered={!!window.__PET_OFFICE_BOOTSTRAP__?.preferencesRecovered} />

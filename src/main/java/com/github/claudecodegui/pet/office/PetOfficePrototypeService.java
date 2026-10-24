@@ -228,7 +228,7 @@ public final class PetOfficePrototypeService implements Disposable {
                 }
             };
             browser.getJBCefClient().addRequestHandler(requestHandler, browser.getCefBrowser());
-            window = new JFrame(ClaudeCodeGuiBundle.message("petOffice.prototype.title"));
+            window = new JFrame(windowTitle(preferences.state().preferences()));
             JFrame currentWindow = window;
             window.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
             window.setLayout(new BorderLayout());
@@ -450,11 +450,16 @@ public final class PetOfficePrototypeService implements Disposable {
 
     private void publishPreferences(PetOfficePreferencesStore.State state, long attempt) {
         if (attempt == generation.get() && window != null && browser != null && frontendReady && lease != null && runtimeService.owns(lease)) {
+            window.setTitle(windowTitle(state.preferences()));
             window.setAlwaysOnTop(state.preferences().topmost());
             browser.getCefBrowser().executeJavaScript("window.petOfficePreferencesChanged&&window.petOfficePreferencesChanged("
                     + new com.google.gson.Gson().toJson(state) + ");", trustedUrl, 0);
             publishTopmost();
         }
+    }
+
+    static String windowTitle(PetOfficePreferencesStore.Preferences preferences) {
+        return preferences.officeName().isEmpty() ? ClaudeCodeGuiBundle.message("petOffice.prototype.title") : preferences.officeName();
     }
 
     private void saveTopmost(boolean topmost) {
@@ -473,7 +478,7 @@ public final class PetOfficePrototypeService implements Disposable {
                     var state = store.read().state();
                     var p = state.preferences();
                     var changed = new PetOfficePreferencesStore.Preferences(p.limitMiB(), p.floors(), p.floor(), p.product(), p.search(),
-                            p.showIdle(), p.paused(), topmost, p.zoom(), p.presentation(), p.appearanceOverrides());
+                            p.showIdle(), p.paused(), topmost, p.zoom(), p.presentation(), p.appearanceOverrides(), p.officeName());
                     var next = store.update(state.revision(), changed, null, held);
                     onEdt(() -> publishPreferences(next, context.attempt));
                 }
