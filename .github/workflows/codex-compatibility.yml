@@ -47,6 +47,7 @@ jobs:
       - name: Verify official CLI catalogs, permissions, history and bridge contracts
         env:
           CODEX_CLI_REQUIRE_REAL: '1'
+          CODEX_CLI_TEST_VERSION: ${{ matrix.cli }}
         run: |
           export CODEX_CLI_TEST_COMMAND="$(node -e 'process.stdout.write(JSON.stringify([process.execPath, require("node:path").join(process.env.RUNNER_TEMP, "codex-cli-test/node_modules/@openai/codex/bin/codex.js")]))')"
           node --test --test-concurrency=2 ai-bridge/services/codex/*.test.js ai-bridge/services/codex/*.test.mjs ai-bridge/utils/sdk-loader.test.js

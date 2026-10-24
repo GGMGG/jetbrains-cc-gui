@@ -3,7 +3,8 @@ import test from 'node:test';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { CodexAppServerClient } from './codex-appserver-client.js';
@@ -13,6 +14,8 @@ import { readCodexSessionEdits } from './codex-session-edits.js';
 
 const command = process.env.CODEX_CLI_TEST_COMMAND ? JSON.parse(process.env.CODEX_CLI_TEST_COMMAND) : null;
 const required = process.env.CODEX_CLI_REQUIRE_REAL === '1';
+// The legacy matrix binary has blocking questions but no async tool family or hydration notice.
+const legacyCli = process.env.CODEX_CLI_TEST_VERSION === '0.146.0';
 const nativeQuestions = [{ title: 'Choose a test answer.', options: ['A', 'B', 'C'] }];
 
 async function fixture(t, { questions = nativeQuestions, wait = false, blocking = false, chat = false } = {}) {
@@ -71,7 +74,7 @@ async function fixture(t, { questions = nativeQuestions, wait = false, blocking 
     const cleanupRoot = realpathSync(root);
     assert.equal(dirname(cleanupRoot), realpathSync(tmpdir()));
     assert.ok(basename(cleanupRoot).startsWith('ccgui-native-questions-'));
-    rmSync(cleanupRoot, { recursive: true, force: true });
+    await rm(cleanupRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const settings = blocking ? { collaborationMode: { mode: 'plan',
     settings: { model: 'gpt-6.1-sol', reasoning_effort: null, developer_instructions: null } } } : undefined;
@@ -92,6 +95,8 @@ async function waitFor(predicate, description) {
 
 const options = { skip: !command && !required ? 'Set CODEX_CLI_TEST_COMMAND to run the isolated native question tests' : false,
   timeout: 90000 };
+const asyncOptions = { ...options, skip: options.skip || (legacyCli
+  ? 'Official CLI 0.146.0 does not expose native async question tools' : false) };
 
 test('native ordinary chat and cold resume read edit pages without deprecated full-history hydration', options, async t => {
   const f = await fixture(t, { chat: true });
@@ -99,10 +104,18 @@ test('native ordinary chat and cold resume read edit pages without deprecated fu
   assert.equal(f.events.filter(event => event.kind === 'interactionRequested').length, 0);
   const threadId = f.operation.threadId;
   assert.equal(f.notifications.some(event => event.method === 'deprecationNotice'), false);
-  // Control: prove that the old request actually causes the warning on the installed CLI.
-  await f.client.request('thread/read', { threadId, includeTurns: true });
-  await waitFor(() => f.notifications.some(event => event.method === 'deprecationNotice'
-    && JSON.stringify(event.params).includes('Full-history hydration')), 'full-hydration control notice');
+  if (legacyCli) {
+    const tools = f.requests[0]?.tools;
+    assert.ok(Array.isArray(tools), 'The legacy capability assertion needs the actual native tool catalog');
+    assert.ok(tools.some(tool => tool.name === 'request_user_input'), 'Blocking questions remain covered on the legacy CLI');
+    assert.equal(tools.some(tool => tool.name === 'request_user_input_async'), false,
+      'Do not skip async acceptance if the selected CLI actually advertises the tool');
+  } else {
+    // Control: newer binaries emit this warning; legacy binaries do not have the notice.
+    await f.client.request('thread/read', { threadId, includeTurns: true });
+    await waitFor(() => f.notifications.some(event => event.method === 'deprecationNotice'
+      && JSON.stringify(event.params).includes('Full-history hydration')), 'full-hydration control notice');
+  }
   const before = f.notifications.filter(event => event.method === 'deprecationNotice').length;
   const edits = await readCodexSessionEdits((method, params) => f.service.readOnly(method, params), { threadId });
   assert.deepEqual(edits.fileChangeMessages, []);
@@ -125,7 +138,7 @@ test('native ordinary chat and cold resume read edit pages without deprecated fu
   } finally { await service.resetRuntime(); }
 });
 
-test('native async choices steer their running turn, wake the clock and retain structured history after restart', options, async t => {
+test('native async choices steer their running turn, wake the clock and retain structured history after restart', asyncOptions, async t => {
   const f = await fixture(t, { wait: true });
   const request = await waitFor(() => f.events.find(event => event.kind === 'interactionRequested'), 'async question');
   await waitFor(() => f.requests.length >= 2, 'native clock dispatch');
@@ -155,7 +168,7 @@ test('native async choices steer their running turn, wake the clock and retain s
   } finally { reader.close(); await reader.waitForExit(); }
 });
 
-test('native completed async questions continue through a tracked follow-up without losing their answer', options, async t => {
+test('native completed async questions continue through a tracked follow-up without losing their answer', asyncOptions, async t => {
   const f = await fixture(t);
   assert.equal((await f.operation.promise).outcome, 'completed');
   const request = f.events.find(event => event.kind === 'interactionRequested');
@@ -171,7 +184,7 @@ test('native completed async questions continue through a tracked follow-up with
   assert.ok(JSON.stringify(f.requests.at(-1).input).includes('Choose a test answer.\\nC'));
 });
 
-test('native async multi-question input keeps choices and multiline free text in one response', options, async t => {
+test('native async multi-question input keeps choices and multiline free text in one response', asyncOptions, async t => {
   const f = await fixture(t, { wait: true, questions: [...nativeQuestions, { title: 'Any comment?', options: null }] });
   const request = await waitFor(() => f.events.find(event => event.kind === 'interactionRequested'), 'multi-question request');
   assert.equal(request.payload.params.questions.length, 2);
@@ -187,7 +200,7 @@ test('native async multi-question input keeps choices and multiline free text in
   assert.ok(input.includes('request: native-question'));
 });
 
-test('native async timeout interrupts its waiting turn and permits the next send', options, async t => {
+test('native async timeout interrupts its waiting turn and permits the next send', asyncOptions, async t => {
   const f = await fixture(t, { wait: true });
   const request = await waitFor(() => f.events.find(event => event.kind === 'interactionRequested'), 'async question');
   await waitFor(() => f.requests.length >= 2 && f.service.busy, 'native waiting turn');
@@ -203,7 +216,7 @@ test('native async timeout interrupts its waiting turn and permits the next send
   assert.equal(f.events.filter(event => event.kind === 'operationDone').length, 2);
 });
 
-test('native async cancellation closes the local question without submitting text or starting a turn', options, async t => {
+test('native async cancellation closes the local question without submitting text or starting a turn', asyncOptions, async t => {
   const f = await fixture(t);
   assert.equal((await f.operation.promise).outcome, 'completed');
   const request = f.events.find(event => event.kind === 'interactionRequested');
