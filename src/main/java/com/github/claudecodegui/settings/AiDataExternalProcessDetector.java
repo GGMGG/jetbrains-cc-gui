@@ -9,12 +9,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /** Best-effort detection of AI CLI processes not started by this plugin. */
-final class AiDataExternalProcessDetector {
+public final class AiDataExternalProcessDetector {
 
     private static final Logger LOG = Logger.getInstance(AiDataExternalProcessDetector.class);
     private static final long SCAN_TIMEOUT_NANOS = TimeUnit.MILLISECONDS.toNanos(500L);
 
-    boolean hasRunningProcess() {
+    public boolean hasRunningProcess() {
         long deadline = System.nanoTime() + SCAN_TIMEOUT_NANOS;
         try (Stream<ProcessHandle> processes = ProcessHandle.allProcesses()) {
             for (java.util.Iterator<ProcessHandle> iterator = processes.iterator(); iterator.hasNext();) {

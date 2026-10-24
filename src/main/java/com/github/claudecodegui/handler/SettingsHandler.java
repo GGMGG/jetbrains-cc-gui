@@ -36,6 +36,7 @@ public class SettingsHandler extends BaseMessageHandler {
     private final TokenTrackerHandler tokenTrackerHandler;
     private final DshPresetHandler dshPresetHandler;
     private final AiDataDirectoryHandler aiDataDirectoryHandler;
+    private final CodexStorageHandler codexStorageHandler;
 
     private static final String[] SUPPORTED_TYPES = {
         "get_mode",
@@ -53,6 +54,19 @@ public class SettingsHandler extends BaseMessageHandler {
         "choose_ai_data_directory_root",
         "migrate_ai_data_directories",
         "cleanup_ai_data_directory_backups",
+        "get_ai_storage_usage",
+        "cancel_ai_storage_scan",
+        "list_ai_storage_sessions",
+        "get_ai_storage_session",
+        "reveal_ai_storage_session",
+        "get_ai_storage_database_status",
+        "get_ai_storage_mutation_status",
+        "compact_ai_storage_database",
+        "preview_ai_storage_orphans",
+        "clean_ai_storage_orphans",
+        "delete_ai_storage_sessions",
+        "get_ai_storage_maintenance_operation",
+        "list_ai_storage_maintenance_operations",
         // TokenTracker local usage dashboard (vendored tokentracker-cli server)
         "tt_detect_cli",
         "tt_install_cli",
@@ -133,6 +147,7 @@ public class SettingsHandler extends BaseMessageHandler {
         this.tokenTrackerHandler = new TokenTrackerHandler(context);
         this.dshPresetHandler = new DshPresetHandler(context);
         this.aiDataDirectoryHandler = new AiDataDirectoryHandler(context);
+        this.codexStorageHandler = new CodexStorageHandler(context);
         // Register theme change listener to automatically notify frontend when IDE theme changes
         registerThemeChangeListener();
     }
@@ -156,6 +171,7 @@ public class SettingsHandler extends BaseMessageHandler {
      * Should be called when the owning ClaudeChatWindow is disposed.
      */
     public void dispose() {
+        codexStorageHandler.dispose();
         if (themeCallbackHandle != null) {
             ThemeConfigService.unregisterThemeChangeListener(themeCallbackHandle);
             themeCallbackHandle = null;
@@ -169,6 +185,9 @@ public class SettingsHandler extends BaseMessageHandler {
 
     @Override
     public boolean handle(String type, String content) {
+        if (codexStorageHandler.handle(type, content)) {
+            return true;
+        }
         switch (type) {
             // Permission mode
             case "get_mode":

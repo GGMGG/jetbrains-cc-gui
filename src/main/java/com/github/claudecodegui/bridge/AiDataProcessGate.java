@@ -29,7 +29,7 @@ public final class AiDataProcessGate {
         this(null);
     }
 
-    AiDataProcessGate(AiDataMigrationCoordinator migrationCoordinator) {
+    public AiDataProcessGate(AiDataMigrationCoordinator migrationCoordinator) {
         this.migrationCoordinator = migrationCoordinator;
     }
 
@@ -87,16 +87,25 @@ public final class AiDataProcessGate {
 
     /** A bounded read never waits for or cancels migration, and uses the same cross-JVM exclusion. */
     public ReadPermit tryAcquireReadPermit() {
+        return tryAcquireReadPermit(false);
+    }
+
+    /** Admits only maintenance recovery; ordinary reads and processes still honor pending journals. */
+    public ReadPermit tryAcquireMaintenancePermit() {
+        return tryAcquireReadPermit(true);
+    }
+
+    private ReadPermit tryAcquireReadPermit(boolean maintenance) {
         // Serialize the short admission check. Another reader holding this mutex is not a migration.
         lock.lock();
         try {
-            if (migrationActive || waitingProcesses > 0) {
+            if (migrationActive || !maintenance && waitingProcesses > 0) {
                 return null;
             }
             AiDataMigrationCoordinator.ProcessLock shared = null;
             if (migrationCoordinator != null) {
                 try {
-                    shared = migrationCoordinator.tryAcquireProcessLock();
+                    shared = maintenance ? migrationCoordinator.tryAcquireMaintenanceReadLock() : migrationCoordinator.tryAcquireProcessLock();
                 } catch (java.io.IOException error) {
                     throw new IllegalStateException("AI_DATA_COORDINATION_UNAVAILABLE", error);
                 }

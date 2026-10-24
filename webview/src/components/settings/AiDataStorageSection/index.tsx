@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ConfirmDialog from '../../ConfirmDialog';
 import {
@@ -7,6 +8,7 @@ import {
   type AiDataDirectoryStatus,
 } from './aiDataStorageBridge';
 import styles from './style.module.less';
+import CodexStoragePanel from './CodexStoragePanel';
 
 interface AiDataStorageSectionProps {
   addToast: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void;
@@ -210,6 +212,8 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
       <h3 className={styles.title}>{t('settings.storage.title')}</h3>
       <p className={styles.description}>{t('settings.storage.description')}</p>
 
+      <CodexStoragePanel addToast={addToast} />
+
       {status?.wsl && (
         <div className={styles.warning}>
           <span className="codicon codicon-warning" aria-hidden="true" />
@@ -228,107 +232,119 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
           <span>{operationErrorMessage(t, status?.error, status?.migrationOwner)}</span>
         </div>
       )}
-      <div className={styles.directoryListHeader}>
-        <div className={styles.directorySummary}>
-          <h4>{t('settings.storage.statusTitle')}</h4>
-          {status && (
-            <span>{t('settings.storage.statusSummary', { linked: linkedCount, total: directoryCount })}</span>
-          )}
-        </div>
-        <button
-          type="button"
-          className={styles.refreshButton}
-          onClick={aiDataStorageBridge.getStatus}
-          disabled={pending !== null}
-          title={t('common.refresh')}
-          aria-label={t('common.refresh')}
-        >
-          <span className="codicon codicon-refresh" aria-hidden="true" />
-        </button>
-      </div>
-      <div className={styles.directoryList}>
-        {status?.directories.map((entry) => (
-          <div key={entry.id} className={styles.directoryRow}>
-            <div className={styles.directoryIdentity}>
-              <strong>.{entry.id}</strong>
-              <span className={`${styles.state} ${styles[`state_${entry.state}`]}`}>
-                {t(`settings.storage.states.${entry.state}`)}
-              </span>
-            </div>
-            <div className={styles.pathList}>
-              <div className={styles.pathLine} title={entry.canonicalPath}>
-                <span>{t('settings.storage.canonicalPath')}</span>
-                <code>{entry.canonicalPath}</code>
-              </div>
-              {entry.physicalPath && (
-                <div className={styles.pathLine} title={entry.physicalPath}>
-                  <span>{t('settings.storage.physicalPath')}</span>
-                  <code>{entry.physicalPath}</code>
-                </div>
+      <details className={styles.group}>
+        <summary className={styles.groupHeader}>
+          <span className="codicon codicon-folder-opened" aria-hidden="true" />
+          <h4>{t('settings.storage.directorySettings')}</h4>
+          <span className={styles.groupMeta}>{status
+            ? t('settings.storage.statusSummary', { linked: linkedCount, total: directoryCount })
+            : t('common.loading')}</span>
+          <span className={`codicon codicon-chevron-right ${styles.chevron}`} aria-hidden="true" />
+        </summary>
+        <div className={styles.groupBody}>
+          <div className={styles.directoryListHeader}>
+            <div className={styles.directorySummary}>
+              <h4>{t('settings.storage.statusTitle')}</h4>
+              {status && (
+                <span>{t('settings.storage.statusSummary', { linked: linkedCount, total: directoryCount })}</span>
               )}
             </div>
+            <button
+              type="button"
+              className={styles.refreshButton}
+              onClick={aiDataStorageBridge.getStatus}
+              disabled={pending !== null}
+              title={t('common.refresh')}
+              aria-label={t('common.refresh')}
+            >
+              <span className="codicon codicon-refresh" aria-hidden="true" />
+            </button>
           </div>
-        )) ?? <div className={styles.loading}>{t('common.loading')}</div>}
-      </div>
+          <div className={styles.directoryList}>
+            {status?.directories.map((entry) => (
+              <div key={entry.id} className={styles.directoryRow}>
+                <div className={styles.directoryIdentity}>
+                  <strong>.{entry.id}</strong>
+                  <span className={`${styles.state} ${styles[`state_${entry.state}`]}`}>
+                    {t(`settings.storage.states.${entry.state}`)}
+                  </span>
+                </div>
+                <div className={styles.pathList}>
+                  <div className={styles.pathLine} title={entry.canonicalPath}>
+                    <span>{t('settings.storage.canonicalPath')}</span>
+                    <code>{entry.canonicalPath}</code>
+                  </div>
+                  {entry.physicalPath && (
+                    <div className={styles.pathLine} title={entry.physicalPath}>
+                      <span>{t('settings.storage.physicalPath')}</span>
+                      <code>{entry.physicalPath}</code>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )) ?? <div className={styles.loading}>{t('common.loading')}</div>}
+          </div>
 
-      <label className={styles.targetField}>
-        <span>{allLinked ? t('settings.storage.currentRoot') : t('settings.storage.targetRoot')}</span>
-        <div className={styles.targetRow}>
-          <input
-            type="text"
-            value={targetRoot}
-            maxLength={2048}
-            disabled={pending !== null || status?.supported !== true || statusBusy}
-            onChange={(event) => setTargetRoot(event.target.value)}
-            placeholder={t('settings.storage.targetPlaceholder')}
-          />
-          <button
-            type="button"
-            className={styles.iconButton}
-            onClick={aiDataStorageBridge.chooseRoot}
-            disabled={pending !== null || status?.supported !== true || statusBusy}
-            title={t('settings.storage.chooseRoot')}
-            aria-label={t('settings.storage.chooseRoot')}
-          >
-            <span className="codicon codicon-folder-opened" aria-hidden="true" />
-          </button>
+          <label className={styles.targetField}>
+            <span>{allLinked ? t('settings.storage.currentRoot') : t('settings.storage.targetRoot')}</span>
+            <div className={styles.targetRow}>
+              <input
+                type="text"
+                value={targetRoot}
+                maxLength={2048}
+                disabled={pending !== null || status?.supported !== true || statusBusy}
+                onChange={(event) => setTargetRoot(event.target.value)}
+                placeholder={t('settings.storage.targetPlaceholder')}
+              />
+              <button
+                type="button"
+                className={styles.iconButton}
+                onClick={aiDataStorageBridge.chooseRoot}
+                disabled={pending !== null || status?.supported !== true || statusBusy}
+                title={t('settings.storage.chooseRoot')}
+                aria-label={t('settings.storage.chooseRoot')}
+              >
+                <span className="codicon codicon-folder-opened" aria-hidden="true" />
+              </button>
+            </div>
+          </label>
+
+          <p className={styles.hint}>
+            <span className="codicon codicon-info" aria-hidden="true" />
+            <span>{t('settings.storage.migrationHint')}</span>
+          </p>
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.primaryButton}
+              onClick={requestMigration}
+              disabled={!targetRoot.trim() || pending !== null || status?.supported !== true || currentStorageSelected || statusBusy}
+            >
+              <span className="codicon codicon-move" aria-hidden="true" />
+              {pending === 'migrate'
+                ? t('settings.storage.migrating')
+                : currentStorageSelected
+                  ? t('settings.storage.alreadyMigrated')
+                  : t('settings.storage.migrate')}
+            </button>
+            {(status?.backupCount ?? 0) > 0 && (
+              <button
+                type="button"
+                className={styles.dangerButton}
+                onClick={requestCleanup}
+                disabled={pending !== null || status?.supported !== true || statusBusy}
+              >
+                <span className="codicon codicon-trash" aria-hidden="true" />
+                {pending === 'cleanup'
+                  ? t('settings.storage.cleaning')
+                  : t('settings.storage.cleanupBackups', { count: status?.backupCount ?? 0 })}
+              </button>
+            )}
+          </div>
         </div>
-      </label>
+      </details>
 
-      <p className={styles.hint}>
-        <span className="codicon codicon-info" aria-hidden="true" />
-        <span>{t('settings.storage.migrationHint')}</span>
-      </p>
-      <div className={styles.actions}>
-        <button
-          type="button"
-          className={styles.primaryButton}
-          onClick={requestMigration}
-          disabled={!targetRoot.trim() || pending !== null || status?.supported !== true || currentStorageSelected || statusBusy}
-        >
-          <span className="codicon codicon-move" aria-hidden="true" />
-          {pending === 'migrate'
-            ? t('settings.storage.migrating')
-            : currentStorageSelected
-              ? t('settings.storage.alreadyMigrated')
-              : t('settings.storage.migrate')}
-        </button>
-        {(status?.backupCount ?? 0) > 0 && (
-          <button
-            type="button"
-            className={styles.dangerButton}
-            onClick={requestCleanup}
-            disabled={pending !== null || status?.supported !== true || statusBusy}
-          >
-            <span className="codicon codicon-trash" aria-hidden="true" />
-            {pending === 'cleanup'
-              ? t('settings.storage.cleaning')
-              : t('settings.storage.cleanupBackups', { count: status?.backupCount ?? 0 })}
-          </button>
-        )}
-      </div>
-
-      <ConfirmDialog
+      {confirmation ? createPortal(<div className={styles.dialog}><ConfirmDialog
         isOpen={confirmation !== null}
         title={confirmationIsMigration
           ? t('settings.storage.migrateConfirmTitle')
@@ -342,6 +358,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
         cancelText={t('common.cancel')}
         onConfirm={confirmOperation}
         onCancel={() => setConfirmation(null)}
+        danger={!confirmationIsMigration}
       >
         {confirmationIsMigration && (
           <div className={styles.confirmDetails}>
@@ -353,7 +370,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
             </div>
           </div>
         )}
-      </ConfirmDialog>
+      </ConfirmDialog></div>, document.body) : null}
     </div>
   );
 }

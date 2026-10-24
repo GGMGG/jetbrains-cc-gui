@@ -58,6 +58,11 @@ public final class AiDataMigrationCoordinator {
                 return null;
             }
 
+            if (!"codex-storage".equals(operation)
+                    && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+            }
+
             String ownerId = UUID.randomUUID().toString();
             writeOwner(ownerId, operation);
             return new LockHandle(channel, lock, ownerId);
@@ -71,10 +76,22 @@ public final class AiDataMigrationCoordinator {
     }
 
     public ProcessLock tryAcquireProcessLock() throws IOException {
+        return tryAcquireSharedLock(false);
+    }
+
+    /** Maintenance may resume its own pending journal while keeping directory migration excluded. */
+    public ProcessLock tryAcquireMaintenanceReadLock() throws IOException {
+        return tryAcquireSharedLock(true);
+    }
+
+    private ProcessLock tryAcquireSharedLock(boolean maintenance) throws IOException {
         prepareDirectory();
         Path path = lockPath();
         SharedProcessLock shared = SHARED_PROCESS_LOCKS.computeIfAbsent(path, ignored -> new SharedProcessLock());
         synchronized (shared) {
+            if (!maintenance && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+            }
             if (shared.references > 0) {
                 shared.references++;
                 return new ProcessLock(path, shared);
@@ -92,6 +109,11 @@ public final class AiDataMigrationCoordinator {
                 if (lock == null) {
                     channel.close();
                     return null;
+                }
+                if (!maintenance && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                    lock.release();
+                    channel.close();
+                    throw new IOException("AI_DATA_MAINTENANCE_PENDING");
                 }
                 shared.channel = channel;
                 shared.lock = lock;

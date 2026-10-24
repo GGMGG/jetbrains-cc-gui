@@ -1,4 +1,5 @@
 .section {
+  container-type: inline-size;
   width: 100%;
   max-width: 800px;
   padding-bottom: 24px;
@@ -14,10 +15,58 @@
 }
 
 .description {
-  margin: 0 0 24px;
+  margin: 0 0 20px;
   color: var(--text-tertiary);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.group {
+  min-width: 0;
+  margin-top: 16px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+
+  &[open] > .groupHeader .chevron { transform: rotate(90deg); }
+  &[open] > .groupHeader { border-bottom: 1px solid var(--border-secondary); }
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 13px;
+
+  &::-webkit-details-marker { display: none; }
+  &:hover { background: var(--bg-hover); }
+  &:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+  h4 { min-width: 0; margin: 0; font-size: 13px; font-weight: 600; }
+  > :global(.codicon):first-child { flex-shrink: 0; color: var(--text-tertiary); }
+}
+
+.groupMeta {
+  min-width: 0;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron { flex-shrink: 0; color: var(--text-tertiary); }
+.groupBody { min-width: 0; padding: 12px; }
+.dialog {
+  :global(.confirm-dialog) { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); }
+  :global(.confirm-dialog-body) { overflow-y: auto; min-height: 0; }
+  :global(.confirm-dialog-header), :global(.confirm-dialog-footer) { flex-shrink: 0; }
 }
 
 .warning {
@@ -46,7 +95,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 10px 0;
-  border-top: 1px solid var(--border-primary);
+  padding-top: 0;
   border-bottom: 1px solid var(--border-primary);
 }
 
@@ -319,6 +368,13 @@
     grid-template-columns: 1fr;
     gap: 3px;
   }
+}
+
+@container (max-width: 520px) {
+  .directoryRow { grid-template-columns: 1fr; gap: 9px; }
+  .pathLine { grid-template-columns: 1fr; gap: 3px; }
+  .groupHeader { flex-wrap: wrap; gap: 6px; }
+  .groupMeta { font-size: 11px; }
 }
 
 @media (max-width: 480px) {
