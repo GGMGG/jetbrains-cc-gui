@@ -91,7 +91,19 @@ test.beforeEach(async ({ page }) => {
         case 'get_ai_storage_database_status': data = { databaseId: 'registered-fixture', name: 'thread_history_1.sqlite', supported: true,
           maintenancePending: false, sizes: { mainBytes, walBytes }, pageSize: 4096, freelistCount: 0 }; break;
         case 'list_ai_storage_sessions': {
-          const all = [row('running', true), { ...row('client-owned'), deletionUnavailableReason: 'SESSION_WRITER_BUSY' }, row('idle'),
+          const lineage = new URLSearchParams(location.search).has('storage-lineage');
+          const parentTitle = 'CCGUI 主会话 · 办公室与会话父子关系验收'.repeat(3);
+          const all = lineage ? [
+            { ...row('running', true), title: parentTitle, childCount: 2 },
+            { ...row('child-one'), title: '核对办公室设置', subagent: true, parentId: 'running', parentTitle,
+              parentAvailable: true, parentIsSubagent: false, childCount: 1 },
+            { ...row('nested-child'), title: '验证设置回归', subagent: true, parentId: 'child-one', parentTitle: '核对办公室设置',
+              parentAvailable: true, parentIsSubagent: true, childCount: 0 },
+            { ...row('archived-child'), title: '已归档的验收子代理', subagent: true, archived: true, parentId: 'running', parentTitle,
+              parentAvailable: true, parentIsSubagent: false },
+            { ...row('missing-parent'), title: '父会话文件已移除', subagent: true, parentId: '12345678-missing-parent', parentAvailable: false },
+            { ...row('unknown-parent'), title: '未提供父会话信息', subagent: true },
+          ] : [row('running', true), { ...row('client-owned'), deletionUnavailableReason: 'SESSION_WRITER_BUSY' }, row('idle'),
             ...Array.from({ length: 48 }, (_, index) => ({ ...row(index === 7 ? 'page-two' : `session-${index + 1}`), fileSize: index + 1 }))];
           const needle = String(request.query ?? '').trim().toLowerCase();
           let matched = (needle.includes('outside') ? [row('outside-first-page')] : all.filter(item => !needle || item.cwd.toLowerCase().includes(needle)))
@@ -170,6 +182,57 @@ async function openSessions(panel: Locator) {
   const summary = panel.getByText('查看与删除', { exact: true });
   if (!await summary.locator('../..').evaluate(element => (element as HTMLDetailsElement).open)) await summary.click();
 }
+
+test('shows Codex parent and subagent relationships without changing deletion protection', async ({ page }, info) => {
+  await page.evaluate(() => history.replaceState(null, '', '/?storage-lineage=1'));
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  const refresh = panel.getByRole('button', { name: '刷新', exact: true });
+  await expect(refresh).toBeEnabled();
+  await refresh.click();
+  await openSessions(panel);
+  const main = panel.getByText('/project/running', { exact: true }).locator('../..');
+  const child = panel.getByText('/project/child-one', { exact: true }).locator('../..');
+  const nested = panel.getByText('/project/nested-child', { exact: true }).locator('../..');
+  const missing = panel.getByText('/project/missing-parent', { exact: true }).locator('../..');
+  const unknown = panel.getByText('/project/unknown-parent', { exact: true }).locator('../..');
+  await expect(main.getByText('主会话', { exact: true })).toBeVisible();
+  await expect(main.getByText('子代理 2 个', { exact: true })).toBeVisible();
+  await expect(main.getByRole('checkbox')).toBeDisabled();
+  await expect(main.getByRole('button', { name: '删除', exact: true })).toBeDisabled();
+  await expect(child.getByText('子代理', { exact: true })).toBeVisible();
+  await expect(child.getByText('主会话：', { exact: true })).toBeVisible();
+  await expect(child.getByText('子代理 1 个', { exact: true })).toBeVisible();
+  await expect(nested.getByText('父会话：', { exact: true })).toBeVisible();
+  await expect(nested.getByText('核对办公室设置', { exact: true })).toBeVisible();
+  await expect(missing.getByText('12345678', { exact: true })).toBeVisible();
+  await expect(missing.getByText('（无会话文件）', { exact: true })).toBeVisible();
+  await expect(unknown.getByText('父会话信息不可用', { exact: true })).toBeVisible();
+  expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await child.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('codex-storage-lineage.png'), animations: 'disabled' });
+  await child.getByRole('button', { name: '查看内容', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('子代理', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('主会话：', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('CCGUI 主会话 · 办公室与会话父子关系验收'.repeat(3), { exact: true })).toBeVisible();
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  expect(await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests
+    .filter(message => message.startsWith('delete_ai_storage_sessions:')))).toEqual([]);
+});
+
+test('retains a subagent parent name when archive filtering hides its main session', async ({ page }) => {
+  await page.evaluate(() => history.replaceState(null, '', '/?storage-lineage=1'));
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await openSessions(panel);
+  await panel.getByRole('combobox', { name: '会话筛选', exact: true }).selectOption('archived');
+  const archived = panel.getByText('/project/archived-child', { exact: true }).locator('../..');
+  await expect(archived.getByText('子代理', { exact: true })).toBeVisible();
+  await expect(archived.getByText('CCGUI 主会话 · 办公室与会话父子关系验收'.repeat(3), { exact: true })).toBeVisible();
+  await expect(archived.getByText(/· 已归档$/)).toBeVisible();
+  await expect(panel.getByText('/project/running', { exact: true })).toHaveCount(0);
+  await expect(archived.getByText('（无会话文件）', { exact: true })).toHaveCount(0);
+  expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+});
 
 test('a target becoming busy closes its deletion confirmation and recovers without rescanning', async ({ page }) => {
   const panel = page.getByRole('region', { name: 'Codex 空间管理' });

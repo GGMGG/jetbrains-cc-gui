@@ -452,6 +452,15 @@
         "idle": "空闲"
       },
       "sessionSizeHint": "仅显示磁盘上的会话文件，包含归档和子会话。大小不含数据库。",
+      "relations": {
+        "subagent": "子代理",
+        "mainSession": "主会话",
+        "parentSession": "父会话",
+        "childCount": "子代理 {{count}} 个",
+        "childCountHint": "直属子代理数量，包含已归档的会话文件",
+        "parentMissing": "（无会话文件）",
+        "parentUnknown": "父会话信息不可用"
+      },
       "selectVisible": "全选本页可删除会话",
       "selectSession": "选择会话：{{title}}",
       "running": "进行中，无法删除",

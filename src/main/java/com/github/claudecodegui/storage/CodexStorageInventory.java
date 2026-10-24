@@ -60,6 +60,7 @@ public final class CodexStorageInventory {
         public String cwd = "";
         public String storageMode = "file";
         public String parentId;
+        public boolean subagent;
         public long lastTimestamp;
         public long firstTimestamp;
         public long fileSize;
@@ -153,6 +154,15 @@ public final class CodexStorageInventory {
 
     private JsonObject list(String cursor, Integer page, int limit, String query, String sort, String filter) throws IOException {
         Snapshot snapshot = snapshot();
+        // Resolve relationships against the complete inventory, before filtering and pagination.
+        Map<String, Entry> identities = new LinkedHashMap<>();
+        Map<String, Integer> childCounts = new LinkedHashMap<>();
+        for (Entry entry : snapshot.sessions().values()) {
+            identities.put(entry.sessionId.toLowerCase(Locale.ROOT), entry);
+            if (!entry.files.isEmpty() && entry.parentId != null && !entry.parentId.equalsIgnoreCase(entry.sessionId)) {
+                childCounts.merge(entry.parentId.toLowerCase(Locale.ROOT), 1, Integer::sum);
+            }
+        }
         String needle = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
         List<Entry> entries = snapshot.sessions().values().stream()
                 .filter(entry -> !entry.files.isEmpty())
@@ -183,6 +193,16 @@ public final class CodexStorageInventory {
         for (Entry entry : entries.subList(offset, end)) {
             JsonObject row = GSON.toJsonTree(entry).getAsJsonObject();
             row.remove("files");
+            row.addProperty("childCount", childCounts.getOrDefault(entry.sessionId.toLowerCase(Locale.ROOT), 0));
+            if (entry.parentId != null) {
+                Entry parent = identities.get(entry.parentId.toLowerCase(Locale.ROOT));
+                row.addProperty("parentAvailable", parent != null && !parent.files.isEmpty());
+                if (parent != null) {
+                    row.addProperty("parentId", parent.sessionId);
+                    row.addProperty("parentTitle", parent.title);
+                    row.addProperty("parentIsSubagent", parent.subagent);
+                }
+            }
             rows.add(row);
         }
         result.add("sessions", rows);
@@ -386,8 +406,29 @@ public final class CodexStorageInventory {
                             entry.declaredRollout = rows.getString(8);
                         }
                     }
+                    readSpawnEdges(connection, entries);
                 } catch (IOException | SQLException error) {
                     errors.add(readError(file, error));
+                }
+            }
+        }
+    }
+
+    private static void readSpawnEdges(Connection connection, Map<String, Entry> entries) throws SQLException, IOException {
+        if (!CodexStorageDatabase.columns(connection, "thread_spawn_edges").containsAll(List.of("child_thread_id", "parent_thread_id"))) {
+            return;
+        }
+        try (Statement statement = connection.createStatement(); ResultSet rows = statement.executeQuery(
+                "SELECT child_thread_id,parent_thread_id FROM thread_spawn_edges")) {
+            while (rows.next()) {
+                String child = rows.getString(1);
+                String parent = rows.getString(2);
+                CodexStoragePaths.requireSessionId(child);
+                CodexStoragePaths.requireSessionId(parent);
+                Entry entry = entries.computeIfAbsent(child, CodexStorageInventory::entry);
+                entry.subagent = true;
+                if (!child.equalsIgnoreCase(parent)) {
+                    entry.parentId = parent;
                 }
             }
         }
@@ -500,7 +541,13 @@ public final class CodexStorageInventory {
                             entry.firstTimestamp = attributes.creationTime().toMillis();
                         }
                     }
-                    entry.parentId = parentId(meta);
+                    String parent = parentId(meta);
+                    JsonElement source = meta.get("source");
+                    entry.subagent |= parent != null || source != null && source.isJsonObject() && source.getAsJsonObject().has("subagent");
+                    // State edges are also authoritative for deletion; duplicate rollout headers must not erase them.
+                    if (entry.parentId == null && parent != null && !parent.equalsIgnoreCase(entry.sessionId)) {
+                        entry.parentId = parent;
+                    }
                     entry.archived |= directory.equals("archived_sessions");
                     if (entry.title.isBlank()) {
                         entry.title = rolloutTitle(path);
@@ -589,6 +636,10 @@ public final class CodexStorageInventory {
     }
 
     private static String parentId(JsonObject meta) {
+        String direct = string(meta, "parent_thread_id");
+        if (direct != null && !direct.isBlank()) {
+            return direct;
+        }
         JsonObject current = meta;
         for (String name : List.of("source", "subagent", "thread_spawn")) {
             if (!current.has(name) || !current.get(name).isJsonObject()) {
@@ -596,7 +647,8 @@ public final class CodexStorageInventory {
             }
             current = current.getAsJsonObject(name);
         }
-        return string(current, "parent_thread_id");
+        String parent = string(current, "parent_thread_id");
+        return parent == null || parent.isBlank() ? null : parent;
     }
 
     private static Entry entry(String id) {

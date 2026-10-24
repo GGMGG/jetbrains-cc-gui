@@ -250,6 +250,31 @@
   small { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 }
 .footnote { margin: 12px 0 0; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
+.relations { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; }
+.relationBadges { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.relationBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  color: var(--accent-primary);
+  line-height: 1.5;
+}
+.childCount { color: var(--text-secondary); }
+.parentSession {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  code { flex-shrink: 0; font-size: 10px; }
+}
+.parentLabel { flex-shrink: 0; }
+.parentTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.parentMissing { color: var(--text-tertiary); font-size: 10px; }
 .contentModal {
   :global(.ant-modal-wrap) { padding: 16px; overflow: hidden; }
   :global(.ant-modal) { max-width: 100%; padding-bottom: 0; margin: 0 auto; }
@@ -278,7 +303,7 @@
   border-bottom: 1px solid var(--border-secondary);
   font-size: 13px;
   strong { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-weight: 500; overflow-wrap: anywhere; }
-  code { display: block; overflow: hidden; margin-top: 4px; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  > code { display: block; overflow: hidden; margin-top: 4px; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 }
 .contentRecords {
   flex: 1;

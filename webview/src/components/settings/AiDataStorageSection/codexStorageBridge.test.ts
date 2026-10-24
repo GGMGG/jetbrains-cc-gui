@@ -16,6 +16,28 @@ beforeEach(() => { sent.mockClear(); window.sendToJava = sent; });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('Codex storage bridge', () => {
+  it('validates optional lineage metadata while accepting sessions from older hosts', async () => {
+    const response = storageRequest('list_ai_storage_sessions');
+    const request = lastRequest();
+    const row = { sessionId: 'child', title: 'Child', cwd: '/project', storageMode: 'file', running: false,
+      archived: false, readable: true, fileSize: 10, lastTimestamp: 2, firstTimestamp: 1 };
+    const data = { sessions: [row], total: 1, page: 1, pageSize: 10, hasMore: false, complete: true, errors: [] };
+    let settled = false;
+    void response.then(() => { settled = true; });
+    for (const invalid of [{ subagent: 'true' }, { parentId: 1 }, { parentId: ' ' }, { parentTitle: {} },
+      { parentAvailable: 1 }, { parentIsSubagent: 'false' }, { childCount: -1 }, { childCount: 1.5 }]) {
+      receiveCodexStorageResponse(JSON.stringify({ ...request, action: 'list_ai_storage_sessions', success: true,
+        data: { ...data, sessions: [{ ...row, ...invalid }] } }));
+      await Promise.resolve();
+      expect(settled).toBe(false);
+    }
+    const lineage = { ...row, subagent: true, parentId: 'parent', parentTitle: 'Main',
+      parentAvailable: true, parentIsSubagent: false, childCount: 2 };
+    receiveCodexStorageResponse(JSON.stringify({ ...request, action: 'list_ai_storage_sessions', success: true,
+      data: { ...data, sessions: [lineage, row], total: 2 } }));
+    await expect(response).resolves.toMatchObject({ sessions: [lineage, row] });
+  });
+
   it('correlates location acknowledgements and propagates missing history file errors', async () => {
     const response = storageRequest('reveal_ai_storage_session', { sessionId: 'one' });
     const request = lastRequest();

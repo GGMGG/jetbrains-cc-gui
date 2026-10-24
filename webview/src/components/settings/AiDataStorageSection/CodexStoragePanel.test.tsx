@@ -76,6 +76,24 @@ beforeEach(() => {
 });
 
 describe('Codex storage settings', () => {
+  it('keeps parent identity in the session list and content preview without changing busy-session guards', async () => {
+    sessionRows = [{ ...row('running', true), childCount: 1 }, { ...row('child'), subagent: true,
+      parentId: 'running', parentTitle: 'Main session outside this page', parentAvailable: true }];
+    mutationStatus = storageStatus({ available: false, unavailableReason: 'SESSION_RUNNING', runningSessionIds: ['running'] });
+    render(<CodexStoragePanel addToast={vi.fn()} />);
+    await screen.findByText('/project/child');
+    const child = screen.getByText('/project/child').parentElement!.parentElement!;
+    const parent = screen.getByText('/project/running').parentElement!.parentElement!;
+    expect(within(child).getByText('settings.codexStorage.relations.subagent')).toBeTruthy();
+    expect(within(child).getByText('Main session outside this page')).toBeTruthy();
+    expect((within(parent).getByRole('button', { name: 'common.delete' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(child).getByRole('button', { name: 'settings.codexStorage.view' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Main session outside this page')).toBeTruthy();
+    expect(within(dialog).getByText('settings.codexStorage.relations.subagent')).toBeTruthy();
+    expect(mocks.deleteSessions).not.toHaveBeenCalled();
+  });
+
   it('locates archived and running files independently of deletion and content availability', async () => {
     sessionRows = [{ ...row('archive'), archived: true }, { ...row('running', true), readable: false }];
     mutationStatus = storageStatus({ available: false, unavailableReason: 'SESSION_RUNNING', runningSessionIds: ['running'] });

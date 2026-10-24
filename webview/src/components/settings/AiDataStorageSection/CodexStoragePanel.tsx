@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import Modal from 'antd/es/modal';
 import Pagination from 'antd/es/pagination';
+import CodexStorageSessionRelations from './CodexStorageSessionRelations';
 import ConfirmDialog from '../../ConfirmDialog';
 import { HistoryConfirmDialogs } from '../../history/HistoryConfirmDialogs';
 import { useHistorySelection } from '../../history/useHistorySelection';
@@ -548,6 +549,7 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
                 onChange={() => selection.toggleSessionSelection(session.sessionId)} />
               <div className={styles.identity}><div className={styles.sessionTitle}><strong title={`${sessionTitle(session)}\n${session.sessionId}`}>{sessionTitle(session)}</strong>
                 <small>{storageBytes(session.fileSize)}</small></div>
+                <CodexStorageSessionRelations session={session} />
                 <code title={session.cwd || session.sessionId}>{session.cwd.replace(/^\\\\\?\\/, '') || session.sessionId}</code>
                 <small>{session.lastTimestamp > 0 ? new Date(session.lastTimestamp).toLocaleDateString() : ''}
                   {session.running ? ` · ${t('settings.codexStorage.running')}` : session.deletionUnavailableReason === 'SESSION_WRITER_BUSY'
@@ -606,6 +608,7 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
         {opened ? <>
           <div className={styles.contentIdentity}>
             <strong title={`${sessionTitle(opened)}\n${opened.sessionId}`}>{sessionTitle(opened)}</strong>
+            <CodexStorageSessionRelations session={opened} />
             {opened.cwd ? <code title={opened.cwd}>{opened.cwd.replace(/^\\\\\?\\/, '')}</code> : null}
           </div>
           <section ref={contentView} className={`${styles.panel} ${styles.contentRecords}`} aria-busy={contentLoading} tabIndex={-1}>
