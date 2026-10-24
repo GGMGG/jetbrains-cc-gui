@@ -1,7 +1,10 @@
 package com.github.claudecodegui.session;
 
+import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Test;
 
 import java.util.Map;
@@ -196,7 +199,112 @@ public class SessionExecutionAdapterTest {
         assertEquals(current, state.getExecutionSnapshot());
     }
 
+    @Test
+    public void asynchronousNativeQuestionsDoNotMarkARunningTurnAsBlocked() {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.beginTurn();
+        CodexMessageHandler handler = new CodexMessageHandler(state, new CallbackHandler());
+        SessionExecutionState.Snapshot running = state.getExecutionSnapshot();
+        handler.onMessage("codex_runtime_event", """
+                {"kind":"interactionRequested","interactionKey":"async-question",
+                 "payload":{"method":"item/agentMessage/requestUserInput","params":{"isBlocking":false}}}
+                """);
+        assertEquals(running, state.getExecutionSnapshot());
+        handler.onMessage("codex_runtime_event", "{\"kind\":\"interactionResolved\",\"interactionKey\":\"async-question\"}");
+        assertEquals(running, state.getExecutionSnapshot());
+    }
+
     private static ClaudeMessageHandler claude(SessionState state) {
         return new ClaudeMessageHandler(null, state, new CallbackHandler(), new MessageParser(), new MessageMerger(), new Gson());
+    }
+
+    @Test
+    public void malformedNativeEventsCannotInterruptLaterValidInteractions() {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.setSessionId("thread");
+        state.beginTurn();
+        CodexMessageHandler handler = new CodexMessageHandler(state, new CallbackHandler());
+        String request = "{\"kind\":\"interactionRequested\",\"interactionKey\":\"question\","
+                + "\"payload\":{\"method\":\"item/tool/requestUserInput\"}}";
+        SessionExecutionState.Snapshot initial = state.getExecutionSnapshot();
+        for (String field : new String[]{"kind", "interactionKey", "payload", "method"}) {
+            for (String value : new String[]{"null", "{}", "[]", "true", "42", "\"\""}) {
+                JsonObject event = JsonParser.parseString(request).getAsJsonObject();
+                JsonObject target = "method".equals(field) ? event.getAsJsonObject("payload") : event;
+                target.add(field, JsonParser.parseString(value));
+                handler.onMessage("codex_runtime_event", event.toString());
+                assertEquals(field + "=" + value, initial, state.getExecutionSnapshot());
+            }
+        }
+        for (String invalid : new String[]{"null", "[]", "42", "{", ""}) {
+            handler.onMessage("codex_runtime_event", invalid);
+        }
+        handler.onMessage("codex_runtime_event", request);
+        assertEquals(SessionExecutionState.WaitReason.QUESTION, state.getExecutionSnapshot().waitReason());
+        handler.onMessage("codex_runtime_event", "{\"kind\":\"interactionResolved\",\"interactionKey\":{}}");
+        assertEquals(1, state.getExecutionSnapshot().pendingInteractionCount());
+        handler.onMessage("codex_runtime_event", "{\"kind\":\"interactionResolved\",\"interactionKey\":\"question\"}");
+        assertEquals(0, state.getExecutionSnapshot().pendingInteractionCount());
+    }
+
+    @Test
+    public void nativeSettingsIgnoreNonStringFieldsWithoutChangingTheDirectory() {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.setSessionId("thread");
+        state.setCwd("original");
+        CodexMessageHandler handler = new CodexMessageHandler(state, new CallbackHandler());
+        for (String value : new String[]{"null", "{}", "[]", "true", "42"}) {
+            handler.onMessage("codex_runtime_event", "{\"kind\":\"thread/settings/updated\",\"threadId\":" + value + ",\"payload\":{\"cwd\":\"wrong\"}}");
+            handler.onMessage("codex_runtime_event", "{\"kind\":\"thread/settings/updated\",\"threadId\":\"thread\",\"payload\":{\"cwd\":" + value + "}}");
+            assertEquals("original", state.getCwd());
+        }
+        handler.onMessage("codex_runtime_event", "{\"kind\":\"thread/settings/updated\",\"threadId\":\"thread\",\"payload\":{\"cwd\":\"updated\"}}");
+        assertEquals("updated", state.getCwd());
+    }
+
+    @Test
+    public void codexErrorReleasesNativeWaitsWhileStopStillNeedsProof() {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.beginTurn();
+        CodexMessageHandler handler = new CodexMessageHandler(state, new CallbackHandler());
+        for (String key : new String[]{"first", "second"}) {
+            handler.onMessage("codex_runtime_event", "{\"kind\":\"interactionRequested\",\"interactionKey\":\"" + key
+                    + "\",\"payload\":{\"method\":\"item/tool/requestUserInput\"}}");
+        }
+        SessionExecutionState.Turn turn = state.getExecutionState().currentTurn();
+        state.getExecutionState().activity(turn, SessionExecutionState.Phase.STOPPING);
+        handler.onError("Transport closed before abort confirmation");
+        assertEquals(SessionExecutionState.Phase.UNKNOWN, state.getExecutionSnapshot().phase());
+        assertEquals(SessionExecutionState.Outcome.NONE, state.getExecutionSnapshot().outcome());
+        assertEquals(0, state.getExecutionSnapshot().pendingInteractionCount());
+        SDKResult abort = SDKResult.error("Native abort confirmed");
+        abort.cancelled = true;
+        handler.onComplete(abort);
+        assertEquals(SessionExecutionState.Outcome.CANCELLED, state.getExecutionSnapshot().outcome());
+    }
+
+    @Test
+    public void processExitSettlesStoppedFailureWithoutInventingCancellation() {
+        for (String provider : new String[]{"claude", "codex"}) {
+            SessionState state = new SessionState();
+            state.setProvider(provider);
+            state.beginTurn();
+            MessageCallback handler = "codex".equals(provider) ? new CodexMessageHandler(state, new CallbackHandler()) : claude(state);
+            state.getExecutionState().activity(state.getExecutionState().currentTurn(), SessionExecutionState.Phase.STOPPING);
+            SDKResult exit = SDKResult.error("Process exited without cancellation proof");
+            exit.processExited = true;
+            handler.onComplete(exit);
+            assertEquals(provider, SessionExecutionState.Outcome.FAILED, state.getExecutionSnapshot().outcome());
+            assertFalse(state.getExecutionSnapshot().terminalEventId().isEmpty());
+            SessionExecutionState.Snapshot terminal = state.getExecutionSnapshot();
+            SDKResult late = SDKResult.error("Late cancellation");
+            late.cancelled = true;
+            handler.onComplete(late);
+            assertEquals(terminal, state.getExecutionSnapshot());
+        }
     }
 }

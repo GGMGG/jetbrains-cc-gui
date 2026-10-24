@@ -202,6 +202,11 @@ public final class SessionExecutionState {
 
     /** First explicit terminal result wins; cleanup, stale callbacks and duplicate results cannot replace it. */
     public synchronized boolean finish(Turn turn, Outcome result) {
+        return finish(turn, result, false);
+    }
+
+    /** A confirmed process exit can settle a stopped failure without a separate cancellation acknowledgement. */
+    public synchronized boolean finish(Turn turn, Outcome result, boolean processExited) {
         Objects.requireNonNull(result, "result");
         if (result == Outcome.NONE) {
             throw new IllegalArgumentException("A terminal result is required");
@@ -209,8 +214,8 @@ public final class SessionExecutionState {
         if (!isLive(turn)) {
             return false;
         }
-        // Interruption-related provider errors do not prove cancellation or failure until the stop acknowledgement.
-        if (stopRequested && result == Outcome.FAILED) {
+        // Transport errors during a stop remain provisional until cancellation or process termination is confirmed.
+        if (stopRequested && result == Outcome.FAILED && !processExited) {
             if (!deferredFailure) {
                 deferredFailure = true;
                 activity = Phase.UNKNOWN;

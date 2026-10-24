@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { normalizeExecutionScope, currentExecutionScope, withExecutionScope } from './execution-scope.js';
 
 const makeScope = () => `${randomUUID()}/${randomUUID()}`;
@@ -14,6 +15,32 @@ test('scope accepts only an opaque binding/turn pair', () => {
   assert.equal(normalizeExecutionScope(scope), scope);
   for (const value of [null, {}, '/private/project/path', 'PRIVATE_PROMPT', `${scope}/extra`]) {
     assert.equal(normalizeExecutionScope(value), '');
+  }
+});
+
+test('file exchange supports a symbolic temporary root', () => {
+  const temporaryRoot = realpathSync(tmpdir());
+  const fixture = mkdtempSync(join(temporaryRoot, 'ccgui-scope-linked-'));
+  try {
+    const physical = join(fixture, 'physical');
+    const alias = join(fixture, 'alias');
+    mkdirSync(physical);
+    symlinkSync(physical, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const env = { ...process.env, TEMP: alias, TMP: alias, TMPDIR: alias };
+    delete env.NODE_TEST_CONTEXT;
+    const output = execFileSync(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern=^real permission/question/plan', fileURLToPath(import.meta.url)], {
+      env,
+      timeout: 20_000,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    assert.match(output, /# tests 1\r?\n/);
+    assert.match(output, /# pass 1\r?\n/);
+  } finally {
+    assert.equal(dirname(resolve(fixture)), temporaryRoot);
+    assert.ok(basename(fixture).startsWith('ccgui-scope-linked-'));
+    assert.equal(realpathSync(fixture), resolve(fixture));
+    rmSync(fixture, { recursive: true, force: true });
   }
 });
 
@@ -78,7 +105,7 @@ test('real permission/question/plan file exchange carries correlation without ch
     // Only the fresh directory owned by this test can be removed.
     assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
     assert.ok(basename(directory).startsWith('ccgui-office-scope-'));
-    assert.equal(realpathSync(directory).toLowerCase(), resolve(directory).toLowerCase());
+    assert.equal(realpathSync(directory).toLowerCase(), join(realpathSync(tmpdir()), basename(directory)).toLowerCase());
     rmSync(directory, { recursive: true, force: true });
   }
 });

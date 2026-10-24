@@ -622,6 +622,10 @@ public class SessionState {
     private void rebindExecution() {
         executionState = new SessionExecutionState();
         turnOwner = new Object();
+        busy = false;
+        if (loadingOwner == null) {
+            loading = false;
+        }
     }
 
     public void setSlashCommands(List<String> slashCommands) {

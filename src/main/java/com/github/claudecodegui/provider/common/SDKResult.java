@@ -11,6 +11,8 @@ public class SDKResult {
     public boolean success;
     /** Cancellation proved by termination of an interrupted process, rather than an error-message inference. */
     public boolean cancelled;
+    /** The owned process has exited; unlike a transport error, this is final lifecycle evidence. */
+    public boolean processExited;
     public String error;
     public int messageCount;
     public List<Object> messages;
