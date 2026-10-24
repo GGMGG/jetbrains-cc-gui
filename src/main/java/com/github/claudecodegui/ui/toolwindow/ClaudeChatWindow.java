@@ -14,6 +14,7 @@ import com.github.claudecodegui.clawbot.ClawBotSessionRegistration;
 import com.github.claudecodegui.clawbot.ClawBotSessionStatus;
 import com.github.claudecodegui.clawbot.ClawBotProcessCoordinator;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.clawbot.ClawBotTurnLifecycle;
 import com.github.claudecodegui.handler.history.HistoryHandler;
 import com.github.claudecodegui.handler.core.MessageDispatcher;
 import com.github.claudecodegui.handler.PermissionHandler;
@@ -142,6 +143,9 @@ public class ClaudeChatWindow {
     private String clawBotActivityId = "";
     private volatile ClaudeSession clawBotRunningSession;
     private final AtomicReference<ClawBotActiveTurn> clawBotActiveTurn = new AtomicReference<>();
+    private volatile ClawBotLocalQuestions clawBotLocalQuestions;
+    private final AtomicBoolean clawBotLocalPublishActive = new AtomicBoolean();
+    private volatile long clawBotLocalPollAt;
 
     private volatile JBCefBrowser browser;
     // volatile: read from the daemon reader thread by the session_updated listener
@@ -3144,8 +3148,10 @@ public class ClaudeChatWindow {
         clawBotPendingControlReply = null;
         clawBotInFlightControlMessageId = null;
         clawBotRunningSession = null;
+        clawBotLocalQuestions = null;
         ClawBotActiveTurn closingTurn = clawBotActiveTurn.getAndSet(null);
         if (closingTurn != null) {
+            closingTurn.lifecycle().close();
             closingTurn.progress().close();
         }
         ClawBotIdeClient client;
@@ -3220,11 +3226,33 @@ public class ClaudeChatWindow {
     private void pollClawBotProgress() {
         ClawBotActiveTurn turn = clawBotActiveTurn.get();
         ClawBotIdeClient client = clawBotClient;
-        if (turn == null || client == null || disposed || permissionServiceKey == null || session != turn.session()) {
+        if (client == null || disposed || permissionServiceKey == null) {
             return;
         }
+        if (turn == null) {
+            pollClawBotLocalQuestions(client);
+            return;
+        }
+        if (session != turn.session()) {
+            finishClawBotTurn(client, turn, "目标会话已变更，原任务已结束，请重新选择会话。");
+            return;
+        }
+        boolean obsolete = turn.lifecycle().finishIfObsolete(turn.progress()::isCurrent);
         long interactionVersion = permissionHandler == null ? 0 : permissionHandler.getClawBotInteractionRevision();
         turn.interactions().update(permissionHandler == null ? List.of() : permissionHandler.getClawBotInteractions());
+        if (obsolete || turn.lifecycle().finishIfReady(!turn.interactions().revision().isEmpty())) {
+            boolean current = turn.progress().isCurrent();
+            String reply;
+            if (!current) {
+                reply = "目标会话已变更，原任务已结束，请重新选择会话。";
+            } else if (turn.lifecycle().failed() || turn.session().getError() != null) {
+                reply = "CC GUI 处理消息失败，请检查对应 IDE 会话。";
+            } else {
+                reply = latestAssistantMessage(turn.session().getMessages(), turn.firstMessageIndex());
+            }
+            finishClawBotTurn(client, turn, reply);
+            return;
+        }
         String token = turn.interactions().revision();
         String phase = token.isEmpty() ? clawBotProgressPhase() : "WAITING:" + token;
         String prompt = token.isEmpty() ? clawBotWaitingPrompt(phase)
@@ -3249,6 +3277,55 @@ public class ClaudeChatWindow {
                     return client.sendProgress(permissionServiceKey, turn.message().messageId(),
                             turn.message().messageId() + ":progress:" + progress.sequence(), progress.text(), progress.essential());
                 }));
+    }
+
+    /** Local turns have no remote inbound task; their questions use the currently selected peer route. */
+    private void pollClawBotLocalQuestions(ClawBotIdeClient client) {
+        ClaudeSession owner = session;
+        if (owner == null || !"codex".equals(owner.getProvider()) || permissionHandler == null
+                || System.nanoTime() < clawBotLocalPollAt || !clawBotLocalPublishActive.compareAndSet(false, true)) {
+            return;
+        }
+        clawBotLocalPollAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        AppExecutorUtil.getAppExecutorService().execute(() -> {
+            try {
+                if (disposed || session != owner || clawBotActiveTurn.get() != null) {
+                    return;
+                }
+                String generation = clawBotGeneration(owner);
+                ClawBotLocalQuestions local = clawBotLocalQuestions;
+                if (local == null || local.session() != owner || !local.generation().equals(generation)) {
+                    local = new ClawBotLocalQuestions(owner, generation, new ClawBotInteractionExchange());
+                    clawBotLocalQuestions = local;
+                }
+                local.interactions().update(permissionHandler.getClawBotInteractions());
+                long revision = permissionHandler.getClawBotInteractionRevision();
+                String token = local.interactions().revision();
+                String prompt = token.isEmpty() ? "" : local.interactions().prompt();
+                refreshClawBotState(client);
+                if (!disposed && session == owner && clawBotActiveTurn.get() == null && local == clawBotLocalQuestions
+                        && generation.equals(clawBotGeneration(owner)) && revision == permissionHandler.getClawBotInteractionRevision()) {
+                    client.publishLocalInteraction(permissionServiceKey, generation, token, prompt);
+                }
+            } catch (IOException | RuntimeException error) {
+                LOG.debug("[ClawBot] Local question publication unavailable; polling will retry");
+            } finally {
+                clawBotLocalPublishActive.set(false);
+            }
+        });
+    }
+
+    private void finishClawBotTurn(ClawBotIdeClient client, ClawBotActiveTurn turn, String reply) {
+        if (!clawBotActiveTurn.compareAndSet(turn, null)) {
+            return;
+        }
+        turn.lifecycle().close();
+        turn.progress().close();
+        if (clawBotRunningSession == turn.session()) {
+            clawBotRunningSession = null;
+        }
+        refreshClawBotActivity(client);
+        sendClawBotReply(client, turn.message(), reply, true);
     }
 
     private String clawBotProgressPhase() {
@@ -3360,9 +3437,22 @@ public class ClaudeChatWindow {
             if (turn != null && turn.session() == currentSession && permissionHandler != null
                     && turn.message().fromUserId().equals(command.fromUserId())) {
                 turn.interactions().update(permissionHandler.getClawBotInteractions());
-                reply = turn.interactions().answer(command.interactionToken(), command.text(), permissionHandler::answerClawBotInteraction);
+                reply = turn.interactions().answer(command.interactionToken(), command.text(),
+                        (token, answer) -> clawBotActiveTurn.get() == turn && session == turn.session() && turn.progress().isCurrent()
+                                && permissionHandler.answerClawBotInteraction(token, answer));
                 turn.interactions().update(permissionHandler.getClawBotInteractions());
                 syncClawBotInteraction(client, turn);
+            } else if (turn == null && permissionHandler != null) {
+                ClawBotLocalQuestions local = clawBotLocalQuestions;
+                if (local != null && local.session() == currentSession && local.generation().equals(clawBotGeneration(currentSession))) {
+                    local.interactions().update(permissionHandler.getClawBotInteractions());
+                    reply = local.interactions().answer(command.interactionToken(), command.text(),
+                            (token, answer) -> !disposed && session == local.session() && clawBotActiveTurn.get() == null
+                                    && local == clawBotLocalQuestions && local.generation().equals(clawBotGeneration(currentSession))
+                                    && permissionHandler.answerClawBotInteraction(token, answer));
+                    local.interactions().update(permissionHandler.getClawBotInteractions());
+                    clawBotLocalPollAt = 0;
+                }
             }
             sendClawBotControlReply(client, command, reply);
             return;
@@ -3466,7 +3556,7 @@ public class ClaudeChatWindow {
 
     private void handleClawBotInbound(ClawBotIdeClient client, ClawBotInboundMessage message) {
         ClaudeSession currentSession = session;
-        if (disposed) {
+        if (disposed || project.isDisposed()) {
             clawBotTurnActive.set(false);
             return;
         }
@@ -3518,15 +3608,18 @@ public class ClaudeChatWindow {
         ClawBotActiveTurn activeTurn = new ClawBotActiveTurn(message, currentSession,
                 new ClawBotProgressTracker(currentSession, firstTurnMessageIndex, System.nanoTime(),
                         ClawBotGatewayRuntimeService.getInstance()::progressSettings),
-                new ClawBotInteractionExchange());
+                new ClawBotInteractionExchange(), new ClawBotTurnLifecycle(), firstTurnMessageIndex);
         clawBotActiveTurn.set(activeTurn);
         refreshClawBotActivity(client);
         CompletableFuture<Void> completion;
         try {
+            ensureWebviewInitialized();
             completion = currentSession.send(message.text());
             activeTurn.progress().bind();
+            activeTurn.lifecycle().bind(completion);
             sendClawBotProgress(client, message, "任务已开始处理，IDE 正在生成响应。", "start");
-        } catch (RuntimeException error) {
+        } catch (RuntimeException | LinkageError error) {
+            activeTurn.lifecycle().close();
             activeTurn.progress().close();
             clawBotRunningSession = null;
             clawBotActiveTurn.compareAndSet(activeTurn, null);
@@ -3534,16 +3627,22 @@ public class ClaudeChatWindow {
             sendClawBotReply(client, message, "CC GUI 当前无法处理该消息。", true);
             return;
         }
-        completion.whenComplete((ignored, error) -> {
-            String reply = error == null && currentSession.getError() == null
-                    ? latestAssistantMessage(currentSession.getMessages(), firstTurnMessageIndex)
-                    : "CC GUI 处理消息失败，请检查对应 IDE 会话。";
-            activeTurn.progress().close();
-            clawBotRunningSession = null;
-            clawBotActiveTurn.compareAndSet(activeTurn, null);
-            refreshClawBotActivity(client);
-            sendClawBotReply(client, message, reply, true);
-        });
+    }
+
+    private JsonObject respondToClawBotCodexInteraction(ClaudeSession owner, java.util.function.Supplier<JsonObject> response) {
+        ClawBotActiveTurn turn = clawBotActiveTurn.get();
+        if (turn == null || turn.session() != owner) {
+            return response.get();
+        }
+        return turn.lifecycle().respond(response, owner::getSessionId,
+                () -> !disposed && session == owner && "codex".equals(owner.getProvider())
+                        && clawBotActiveTurn.get() == turn && turn.progress().isCurrent(),
+                input -> {
+                    int firstMessageIndex = owner.getMessages().size();
+                    CompletableFuture<Void> continuation = owner.send(input);
+                    turn.progress().bindContinuation(firstMessageIndex);
+                    return continuation;
+                }, AppExecutorUtil.getAppExecutorService());
     }
 
     private void rejectClawBotInboundMessage(
@@ -3809,8 +3908,11 @@ public class ClaudeChatWindow {
             ClawBotInboundMessage message, String reply, int failureCount, long nextAttemptAtNanos) {
     }
 
+    private record ClawBotLocalQuestions(ClaudeSession session, String generation, ClawBotInteractionExchange interactions) { }
+
     private record ClawBotActiveTurn(
-            ClawBotInboundMessage message, ClaudeSession session, ClawBotProgressTracker progress, ClawBotInteractionExchange interactions) { }
+            ClawBotInboundMessage message, ClaudeSession session, ClawBotProgressTracker progress, ClawBotInteractionExchange interactions,
+            ClawBotTurnLifecycle lifecycle, int firstMessageIndex) { }
 
     public void dispose() {
         // Begin teardown under the dispatch gate: this waits for any in-flight dispatch to finish
@@ -4271,6 +4373,7 @@ public class ClaudeChatWindow {
             @Override
             public void setHandlerContext(HandlerContext ctx) {
                 handlerContext = ctx;
+                ctx.setCodexInteractionResponder(ClaudeChatWindow.this::respondToClawBotCodexInteraction);
             }
 
             @Override

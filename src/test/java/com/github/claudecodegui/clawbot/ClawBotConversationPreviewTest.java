@@ -16,6 +16,23 @@ import static org.junit.Assert.assertTrue;
 public class ClawBotConversationPreviewTest {
 
     @Test
+    public void formatsCorrelatedCodexAnswersWithoutShowingTheTransportEnvelope() {
+        Message question = new Message(Message.Type.ASSISTANT, "Tool: codex_user_input", JsonParser.parseString("""
+                {"codexThreadId":"thread","message":{"content":[{"type":"tool_use","name":"codex_user_input","id":"question",
+                "input":{"questions":[{"id":"question-1","question":"Pick one."}]}}]}}
+                """).getAsJsonObject());
+        Message answer = new Message(Message.Type.USER, "Answers to your questions (request: question):\n\nPick one.\nB",
+                JsonParser.parseString("{\"codexThreadId\":\"thread\",\"codexItemType\":\"userMessage\"}").getAsJsonObject());
+        String preview = ClawBotConversationPreview.format(List.of(question, answer), false);
+        assertTrue(preview.contains("用户回答：\nPick one.\nB"));
+        assertFalse(preview.contains("Answers to your questions"));
+        assertFalse(preview.contains("request:"));
+        answer.raw.addProperty("codexThreadId", "another-thread");
+        assertTrue(ClawBotConversationPreview.format(List.of(question, answer), false).contains("Answers to your questions"));
+        assertTrue(ClawBotConversationPreview.format(List.of(answer), false).contains("Answers to your questions"));
+    }
+
+    @Test
     public void latePreviousCompletionDoesNotReportActiveTurnAsIdle() {
         ClaudeSession session = new ClaudeSession(null, null, null, null);
         session.getState().beginTurn();

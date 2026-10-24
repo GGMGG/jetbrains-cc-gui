@@ -17,6 +17,27 @@ import static org.junit.Assert.assertTrue;
 public class ClawBotMessageRouterTest {
 
     @Test
+    public void localQuestionSelectionCapabilityIsClearedAndCannotBeRecoveredFromPersistedRoutes() throws Exception {
+        Map<String, String> stored = new java.util.HashMap<>();
+        ClawBotMessageRouter.RouteStore store = new ClawBotMessageRouter.RouteStore() {
+            @Override
+            public Map<String, String> load() { return stored; }
+            @Override
+            public void save(Map<String, String> routes) { stored.clear(); stored.putAll(routes); }
+            @Override
+            public void clear() { stored.clear(); }
+        };
+        ClawBotMessageRouter router = new ClawBotMessageRouter(store, sender -> true, System::nanoTime);
+        ClawBotSessionSnapshot target = controllableSession("session-1", "Project", "Chat", "codex");
+        router.handle(message("local-select", "/use session-1"), List.of(target), (user, context, text) -> { }, (handle, inbound) -> true);
+        assertEquals(1, router.localInteractionSources(target, List.of(target)).size());
+        ClawBotMessageRouter reloaded = new ClawBotMessageRouter(store, sender -> true, System::nanoTime);
+        assertTrue(reloaded.localInteractionSources(target, List.of(target)).isEmpty());
+        router.handle(message("local-off", "/use off"), List.of(target), (user, context, text) -> { }, (handle, inbound) -> true);
+        assertTrue(router.localInteractionSources(target, List.of(target)).isEmpty());
+    }
+
+    @Test
     public void reportsAnUncertainMessageInsteadOfSilentlyReplayingAfterReceiptFailure() throws Exception {
         ClawBotMessageRouter router = new ClawBotMessageRouter();
         List<String> replies = new ArrayList<>();

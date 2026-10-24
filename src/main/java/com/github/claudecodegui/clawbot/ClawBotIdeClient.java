@@ -340,6 +340,19 @@ public final class ClawBotIdeClient implements AutoCloseable {
         }
     }
 
+    /** Publishes an IDE-origin question to peers that currently selected this exact session generation. */
+    public boolean publishLocalInteraction(String handle, String generation, String token, String prompt) throws IOException {
+        synchronized (requestLock) {
+            ensureOpen();
+            JsonObject payload = ownerPayload(handle);
+            payload.addProperty("generation", requireBoundedValue(generation, "generation", 256));
+            payload.addProperty("interactionToken", token == null ? "" : token);
+            payload.addProperty("text", prompt == null ? "" : prompt);
+            JsonObject result = send("SESSION_LOCAL_INTERACTION", payload);
+            return readAccepted(result) && (!result.has("deliveryStatus") || !"PENDING".equals(result.get("deliveryStatus").getAsString()));
+        }
+    }
+
     public boolean sendProgress(
             String sessionHandleId, String messageId, String eventId, String text) throws IOException {
         return sendProgress(sessionHandleId, messageId, eventId, text, false);

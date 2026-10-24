@@ -63,6 +63,9 @@ describe('ClawBotSection', () => {
 
   it('edits and saves progress intervals, then reflects the live gateway values', () => {
     render(<ClawBotSection />);
+    const getProgressInput = (name: string) => screen.getByLabelText<HTMLInputElement>(
+      `settings.clawBot.${name}`, { selector: 'input[type="number"]' },
+    );
 
     act(() => {
       window.onClawBotStatus?.(JSON.stringify({
@@ -77,29 +80,15 @@ describe('ClawBotSection', () => {
     const progressToggle = screen.getByRole('button', { name: 'settings.clawBot.expandProgressSettings' });
     expect(progressToggle.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(progressToggle);
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressTextInterval',
-    }), { target: { value: '2' } });
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressIdleReminderInterval',
-    }), { target: { value: '6' } });
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressWaitReminderInterval',
-    }), { target: { value: '12' } });
+    fireEvent.change(getProgressInput('progressTextInterval'), { target: { value: '2' } });
+    fireEvent.change(getProgressInput('progressIdleReminderInterval'), { target: { value: '6' } });
+    fireEvent.change(getProgressInput('progressWaitReminderInterval'), { target: { value: '12' } });
     fireEvent.click(screen.getByText('settings.clawBot.advancedProgress'));
     expect(screen.getByText('settings.clawBot.advancedProgressDescription')).toBeTruthy();
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressInitialCheckDelay',
-    }), { target: { value: '20' } });
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressMaxNotifications',
-    }), { target: { value: '6' } });
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressExcerptMaxCharacters',
-    }), { target: { value: '2000' } });
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.sessionIdleTimeout',
-    }), { target: { value: '45' } });
+    fireEvent.change(getProgressInput('progressInitialCheckDelay'), { target: { value: '20' } });
+    fireEvent.change(getProgressInput('progressMaxNotifications'), { target: { value: '6' } });
+    fireEvent.change(getProgressInput('progressExcerptMaxCharacters'), { target: { value: '2000' } });
+    fireEvent.change(getProgressInput('sessionIdleTimeout'), { target: { value: '45' } });
     fireEvent.click(screen.getAllByRole('button', { name: 'settings.clawBot.saveProgressSettings' })[0]!);
 
     expect(window.sendToJava).toHaveBeenLastCalledWith(
@@ -120,27 +109,13 @@ describe('ClawBotSection', () => {
       }));
     });
 
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressTextInterval',
-    }) as HTMLInputElement).value).toBe('2');
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressIdleReminderInterval',
-    }) as HTMLInputElement).value).toBe('6');
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressWaitReminderInterval',
-    }) as HTMLInputElement).value).toBe('12');
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressInitialCheckDelay',
-    }) as HTMLInputElement).value).toBe('20');
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressMaxNotifications',
-    }) as HTMLInputElement).value).toBe('6');
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.progressExcerptMaxCharacters',
-    }) as HTMLInputElement).value).toBe('2000');
-    expect((screen.getByRole('spinbutton', {
-      name: 'settings.clawBot.sessionIdleTimeout',
-    }) as HTMLInputElement).value).toBe('45');
+    expect(getProgressInput('progressTextInterval').value).toBe('2');
+    expect(getProgressInput('progressIdleReminderInterval').value).toBe('6');
+    expect(getProgressInput('progressWaitReminderInterval').value).toBe('12');
+    expect(getProgressInput('progressInitialCheckDelay').value).toBe('20');
+    expect(getProgressInput('progressMaxNotifications').value).toBe('6');
+    expect(getProgressInput('progressExcerptMaxCharacters').value).toBe('2000');
+    expect(getProgressInput('sessionIdleTimeout').value).toBe('45');
   });
 
   it('renders outbound receipt counts without requiring recipient details', () => {

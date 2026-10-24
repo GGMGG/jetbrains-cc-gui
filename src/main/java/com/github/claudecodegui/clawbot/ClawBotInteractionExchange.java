@@ -115,13 +115,26 @@ public final class ClawBotInteractionExchange {
                 } catch (IllegalArgumentException error) {
                     return error.getMessage();
                 }
-                collected.add(string(selected.data(), "question"), parsed);
+                collected.add(answerKey(interaction, selected.data()), parsed);
                 if (collected.size() < questions(interaction.data()).size()) {
                     revision = UUID.randomUUID().toString();
                     return "已记录该题答案，请继续回答剩余问题。";
                 }
             }
-            response.add("answers", cancel ? new JsonObject() : collected.deepCopy());
+            JsonObject payload = cancel ? new JsonObject() : collected.deepCopy();
+            if ("codex".equals(string(interaction.data(), "provider"))) {
+                for (String key : List.copyOf(payload.keySet())) {
+                    JsonElement answerValue = payload.get(key);
+                    JsonArray values = answerValue.isJsonArray() ? answerValue.getAsJsonArray() : new JsonArray();
+                    if (!answerValue.isJsonArray()) {
+                        values.add(answerValue);
+                    }
+                    JsonObject nativeAnswer = new JsonObject();
+                    nativeAnswer.add("answers", values);
+                    payload.add(key, nativeAnswer);
+                }
+            }
+            response.add("answers", payload);
         } else {
             PlanDecision selectedPlan = interaction.kind() == ClawBotInteraction.Kind.PLAN
                     ? planDecision(value) : null;
@@ -153,7 +166,7 @@ public final class ClawBotInteractionExchange {
                 String key = interaction.token() + ":" + index;
                 int number = numbers.computeIfAbsent(key, ignored -> ++nextNumber);
                 JsonObject collected = answers.get(interaction.token());
-                if (collected == null || !collected.has(string(question, "question"))) {
+                if (collected == null || !collected.has(answerKey(interaction, question))) {
                     result.add(new Item(number, interaction, question));
                 }
             }
@@ -171,6 +184,10 @@ public final class ClawBotInteractionExchange {
             }
         }
         return result;
+    }
+
+    private static String answerKey(ClawBotInteraction interaction, JsonObject question) {
+        return "codex".equals(string(interaction.data(), "provider")) ? string(question, "id") : string(question, "question");
     }
 
     private static JsonElement parseAnswer(JsonObject question, String raw) {

@@ -284,6 +284,27 @@ public class ClawBotProgressTrackerTest {
         return new Fixture(session, tracker);
     }
 
+    @Test
+    public void acceptedNativeContinuationRebindsProgressAndKeepsDeliverySequence() {
+        Fixture fixture = startTurn();
+        var first = fixture.tracker().prepare("WAITING:q1", "Choose A", FIRST_CHECK);
+        assertNotNull(first);
+        fixture.tracker().finish(first, true, FIRST_CHECK);
+        fixture.session().getState().beginTurn();
+        fixture.session().getState().addMessage(new Message(Message.Type.USER, "Answer A"));
+        assertFalse(fixture.tracker().isCurrent());
+        assertNull(fixture.tracker().prepare("RUNNING", "", FIRST_CHECK + WAIT_INTERVAL));
+        fixture.tracker().bindContinuation(fixture.session().getMessages().size() - 1);
+        assertTrue(fixture.tracker().isCurrent());
+        fixture.session().getState().addMessage(new Message(Message.Type.ASSISTANT, "Result A"));
+        var resumed = fixture.tracker().prepare("RUNNING", "", FIRST_CHECK + WAIT_INTERVAL);
+        assertNotNull(resumed);
+        assertTrue(resumed.sequence() > first.sequence());
+        fixture.tracker().finish(resumed, true, FIRST_CHECK + WAIT_INTERVAL);
+        fixture.session().getState().beginTurn();
+        assertFalse(fixture.tracker().isCurrent());
+    }
+
     private record Fixture(ClaudeSession session, ClawBotProgressTracker tracker) {
     }
 }

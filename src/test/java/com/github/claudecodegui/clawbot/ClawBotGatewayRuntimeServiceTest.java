@@ -52,6 +52,63 @@ public class ClawBotGatewayRuntimeServiceTest {
     }
 
     @Test
+    public void selectedPeerReceivesIdeOriginQuestionAndAnswersItsTypedInteractionWithoutAnInboundTask() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            sessionRegistry(fixture.service).clearPendingMessages();
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Choose A, B or C"));
+            assertEquals(1, fixture.transport.requestCount);
+            assertEquals("Choose A, B or C", fixture.transport.lastParams.get("text").getAsString());
+            assertEquals("sender", fixture.transport.lastParams.get("toUserId").getAsString());
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Choose A, B or C"));
+            assertEquals(1, fixture.transport.requestCount);
+            fixture.route("local-answer", "2");
+            ClawBotInboundMessage answer = fixture.client.pollCommand("session-1");
+            assertEquals(ClawBotInboundAction.ANSWER, answer.action());
+            assertEquals("local-question", answer.interactionToken());
+            assertEquals("2", answer.text());
+            assertTrue(fixture.client.validateCommand("session-1", answer.messageId()));
+            assertTrue(fixture.client.pollInbound("session-1") == null);
+        }
+    }
+
+    @Test
+    public void ideOriginQuestionsRequireCurrentSelectionAuthorizationAndGeneration() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, false)) {
+            sessionRegistry(fixture.service).clearPendingMessages();
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Question"));
+            assertEquals(0, fixture.transport.requestCount);
+            fixture.route("select-local", "/use session-1");
+            assertThrows(IOException.class, () -> fixture.client.publishLocalInteraction("session-1", "stale-generation", "local-question", "Question"));
+            assertEquals(0, fixture.transport.requestCount);
+            fixture.route("local-off", "/use off");
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Question"));
+            assertEquals(0, fixture.transport.requestCount);
+            fixture.route("select-again-local", "/use session-1");
+            JsonObject revoke = new JsonObject();
+            revoke.addProperty("senderId", "sender");
+            fixture.service.control("REVOKE_SENDER", revoke);
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Question"));
+            assertEquals(0, fixture.transport.requestCount);
+        }
+    }
+
+    @Test
+    public void ambiguousLocalQuestionDeliveryIsNotSentTwiceAndResolvedQuestionsStopRoutingAnswers() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            sessionRegistry(fixture.service).clearPendingMessages();
+            fixture.transport.errorCode = "ILINK_SEND_RESULT_UNKNOWN";
+            assertThrows(IOException.class, () -> fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Question"));
+            fixture.transport.errorCode = null;
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "local-question", "Question"));
+            assertEquals(1, fixture.transport.requestCount);
+            assertTrue(fixture.client.publishLocalInteraction("session-1", "generation-1", "", ""));
+            fixture.route("ordinary-after-local-question", "Continue");
+            assertTrue(fixture.client.pollCommand("session-1") == null);
+            assertEquals("Continue", fixture.client.pollInbound("session-1").text());
+        }
+    }
+
+    @Test
     public void persistsAndReportsProgressSettingsAcrossGatewayInstances() throws Exception {
         Path runtime = temporaryFolder.newFolder("progress-settings-runtime").toPath();
         ClawBotGatewayRuntimeService service = new ClawBotGatewayRuntimeService(
@@ -1461,7 +1518,7 @@ public class ClawBotGatewayRuntimeServiceTest {
             ClawBotSessionRegistry registry = sessionRegistry(service);
             synchronized (service) {
                 router.handle(new ClawBotInboundMessage(messageId, "sender", "context", text), registry.snapshot(),
-                        (recipient, context, reply) -> { }, registry::enqueueInbound);
+                        (recipient, context, reply) -> { }, registry::enqueueInbound, registry::enqueueCommand, messageIds -> { });
             }
         }
 

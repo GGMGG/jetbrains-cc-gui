@@ -96,6 +96,44 @@ public class ClawBotInteractionExchangeTest {
         return new ClawBotInteraction(token, kind, data, 1L, System.currentTimeMillis() + 60_000L);
     }
 
+    @Test
+    public void nativeQuestionIdsKeepRepeatedTextDistinctAndProduceTypedArrays() {
+        JsonObject first = question("Choose", "A", "B");
+        first.addProperty("id", "first");
+        JsonObject second = first.deepCopy();
+        second.addProperty("id", "second");
+        second.addProperty("multiSelect", true);
+        JsonObject data = questionData(first, second);
+        data.addProperty("provider", "codex");
+        ClawBotInteractionExchange exchange = new ClawBotInteractionExchange();
+        exchange.update(List.of(interaction("native", data, ClawBotInteraction.Kind.QUESTION)));
+        AtomicReference<JsonObject> result = new AtomicReference<>();
+        String oldRevision = exchange.revision();
+        assertTrue(exchange.answer(oldRevision, "Q1: 2", (token, answer) -> { result.set(answer); return true; }).contains("剩余问题"));
+        assertFalse(exchange.prompt().contains("Q1."));
+        assertTrue(exchange.prompt().contains("Q2."));
+        assertTrue(exchange.answer(oldRevision, "Q2: 1", (token, answer) -> { throw new AssertionError(); }).contains("已更新"));
+        exchange.answer(exchange.revision(), "Q2: 1、2", (token, answer) -> { result.set(answer); return true; });
+        JsonObject answers = result.get().getAsJsonObject("answers");
+        assertEquals("[\"B\"]", answers.getAsJsonObject("first").getAsJsonArray("answers").toString());
+        assertEquals("[\"A\",\"B\"]", answers.getAsJsonObject("second").getAsJsonArray("answers").toString());
+    }
+
+    @Test
+    public void nativeFreeTextAndCancelKeepTheQuestionIdAndEmptyCancellation() {
+        for (boolean cancel : new boolean[]{false, true}) {
+            JsonObject question = question("Detail");
+            question.addProperty("id", "detail");
+            JsonObject data = questionData(question);
+            data.addProperty("provider", "codex");
+            ClawBotInteractionExchange exchange = new ClawBotInteractionExchange();
+            exchange.update(List.of(interaction("native", data, ClawBotInteraction.Kind.QUESTION)));
+            AtomicReference<JsonObject> result = new AtomicReference<>();
+            exchange.answer(exchange.revision(), cancel ? "取消回答" : "Custom text", (token, answer) -> { result.set(answer); return true; });
+            assertEquals(cancel ? "{}" : "{\"detail\":{\"answers\":[\"Custom text\"]}}", result.get().get("answers").toString());
+        }
+    }
+
     private static JsonObject questionData(JsonObject... questions) {
         JsonObject data = new JsonObject();
         JsonArray values = new JsonArray();

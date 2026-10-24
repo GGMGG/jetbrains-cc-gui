@@ -4,6 +4,7 @@ import com.github.claudecodegui.handler.core.BaseMessageHandler;
 import com.github.claudecodegui.handler.core.HandlerContext;
 
 import com.github.claudecodegui.clawbot.ClawBotInteraction;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.permission.PermissionRequest;
 import com.github.claudecodegui.permission.PermissionManager;
@@ -276,7 +277,7 @@ public class PermissionHandler extends BaseMessageHandler {
 
     /** Returns the provider interaction currently waiting for a Webview response, if any. */
     public String getClawBotPendingInteractionPhase() {
-        if (!pendingAskUserQuestionRequests.isEmpty()) {
+        if (!pendingAskUserQuestionRequests.isEmpty() || !getNativeCodexQuestions().isEmpty()) {
             return "WAITING_USER";
         }
         if (!pendingPlanApprovalRequests.isEmpty()) {
@@ -289,18 +290,52 @@ public class PermissionHandler extends BaseMessageHandler {
     }
 
     public long getClawBotInteractionRevision() {
-        return interactionRevision.get();
+        CodexSDKBridge bridge = context.getCodexSDKBridge();
+        return interactionRevision.get() + (bridge == null ? 0 : bridge.getCodexInteractionRevision());
     }
 
     /** Returns only dialogs belonging to this live session and turn. */
     public List<ClawBotInteraction> getClawBotInteractions() {
         synchronized (dialogLock) {
-            return remoteDialogs.values().stream().filter(this::isCurrentRemoteDialog)
-                    .map(RemoteDialog::snapshot).sorted(Comparator.comparingLong(ClawBotInteraction::sequence)).toList();
+            List<ClawBotInteraction> dialogs = new ArrayList<>(remoteDialogs.values().stream().filter(this::isCurrentRemoteDialog)
+                    .map(RemoteDialog::snapshot).toList());
+            dialogs.addAll(getNativeCodexQuestions());
+            return dialogs.stream().sorted(Comparator.comparingLong(ClawBotInteraction::sequence)).toList();
         }
     }
 
+    private List<ClawBotInteraction> getNativeCodexQuestions() {
+        ClaudeSession owner = context.getSession();
+        CodexSDKBridge bridge = context.getCodexSDKBridge();
+        if (context.isDisposed() || owner == null || bridge == null || !"codex".equals(owner.getProvider())) {
+            return List.of();
+        }
+        return bridge.getPendingCodexQuestions(owner.getChannelId(), owner.getSessionId()).stream()
+                .map(entry -> {
+                    JsonObject data = entry.params().deepCopy();
+                    data.addProperty("provider", "codex");
+                    return new ClawBotInteraction(entry.remoteToken(), ClawBotInteraction.Kind.QUESTION, data,
+                            entry.deliverySequence(), entry.deadlineAt() > 0 ? entry.deadlineAt() : Long.MAX_VALUE);
+                }).toList();
+    }
+
     public boolean answerClawBotInteraction(String token, JsonObject answer) {
+        if (getNativeCodexQuestions().stream().anyMatch(question -> question.token().equals(token))) {
+            ClaudeSession owner = context.getSession();
+            String epoch = owner.getRuntimeSessionEpoch();
+            JsonObject acknowledgement = context.respondToCodexInteraction(owner, () -> {
+                if (context.isDisposed() || context.getSession() != owner || !Objects.equals(epoch, owner.getRuntimeSessionEpoch())
+                        || !"codex".equals(owner.getProvider())) {
+                    JsonObject error = new JsonObject();
+                    error.addProperty("error", "Codex question owner changed");
+                    return error;
+                }
+                return context.getCodexSDKBridge().respondCodexQuestion(owner.getChannelId(), owner.getCwd(),
+                        owner.getSessionId(), token, answer);
+            });
+            return acknowledgement != null && !acknowledgement.has("error")
+                    && acknowledgement.has("replied") && acknowledgement.get("replied").getAsBoolean();
+        }
         synchronized (dialogLock) {
             RemoteDialog dialog = remoteDialogs.get(token);
             if (dialog == null || !isCurrentRemoteDialog(dialog)) {

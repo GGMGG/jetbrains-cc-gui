@@ -47,14 +47,17 @@ final class ClawBotMessageRouter {
 
     private final Map<String, InteractionRoute> interactions = new LinkedHashMap<>();
 
-    private record InteractionRoute(ClawBotSessionTarget target, String sender, String messageId, String token) { }
+    private final Map<String, ClawBotInboundMessage> routeContexts = new LinkedHashMap<>();
+    private final Map<String, InteractionRoute> localInteractions = new LinkedHashMap<>();
+
+    private record InteractionRoute(ClawBotSessionTarget target, String sender, String messageId, String token, long routeRevision) { }
 
     synchronized void setInteraction(ClawBotSessionSnapshot target, ClawBotInboundMessage source, String token) {
         String key = target.sessionHandleId();
         if (token.isEmpty()) {
             clearInteraction(key, source.messageId());
         } else {
-            interactions.put(key, new InteractionRoute(ClawBotSessionTarget.of(target), source.fromUserId(), source.messageId(), token));
+            interactions.put(key, new InteractionRoute(ClawBotSessionTarget.of(target), source.fromUserId(), source.messageId(), token, source.routeRevision()));
         }
     }
 
@@ -65,15 +68,38 @@ final class ClawBotMessageRouter {
         }
     }
 
+    /** Uses only a fresh in-memory selection capability, never a guessed or persisted recipient. */
+    synchronized List<ClawBotInboundMessage> localInteractionSources(ClawBotSessionSnapshot target, List<ClawBotSessionSnapshot> sessions) {
+        return routeContexts.values().stream().filter(source -> senderAllowed.test(source.fromUserId())
+                && source.target() != null && source.target().matches(target) && acceptsPending(source)
+                && target.equals(selectedSession(routeKey(source), sessions))).toList();
+    }
+
+    synchronized void setLocalInteraction(ClawBotSessionSnapshot target, ClawBotInboundMessage source, String token) {
+        localInteractions.put(target.sessionHandleId() + ":" + source.fromUserId(), new InteractionRoute(
+                ClawBotSessionTarget.of(target), source.fromUserId(), source.messageId(), token, source.routeRevision()));
+    }
+
+    synchronized void clearLocalInteractions(String handle) {
+        localInteractions.values().removeIf(value -> value.target().handle().equals(handle));
+    }
+
     private boolean routeAnswer(ClawBotInboundMessage message, List<ClawBotSessionSnapshot> sessions,
                                 ReplySender replySender, SessionCommandEnqueuer enqueuer, boolean explicit) throws IOException {
         ClawBotSessionSnapshot target = selectedSession(routeKey(message), sessions);
         InteractionRoute interaction = target == null ? null : interactions.get(target.sessionHandleId());
+        if (target != null && (interaction == null || !interaction.sender().equals(message.fromUserId()))) {
+            interaction = localInteractions.get(target.sessionHandleId() + ":" + message.fromUserId());
+        }
         if (interaction == null || !interaction.target().matches(target) || !interaction.sender().equals(message.fromUserId())) {
             if (explicit) {
                 replySender.send(message, "当前选择的会话没有可回答的问题，或该问题不属于你。请查看最新问题提示。");
             }
             return explicit;
+        }
+        if (interaction.routeRevision() != 0 && interaction.routeRevision() != routes.get(routeKey(message)).revision()) {
+            replySender.send(message, "问题对应的会话选择已失效，请查看最新问题提示后重试。");
+            return true;
         }
         String text = explicit ? message.text().trim().replaceFirst("^/answer\\s*", "") : message.text();
         if (text.isBlank()) {
@@ -535,7 +561,7 @@ final class ClawBotMessageRouter {
                     "目标会话不存在、已离线或未开放接收能力，请发送 /sessions 查看。");
             return;
         }
-        putRoute(routeKey, target);
+        putRoute(message, target);
         replySender.send(message,
                 "已选择会话 " + displayName(target) + "，后续普通消息将发送到该会话。");
         previewRequester.accept(message.forTarget(target).forRoute(routes.get(routeKey).revision()));
@@ -598,7 +624,7 @@ final class ClawBotMessageRouter {
             replySender.send(message, listSessions(routeKey(message), sessions));
             return;
         }
-        putRoute(routeKey(message), target);
+        putRoute(message, target);
         replySender.send(message,
                 "Selected session: " + displayName(target) + ". Future messages will be routed here.");
         previewRequester.accept(message.forTarget(target).forRoute(routes.get(routeKey(message)).revision()));
@@ -717,7 +743,8 @@ final class ClawBotMessageRouter {
         return selector.chars().noneMatch(character -> Character.isISOControl(character) || character == '\n');
     }
 
-    private void putRoute(String key, ClawBotSessionSnapshot session) throws IOException {
+    private void putRoute(ClawBotInboundMessage message, ClawBotSessionSnapshot session) throws IOException {
+        String key = routeKey(message);
         Map<String, RouteLease> updated = new LinkedHashMap<>(routes);
         updated.put(key, new RouteLease(ClawBotSessionTarget.of(session), session.idleMillis(), ++routeRevision));
         while (updated.size() > MAX_ROUTE_COUNT) {
@@ -726,6 +753,9 @@ final class ClawBotMessageRouter {
         saveRoutes(updated);
         routes.clear();
         routes.putAll(updated);
+        routeContexts.put(key, message.forTarget(session).forRoute(routes.get(key).revision()));
+        localInteractions.values().removeIf(value -> value.sender().equals(message.fromUserId()));
+        routeContexts.keySet().retainAll(routes.keySet());
         invalidated.remove(key);
     }
 
@@ -734,6 +764,7 @@ final class ClawBotMessageRouter {
             return;
         }
         routes.remove(key);
+        routeContexts.remove(key);
         routeRevision++;
         saveRoutes(routes);
     }
@@ -741,6 +772,8 @@ final class ClawBotMessageRouter {
     synchronized void sweep(List<ClawBotSessionSnapshot> sessions) throws IOException {
         long idleTimeoutMillis = currentSettings().sessionIdleTimeoutMillis();
         interactions.values().removeIf(interaction -> sessions.stream().noneMatch(interaction.target()::matches));
+        localInteractions.values().removeIf(interaction -> sessions.stream().noneMatch(interaction.target()::matches)
+                || !senderAllowed.test(interaction.sender()));
         boolean changed = false;
         var iterator = routes.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -765,6 +798,7 @@ final class ClawBotMessageRouter {
         if (changed || routesDirty) {
             saveRoutes(routes);
         }
+        routeContexts.keySet().retainAll(routes.keySet());
     }
 
     private void saveRoutes(Map<String, RouteLease> values) throws IOException {
@@ -817,6 +851,7 @@ final class ClawBotMessageRouter {
             updated.put(sender, new RouteLease(ClawBotSessionTarget.of(target), target.idleMillis(), routes.get(sender).revision()));
             saveRoutes(updated);
             routes.putAll(updated);
+            routeContexts.put(sender, message.forTarget(target).forRoute(routes.get(sender).revision()));
         }
     }
 

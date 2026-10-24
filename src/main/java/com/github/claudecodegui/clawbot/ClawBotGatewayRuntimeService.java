@@ -674,6 +674,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
                     return rejectPendingMessageResponse(request, payload, true);
                 case "SESSION_INTERACTION":
                     return sessionInteractionResponse(request, payload);
+                case "SESSION_LOCAL_INTERACTION":
+                    return localInteractionResponse(request, payload);
                 case "SESSION_PROGRESS":
                     return sessionProgressResponse(request, payload);
                 case "SESSION_PREVIEW_POLL":
@@ -1392,6 +1394,64 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         }
         messageRouter.setInteraction(target, source, token);
         return acceptedResponse(request, "SESSION_INTERACTION_RESULT", "SENT");
+    }
+
+    private ClawBotIpcEnvelope localInteractionResponse(ClawBotIpcEnvelope request, JsonObject payload) {
+        try {
+            String handle = readString(payload, "sessionHandleId");
+            String generation = readBoundedString(payload, "generation", 256, false);
+            String token = readBoundedString(payload, "interactionToken", 256, true);
+            String text = token.isEmpty() ? "" : readText(payload, "text", ClawBotInboundMessage.MAX_TEXT_LENGTH);
+            List<ClawBotInboundMessage> sources;
+            synchronized (this) {
+                if (!sessionRegistry.isOwner(handle, request.instanceId(), request.connectionEpoch())) {
+                    return errorResponse(request, "CLAWBOT_SESSION_NOT_OWNER");
+                }
+                var snapshots = sessionRegistry.snapshot();
+                ClawBotSessionSnapshot target = snapshots.stream().filter(value -> value.sessionHandleId().equals(handle)).findFirst().orElse(null);
+                if (target == null || !generation.equals(target.generation())) {
+                    return errorResponse(request, "CLAWBOT_SESSION_TARGET_STALE");
+                }
+                messageRouter.sweep(snapshots);
+                if (token.isEmpty()) {
+                    messageRouter.clearLocalInteractions(handle);
+                    return acceptedResponse(request, "SESSION_LOCAL_INTERACTION_RESULT", "SENT");
+                }
+                sources = messageRouter.localInteractionSources(target, snapshots);
+                for (var source : sources) {
+                    messageRouter.setLocalInteraction(target, source, token);
+                }
+            }
+            boolean pending = false;
+            for (var source : sources) {
+                String eventId = stableEventId(handle + ":" + source.fromUserId() + ":" + source.routeRevision() + ":" + generation + ":" + token, "local-question");
+                if (deliveredProgressEvents.contains(eventId)) {
+                    continue;
+                }
+                if (!progressEventsInFlight.add(eventId)) {
+                    pending = true;
+                    continue;
+                }
+                try {
+                    // Selection, authorization and outbound quotas are rechecked at the actual send boundary.
+                    sendChannelText(source.fromUserId(), source.contextToken(), text, eventId, true, true, false, null, source);
+                    rememberDeliveredProgressEvent(eventId);
+                } catch (IOException error) {
+                    if ("CLAWBOT_OUTBOUND_UNKNOWN".equals(error.getMessage())) {
+                        rememberDeliveredProgressEvent(eventId);
+                    } else if (!PROGRESS_SUPPRESSED.equals(error.getMessage())) {
+                        throw error;
+                    }
+                } finally {
+                    progressEventsInFlight.remove(eventId);
+                }
+            }
+            return acceptedResponse(request, "SESSION_LOCAL_INTERACTION_RESULT", pending ? "PENDING" : "SENT");
+        } catch (IOException error) {
+            return errorResponse(request, safeErrorCode(error.getMessage(), "CLAWBOT_ILINK_SEND_FAILED"));
+        } catch (IllegalArgumentException error) {
+            return errorResponse(request, "CLAWBOT_ILINK_REQUEST_INVALID");
+        }
     }
 
     private ClawBotIpcEnvelope sessionProgressResponse(

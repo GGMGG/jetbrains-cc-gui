@@ -12,7 +12,7 @@ import java.util.function.Supplier;
 public final class ClawBotProgressTracker {
     private final Object deliveryLock = new Object();
     private final ClaudeSession session;
-    private final int firstMessageIndex;
+    private volatile int firstMessageIndex;
     private final Supplier<ClawBotProgressSettings> settingsSupplier;
     private Object turnOwner;
     private String runtimeEpoch;
@@ -78,6 +78,26 @@ public final class ClawBotProgressTracker {
             runtimeEpoch = epoch;
             question = anchor;
         }
+    }
+
+    /** Rebind only a continuation accepted by the originating remote turn. */
+    public void bindContinuation(int messageIndex) {
+        synchronized (deliveryLock) {
+            synchronized (this) {
+                firstMessageIndex = messageIndex;
+                pending = null;
+                pendingResponse = null;
+                delivered = new Response(null, "");
+                inFlight = false;
+                closed = false;
+            }
+            bind();
+        }
+    }
+
+    public synchronized boolean isCurrent() {
+        return question != null && ClawBotConversationPreview.captureResponse(
+                session, firstMessageIndex, turnOwner, runtimeEpoch, question) != null;
     }
 
     public synchronized Notification prepare(String currentPhase, String statusText, long now) {
