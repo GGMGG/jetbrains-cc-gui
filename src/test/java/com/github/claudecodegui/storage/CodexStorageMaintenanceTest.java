@@ -89,27 +89,120 @@ public class CodexStorageMaintenanceTest {
         state.setRestoredSessionId("selected");
         CodexStorageActivity.register(state);
         Object owner = state.beginTurn();
-        var blocked = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
-        assertEquals("SESSION_RUNNING", blocked.get("error").getAsString());
-        assertEquals(1L, f.count("state_5.sqlite", "threads"));
-        state.setBusy(false);
+        try {
+            var blocked = assertThrows(IOException.class, () -> f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false));
+            assertEquals("SESSION_RUNNING", blocked.getMessage());
+            assertEquals(1L, f.count("state_5.sqlite", "threads"));
+            assertEquals(0, f.service().operations().size());
+        } finally {
+            state.setBusy(false);
+        }
         assertTrue(state.isCurrentTurn(owner));
         var deleted = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
         assertEquals(deleted.toString(), "COMPLETED", deleted.get("state").getAsString());
     }
 
-    @Test public void concurrentManagedProcessIsNotStopped() throws Exception {
+    @Test public void idleResidentProcessDoesNotBlockMaintenance() throws Exception {
         var f = fixture();
         f.thread("selected", "/project", 10);
         try (var permit = f.gate.acquireProcessPermit()) {
-            try {
-                f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
-                fail("Expected busy");
-            } catch (IOException error) {
-                assertEquals("DATABASE_BUSY", error.getMessage());
-            }
+            var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
+            assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+        }
+        assertEquals(0L, f.count("state_5.sqlite", "threads"));
+    }
+
+    @Test public void aRunningDifferentSessionDoesNotDisableDeletingIdleHistoryFromStorage() throws Exception {
+        var f = fixture();
+        f.thread("selected", "/project", 10);
+        f.thread("running", "/other-project", 10);
+        var selected = f.rollout("selected", null, false);
+        var kept = f.rollout("running", null, false);
+        String content = Files.readString(kept);
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.setRestoredSessionId("running");
+        CodexStorageActivity.register(state);
+        Object turn = state.beginTurn();
+        try {
+            var status = f.service().mutationStatus();
+            assertEquals("SESSION_RUNNING", status.get("unavailableReason").getAsString());
+            assertTrue(status.get("deletionAvailable").getAsBoolean());
+            assertEquals("[\"running\"]", status.getAsJsonArray("runningSessionIds").toString());
+            var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
+            assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+            assertFalse(Files.exists(selected));
+            assertEquals(content, Files.readString(kept));
+            assertTrue(state.isBusy());
+            assertTrue(state.isCurrentTurn(turn));
+            assertEquals(1L, f.count("state_5.sqlite", "threads"));
+        } finally {
+            state.setBusy(false);
+        }
+    }
+
+    @Test public void storageDeletionProtectsTheEntireFamilyOfAnOccupiedDatabaseOnlyDescendant() throws Exception {
+        var f = fixture();
+        f.thread("selected", "/project", 10);
+        f.thread("child", "/project", 10);
+        f.sql("state_5.sqlite", "INSERT INTO thread_spawn_edges VALUES('selected','child','completed')");
+        var selected = f.rollout("selected", null, false);
+        String content = Files.readString(selected);
+        var locks = Files.createDirectories(f.root.resolve("thread-writer-locks"));
+        try (var writer = CodexStorageFileLock.tryAcquire(f.paths, locks.resolve("child.lock"), true)) {
+            assertNotNull(writer);
+            var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
+            assertEquals(result.toString(), "FAILED_CLEAN", result.get("state").getAsString());
+            assertEquals("SESSION_WRITER_BUSY", result.get("error").getAsString());
+            assertEquals(content, Files.readString(selected));
+            assertEquals(2L, f.count("state_5.sqlite", "threads"));
+            assertEquals(1L, f.count("state_5.sqlite", "thread_spawn_edges"));
+            assertEquals(2L, f.count(CodexStoragePaths.HISTORY_DATABASE, "thread_items"));
+        }
+    }
+
+    @Test public void directoryMigrationStillBlocksMaintenance() throws Exception {
+        var f = fixture();
+        f.thread("selected", "/project", 10);
+        try (var permit = f.gate.tryAcquireMigrationPermit()) {
+            assertNotNull(permit);
+            IOException error = assertThrows(IOException.class,
+                    () -> f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false));
+            assertEquals("DATABASE_BUSY", error.getMessage());
         }
         assertEquals(1L, f.count("state_5.sqlite", "threads"));
+    }
+
+    @Test public void crossJvmMigrationAndMaintenanceUseDifferentLocks() throws Exception {
+        var f = fixture();
+        f.thread("selected", "/project", 10);
+        try (var migration = new AiDataMigrationCoordinator(f.coordination).tryAcquire("migrate")) {
+            assertNotNull(migration);
+            assertEquals("DATABASE_BUSY", assertThrows(IOException.class,
+                    () -> f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false)).getMessage());
+        }
+        try (var otherMaintenance = new AiDataMigrationCoordinator(f.coordination.resolve("codex-storage-lock")).tryAcquire("codex-storage")) {
+            assertNotNull(otherMaintenance);
+            assertEquals("DATABASE_BUSY", assertThrows(IOException.class,
+                    () -> f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false)).getMessage());
+        }
+        var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
+        assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+    }
+
+    @Test public void deletionRecognizesNativeWindowsLongRolloutPath() throws Exception {
+        org.junit.Assume.assumeTrue(System.getProperty("os.name", "").startsWith("Windows"));
+        var f = fixture();
+        f.thread("selected", "/project", 10);
+        var rollout = f.rollout("selected", null, false);
+        try (var connection = CodexStorageDatabase.open(f.root.resolve("state_5.sqlite"), false);
+             var statement = connection.prepareStatement("UPDATE threads SET rollout_path=? WHERE id='selected'")) {
+            statement.setString(1, "\\\\?\\" + rollout);
+            statement.executeUpdate();
+        }
+        var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
+        assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+        assertFalse(Files.exists(rollout));
     }
 
     @Test public void readsRemainAvailableDuringARealTurnAndWalWriter() throws Exception {
@@ -146,7 +239,8 @@ public class CodexStorageMaintenanceTest {
         var f = fixture();
         f.thread("selected", "/project", 10);
         var file = f.rollout("selected", null, false);
-        try (Connection writer = CodexStorageDatabase.open(f.root.resolve("state_5.sqlite"), false)) {
+        try (var process = f.gate.acquireProcessPermit();
+             Connection writer = CodexStorageDatabase.open(f.root.resolve("state_5.sqlite"), false)) {
             CodexStorageDatabase.execute(writer, "BEGIN IMMEDIATE");
             var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
             assertEquals(result.toString(), "FAILED_CLEAN", result.get("state").getAsString());

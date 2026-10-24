@@ -1,6 +1,7 @@
 package com.github.claudecodegui.storage;
 
 import com.github.claudecodegui.bridge.AiDataProcessGate;
+import com.github.claudecodegui.settings.AiDataMigrationCoordinator;
 import com.google.gson.JsonObject;
 
 import java.nio.charset.StandardCharsets;
@@ -17,11 +18,12 @@ final class CodexStorageFixture {
     final Path root;
     final Path coordination;
     final CodexStoragePaths paths;
-    final AiDataProcessGate gate = new AiDataProcessGate();
+    final AiDataProcessGate gate;
 
     CodexStorageFixture(Path base) throws Exception {
         root = Files.createDirectory(base.resolve("codex"));
         coordination = base.resolve("coordination");
+        gate = new AiDataProcessGate(new AiDataMigrationCoordinator(coordination));
         paths = new CodexStoragePaths(root);
         for (String name : CodexStoragePaths.DATABASES) {
             String resource = "/codex-storage/schema/" + name.replace(".sqlite", ".sql");

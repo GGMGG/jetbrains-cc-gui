@@ -2,11 +2,11 @@ package com.github.claudecodegui.storage;
 
 import com.github.claudecodegui.bridge.AiDataProcessGate;
 import com.github.claudecodegui.settings.AiDataMigrationCoordinator;
-import com.github.claudecodegui.util.PlatformUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.intellij.openapi.diagnostic.Logger;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -24,32 +24,43 @@ import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.ToLongFunction;
 
-/** Offline native maintenance. Never starts or interrupts an AI process to acquire ownership. */
+/** Native maintenance guarded by directory admission, native writer leases and SQLite locks. */
 public final class CodexStorageMaintenance {
     private static final Gson GSON = new Gson();
+    private static final Logger LOG = Logger.getInstance(CodexStorageMaintenance.class);
     private final CodexStoragePaths paths;
     private final AiDataProcessGate gate;
     private final AiDataMigrationCoordinator coordinator;
     private final CodexMaintenanceJournal journal;
     private final ToLongFunction<Path> freeSpace;
     private final boolean supportedPlatform;
+    private final boolean supportedDeletion;
     private final Consumer<String> checkpointObserver;
 
     public CodexStorageMaintenance(CodexStoragePaths paths) {
         this(paths, AiDataProcessGate.getInstance(), AiDataMigrationCoordinator.defaultCoordinationDirectory(),
                 path -> path.toFile().getUsableSpace(),
-                PlatformUtils.getPlatformType() == PlatformUtils.PlatformType.WINDOWS && !paths.root().toString().startsWith("\\\\"), checkpoint -> { });
+                CodexStoragePlatform.supportsMaintenance(paths), CodexStoragePlatform.supportsDeletion(paths), checkpoint -> { });
     }
 
     CodexStorageMaintenance(CodexStoragePaths paths, AiDataProcessGate gate, Path coordination,
                             ToLongFunction<Path> freeSpace,
                             boolean supportedPlatform, Consumer<String> checkpointObserver) {
+        this(paths, gate, coordination, freeSpace, supportedPlatform, supportedPlatform, checkpointObserver);
+    }
+
+    CodexStorageMaintenance(CodexStoragePaths paths, AiDataProcessGate gate, Path coordination,
+                            ToLongFunction<Path> freeSpace, boolean supportedPlatform,
+                            boolean supportedDeletion, Consumer<String> checkpointObserver) {
         this.paths = paths;
         this.gate = gate;
-        this.coordinator = new AiDataMigrationCoordinator(coordination);
+        // Directory admission already holds migration.lock shared. Serialize maintenance on
+        // another lock so idle app-servers and this operation cannot conflict with themselves.
+        this.coordinator = new AiDataMigrationCoordinator(coordination.resolve("codex-storage-lock"));
         this.journal = new CodexMaintenanceJournal(coordination);
         this.freeSpace = freeSpace;
         this.supportedPlatform = supportedPlatform;
+        this.supportedDeletion = supportedDeletion;
         this.checkpointObserver = checkpointObserver;
     }
 
@@ -88,6 +99,68 @@ public final class CodexStorageMaintenance {
             status.addProperty("unavailableReason", reason);
         }
         return status;
+    }
+
+    /** Lightweight admission check for storage controls, independent of list pagination and full inventory scans. */
+    public JsonObject mutationStatus() {
+        String reason = null;
+        String deletionReason = null;
+        Set<String> running = CodexStorageActivity.runningSessionIds();
+        Set<String> writers = Set.of();
+        try {
+            paths.revalidate();
+            if (!supportedPlatform && !supportedDeletion) {
+                reason = deletionReason = "MAINTENANCE_PLATFORM_UNSUPPORTED";
+            } else {
+                try (AiDataProcessGate.ReadPermit permit = gate.tryAcquireMaintenancePermit()) {
+                    if (permit == null) {
+                        reason = deletionReason = "DATABASE_BUSY";
+                    } else {
+                        try (AiDataMigrationCoordinator.LockHandle owner = coordinator.tryAcquire("codex-storage-status")) {
+                            if (owner == null) {
+                                reason = deletionReason = "DATABASE_BUSY";
+                            } else {
+                                reason = deletionReason = CodexStorageWriterLease.deletionUnavailableReason(paths);
+                                writers = CodexStorageWriterLease.occupiedSessions(paths);
+                                if (reason == null) {
+                                    reason = CodexStorageActivity.hasRunningSessions() ? "SESSION_RUNNING"
+                                            : writers.isEmpty() ? null : "SESSION_WRITER_BUSY";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (IOException | RuntimeException error) {
+            reason = deletionReason = errorCode(error);
+        }
+        if (!supportedPlatform) {
+            reason = "MAINTENANCE_PLATFORM_UNSUPPORTED";
+        }
+        if (!supportedDeletion) {
+            deletionReason = "MAINTENANCE_PLATFORM_UNSUPPORTED";
+        }
+        JsonObject status = new JsonObject();
+        status.addProperty("available", reason == null);
+        if (reason != null) {
+            status.addProperty("unavailableReason", reason);
+        }
+        status.addProperty("deletionAvailable", deletionReason == null);
+        if (deletionReason != null) {
+            status.addProperty("deletionUnavailableReason", deletionReason);
+        }
+        status.add("runningSessionIds", GSON.toJsonTree(running.stream().sorted().toList()));
+        status.add("writerSessionIds", GSON.toJsonTree(writers.stream().sorted().toList()));
+        return status;
+    }
+
+    /** Normal history deletion shares crash recovery, with writer checks scoped to the selected family. */
+    public JsonObject deleteHistorySessions(Collection<String> selected) throws IOException, SQLException {
+        return deleteHistorySessions(selected, null, false);
+    }
+
+    public JsonObject deleteHistorySessions(Collection<String> selected, String operationId, boolean metadataRequired) throws IOException, SQLException {
+        return deleteSessions(selected, operationId, true, metadataRequired);
     }
 
     public JsonObject deleteSessions(Collection<String> selected, String operationId, boolean legacy) throws IOException, SQLException {
@@ -148,7 +221,7 @@ public final class CodexStorageMaintenance {
 
     /** Source maintenance is finished before existing Node-based metadata helpers acquire ordinary admission. */
     public JsonObject finishMetadata(String operationId, boolean succeeded) throws IOException {
-        try (var owner = coordinator.tryAcquire("codex-storage")) {
+        try (var permit = gate.tryAcquireMaintenancePermit(); var owner = permit == null ? null : coordinator.tryAcquire("codex-storage")) {
             if (owner == null) {
                 return operation(operationId);
             }
@@ -172,12 +245,14 @@ public final class CodexStorageMaintenance {
 
     private JsonObject execute(String kind, List<String> ids, String requestedId, boolean legacy,
                                String expectedDatabaseId, boolean metadataRequired) throws IOException, SQLException {
-        if (!supportedPlatform) {
+        if (!(kind.equals("DELETE_SESSIONS") ? supportedDeletion : supportedPlatform)) {
             throw new IOException("MAINTENANCE_PLATFORM_UNSUPPORTED");
         }
         paths.revalidate();
         String id = requestedId == null && legacy ? UUID.randomUUID().toString() : requestedId;
-        try (AiDataProcessGate.MigrationPermit permit = gate.tryAcquireMigrationPermit()) {
+        // A resident app-server is not necessarily a writer. Shared directory admission
+        // excludes relocation; native publication and selected-writer checks protect deletion.
+        try (AiDataProcessGate.ReadPermit permit = gate.tryAcquireMaintenancePermit()) {
             if (permit == null) {
                 throw new IOException("DATABASE_BUSY");
             }
@@ -185,22 +260,40 @@ public final class CodexStorageMaintenance {
                 if (owner == null) {
                     throw new IOException("DATABASE_BUSY");
                 }
+                // Whole-database maintenance requires all writers to stop. Deletion, from either
+                // entry point, protects only its selected family under publication ownership.
+                boolean sessionDeletion = kind.equals("DELETE_SESSIONS");
+                if (journal.get(id) == null) {
+                    if (sessionDeletion ? !java.util.Collections.disjoint(ids, CodexStorageActivity.runningSessionIds())
+                            : CodexStorageActivity.hasRunningSessions()) {
+                        throw new IOException("SESSION_RUNNING");
+                    }
+                    String reason = sessionDeletion ? CodexStorageWriterLease.deletionUnavailableReason(paths)
+                            : CodexStorageWriterLease.maintenanceUnavailableReason(paths);
+                    if (reason != null) {
+                        throw new IOException(reason);
+                    }
+                    if (sessionDeletion && !java.util.Collections.disjoint(ids, CodexStorageWriterLease.occupiedSessions(paths))) {
+                        throw new IOException("SESSION_WRITER_BUSY");
+                    }
+                }
                 JsonObject record = journal.claim(id, kind, paths, ids, legacy);
                 if (CodexMaintenanceJournal.terminal(record)) {
                     return CodexMaintenanceJournal.publicStatus(record);
                 }
-                try (CodexStorageWriterLease writers = CodexStorageWriterLease.acquire(paths)) {
+                LOG.info("[CodexStorage] Maintenance started: operationId=" + id + ", kind=" + kind);
+                try (CodexStorageWriterLease writers = sessionDeletion
+                        ? CodexStorageWriterLease.acquireForHistoryDeletion(paths) : CodexStorageWriterLease.acquire(paths)) {
+                    if (!sessionDeletion && CodexStorageActivity.hasRunningSessions()) {
+                        throw new IOException("SESSION_RUNNING");
+                    }
                     if (expectedDatabaseId != null && !databaseId().equals(expectedDatabaseId)) {
                         throw new IOException("STORAGE_IDENTITY_CHANGED");
                     }
-                    // Process existence is not evidence of a writer. Native rollout/SQLite locks
-                    // establish ownership; managed turn admission prevents a new local task racing it.
-                    if (!permit.beginCommit()) {
-                        throw new IOException("DATABASE_BUSY");
-                    }
+                    // Keep native publication ownership through every database/file checkpoint.
                     journal.state(record, record.has("mutationStarted") ? "RECONCILING" : "PREPARING");
                     if (kind.equals("DELETE_SESSIONS")) {
-                        delete(record, ids);
+                        delete(record, ids, writers);
                         if (metadataRequired) {
                             record.getAsJsonObject("result").addProperty("metadataStatus", "PENDING");
                             record.getAsJsonObject("result").addProperty("warning", "METADATA_CLEANUP_PENDING");
@@ -216,19 +309,23 @@ public final class CodexStorageMaintenance {
                     }
                 } catch (IOException | SQLException | RuntimeException error) {
                     record.addProperty("error", errorCode(error));
+                    LOG.warn("[CodexStorage] Maintenance failed: operationId=" + id + ", kind=" + kind
+                            + ", state=" + record.get("state").getAsString() + ", mutationStarted=" + record.has("mutationStarted")
+                            + ", error=" + errorCode(error), error);
                     journal.state(record, record.has("mutationStarted") ? "RECONCILIATION_REQUIRED" : "FAILED_CLEAN");
                 }
+                LOG.info("[CodexStorage] Maintenance finished: operationId=" + id + ", kind=" + kind + ", state=" + record.get("state").getAsString());
                 return CodexMaintenanceJournal.publicStatus(record);
             }
         }
     }
 
-    private void delete(JsonObject record, List<String> selected) throws IOException, SQLException {
+    private void delete(JsonObject record, List<String> selected, CodexStorageWriterLease writers) throws IOException, SQLException {
         var inventory = new CodexStorageInventory(paths).snapshot();
         if (!inventory.errors().isEmpty()) {
             throw new IOException("INVENTORY_INCOMPLETE");
         }
-        try (CodexStorageStores stores = new CodexStorageStores(paths)) {
+        try (CodexStorageStores stores = CodexStorageStores.forHistoryDeletion(paths)) {
             Set<String> resolved = stores.family(selected, inventory);
             Set<String> ids = record.has("family") ? new LinkedHashSet<>(strings(record.getAsJsonArray("family"))) : resolved;
             if (!ids.containsAll(resolved)) {
@@ -240,6 +337,7 @@ public final class CodexStorageMaintenance {
             if (!java.util.Collections.disjoint(ids, CodexStorageActivity.runningSessionIds())) {
                 throw new IOException("SESSION_RUNNING");
             }
+            writers.requireIdleSessions(paths, ids);
             stores.preflightDependencies(ids);
             List<String> declared = stores.declaredRollouts(ids, inventory);
             if (!record.has("stores")) {
@@ -319,25 +417,19 @@ public final class CodexStorageMaintenance {
                 requireCapacity(Math.multiplyExact(CodexStorageDatabase.scalar(connection, "PRAGMA page_count"),
                         CodexStorageDatabase.scalar(connection, "PRAGMA page_size")));
                 paths.revalidate();
+                // VACUUM and WAL checkpoints require autocommit. Native writer/publication leases remain held.
+                connection.setAutoCommit(true);
                 record.addProperty("mutationStarted", true);
                 record.addProperty("compactionStarted", true);
                 journal.state(record, "COMMITTING");
                 checkpointObserver.accept("compact-intent");
-                if (!CodexStorageDatabase.checkpoint(connection)) {
-                    throw new IOException("DATABASE_BUSY");
-                }
+                // A reader can retain an old WAL snapshot without preventing VACUUM in WAL mode.
+                // Report retained WAL only after compaction instead of leaving maintenance pending.
+                checkpointIfAvailable(connection);
                 checkpointObserver.accept("before-vacuum");
                 CodexStorageDatabase.execute(connection, "VACUUM");
                 checkpointObserver.accept("after-vacuum");
-                boolean checkpointed;
-                try {
-                    checkpointed = CodexStorageDatabase.checkpoint(connection);
-                } catch (SQLException error) {
-                    if (!"DATABASE_BUSY".equals(errorCode(error))) {
-                        throw error;
-                    }
-                    checkpointed = false;
-                }
+                boolean checkpointed = checkpointIfAvailable(connection);
                 checkpointObserver.accept("after-checkpoint");
                 CodexStorageDatabase.checkIntegrity(connection);
                 if (!digest.equals(CodexStorageDatabase.contentDigest(connection))) {
@@ -354,6 +446,17 @@ public final class CodexStorageMaintenance {
         result.add("after", sizes());
         result.addProperty("releasedBytes", total(result.getAsJsonObject("before")) - total(result.getAsJsonObject("after")));
         journal.state(record, result.has("warning") ? "COMPLETED_WITH_WARNINGS" : "COMPLETED");
+    }
+
+    private static boolean checkpointIfAvailable(Connection connection) throws SQLException {
+        try {
+            return CodexStorageDatabase.checkpoint(connection);
+        } catch (SQLException error) {
+            if (!"DATABASE_BUSY".equals(errorCode(error))) {
+                throw error;
+            }
+            return false;
+        }
     }
 
     private JsonObject compactionResult(JsonObject record, String warning) {

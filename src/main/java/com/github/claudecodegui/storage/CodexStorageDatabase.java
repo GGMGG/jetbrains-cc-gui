@@ -27,8 +27,19 @@ public final class CodexStorageDatabase {
     private CodexStorageDatabase() { }
 
     public static Connection open(Path path, boolean readOnly) throws SQLException {
+        return open(path, readOnly, false);
+    }
+
+    static Connection openForMutation(Path path) throws SQLException {
+        return open(path, false, true);
+    }
+
+    private static Connection open(Path path, boolean readOnly, boolean immediateTransaction) throws SQLException {
         SQLiteConfig config = new SQLiteConfig();
         config.setReadOnly(readOnly);
+        if (immediateTransaction) {
+            config.setTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
+        }
         config.setBusyTimeout(200);
         config.enforceForeignKeys(true);
         config.setOpenMode(org.sqlite.SQLiteOpenMode.FULLMUTEX);
@@ -38,6 +49,7 @@ public final class CodexStorageDatabase {
         // Resolve this plugin's driver directly instead of relying on a global driver registration.
         Connection connection;
         try {
+            CodexSqliteNativeLibrary.initialize();
             connection = new org.sqlite.JDBC().connect("jdbc:sqlite:" + uri, config.toProperties());
         } catch (LinkageError error) {
             throw new SQLException("SQLITE_DRIVER_UNAVAILABLE", error);
@@ -92,7 +104,7 @@ public final class CodexStorageDatabase {
     public static String requireSupported(Connection connection, String name) throws SQLException, IOException {
         requirePatchedEngine(connection);
         String actual = fingerprint(connection);
-        if (!SCHEMAS.has(name) || !SCHEMAS.get(name).getAsString().equals(actual)) {
+        if (!SCHEMAS.has(name) || SCHEMAS.getAsJsonArray(name).asList().stream().noneMatch(schema -> schema.getAsString().equals(actual))) {
             throw new IOException("DATABASE_SCHEMA_UNSUPPORTED");
         }
         return actual;

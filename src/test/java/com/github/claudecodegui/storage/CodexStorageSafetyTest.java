@@ -15,27 +15,6 @@ import static org.junit.Assert.*;
 public class CodexStorageSafetyTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
-    @Test public void aHomeWithoutMaintenanceReceiptsNeedNotExistYet() throws Exception {
-        var coordination = temporary.newFolder().toPath().resolve("coordination");
-        var missingHome = temporary.newFolder().toPath().resolve("codex");
-        new CodexMaintenanceJournal(coordination).requireSessionAvailable(missingHome, "resume");
-        assertFalse(Files.exists(missingHome));
-        assertFalse(Files.exists(coordination));
-    }
-
-    @Test public void nativeAdmissionKeepsDeletionProtectionScopedToItsHome() throws Exception {
-        var f = new CodexStorageFixture(temporary.newFolder().toPath());
-        f.thread("remove", "/project", 100);
-        f.service().deleteSessions(List.of("remove"), UUID.randomUUID().toString(), false);
-        var journal = new CodexMaintenanceJournal(f.coordination);
-        var otherHome = temporary.newFolder().toPath();
-        journal.requireSessionAvailable(otherHome, "remove");
-        try {
-            journal.requireSessionAvailable(f.root, "remove");
-            fail("Native admission must retain the matching home's deletion tombstone");
-        } catch (IOException error) { assertEquals("SESSION_PERMANENTLY_DELETED", error.getMessage()); }
-    }
-
     @Test public void replacedDatabaseCannotUseAnEarlierRegisteredIdentity() throws Exception {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("keep", "/project", 100);

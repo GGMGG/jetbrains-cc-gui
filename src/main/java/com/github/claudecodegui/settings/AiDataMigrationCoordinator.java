@@ -76,11 +76,20 @@ public final class AiDataMigrationCoordinator {
     }
 
     public ProcessLock tryAcquireProcessLock() throws IOException {
+        return tryAcquireSharedLock(false);
+    }
+
+    /** Maintenance may resume its own pending journal while keeping directory migration excluded. */
+    public ProcessLock tryAcquireMaintenanceReadLock() throws IOException {
+        return tryAcquireSharedLock(true);
+    }
+
+    private ProcessLock tryAcquireSharedLock(boolean maintenance) throws IOException {
         prepareDirectory();
         Path path = lockPath();
         SharedProcessLock shared = SHARED_PROCESS_LOCKS.computeIfAbsent(path, ignored -> new SharedProcessLock());
         synchronized (shared) {
-            if (com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+            if (!maintenance && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
                 throw new IOException("AI_DATA_MAINTENANCE_PENDING");
             }
             if (shared.references > 0) {
@@ -101,7 +110,7 @@ public final class AiDataMigrationCoordinator {
                     channel.close();
                     return null;
                 }
-                if (com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                if (!maintenance && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
                     lock.release();
                     channel.close();
                     throw new IOException("AI_DATA_MAINTENANCE_PENDING");

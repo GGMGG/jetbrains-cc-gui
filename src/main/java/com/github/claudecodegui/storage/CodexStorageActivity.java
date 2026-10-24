@@ -30,4 +30,12 @@ public final class CodexStorageActivity {
         }
         return result;
     }
+
+    /** Includes a newly started turn before Codex has assigned its thread ID. */
+    public static boolean hasRunningSessions() {
+        synchronized (SESSIONS) {
+            return SESSIONS.keySet().stream().anyMatch(state -> "codex".equals(state.getProvider())
+                    && (state.isBusy() || state.getExecutionState().hasOwnedPendingWork()));
+        }
+    }
 }

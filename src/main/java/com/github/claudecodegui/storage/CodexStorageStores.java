@@ -43,10 +43,11 @@ final class CodexStorageStores implements AutoCloseable {
                         throw new IOException("DATABASE_DEPENDENCY_UNSUPPORTED");
                     }
                     Path real = paths.existingFile(file);
-                    Connection connection = CodexStorageDatabase.open(real, false);
+                    Connection connection = CodexStorageDatabase.openForMutation(real);
                     connections.put(name, connection);
                     identities.put(name, CodexStoragePaths.identity(real));
-                    CodexStorageDatabase.lockExclusive(connection);
+                    // Reserve writes and a consistent snapshot without excluding idle native WAL connections.
+                    connection.setAutoCommit(false);
                     CodexStorageDatabase.requireSupported(connection, name);
                     CodexStorageDatabase.checkIntegrity(connection);
                 }
@@ -55,6 +56,10 @@ final class CodexStorageStores implements AutoCloseable {
             close();
             throw error;
         }
+    }
+
+    static CodexStorageStores forHistoryDeletion(CodexStoragePaths paths) throws IOException, SQLException {
+        return new CodexStorageStores(paths, false);
     }
 
     Connection history() throws IOException {
@@ -133,7 +138,7 @@ final class CodexStorageStores implements AutoCloseable {
                     if (raw == null || raw.isBlank()) {
                         continue;
                     }
-                    Path path = Path.of(raw).toAbsolutePath().normalize();
+                    Path path = CodexStoragePaths.declaredRolloutPath(raw).normalize();
                     if (path.startsWith(paths.canonical())) {
                         path = paths.root().resolve(paths.canonical().relativize(path));
                     }

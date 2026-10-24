@@ -83,20 +83,49 @@ public class CodexStorageCrashTest {
         f.thread("remove", "/first", 100);
         var rollout = f.rollout("remove", null, false);
         try (Peer writer = start(f.root, "writer")) {
-            var reader = java.util.concurrent.Executors.newSingleThreadExecutor();
-            try {
-                assertEquals("WRITER_READY", reader.submit(() -> {
-                    var output = new java.io.BufferedReader(new java.io.InputStreamReader(writer.process.getInputStream(), StandardCharsets.UTF_8));
-                    String line;
-                    while ((line = output.readLine()) != null && !line.equals("WRITER_READY")) { }
-                    return line;
-                }).get(15, TimeUnit.SECONDS));
-            } finally { reader.shutdownNow(); }
-            var result = f.service().deleteSessions(List.of("remove"), UUID.randomUUID().toString(), false);
-            assertEquals(result.toString(), "DATABASE_BUSY", result.get("error").getAsString());
+            awaitWriterReady(writer);
+            var error = assertThrows(java.io.IOException.class, () -> f.service().deleteSessions(List.of("remove"), UUID.randomUUID().toString(), false));
+            assertEquals("SESSION_WRITER_BUSY", error.getMessage());
+            assertEquals(0, f.service().operations().size());
             assertTrue(writer.process.isAlive());
             assertTrue(Files.exists(rollout));
             assertEquals(1L, f.count("state_5.sqlite", "threads"));
+        }
+    }
+
+    @Test public void unrelatedNativeWriterInAnotherProcessDoesNotDisableStorageDeletion() throws Exception {
+        var f = new CodexStorageFixture(temporary.newFolder().toPath());
+        f.thread("idle", "/first", 100);
+        f.thread("remove", "/running", 100);
+        var idle = f.rollout("idle", null, false);
+        var keep = f.rollout("remove", null, false);
+        String keptContent = Files.readString(keep);
+        f.sql("state_5.sqlite", "PRAGMA journal_mode=WAL");
+        try (Peer writer = start(f.root, "writer")) {
+            awaitWriterReady(writer);
+            var status = f.service().mutationStatus();
+            assertTrue(status.toString(), status.get("deletionAvailable").getAsBoolean());
+            assertFalse(status.get("available").getAsBoolean());
+            assertEquals("SESSION_WRITER_BUSY", status.get("unavailableReason").getAsString());
+            assertEquals("[\"remove\"]", status.getAsJsonArray("writerSessionIds").toString());
+            assertTrue(status.getAsJsonArray("runningSessionIds").isEmpty());
+            try (var resident = f.gate.acquireProcessPermit();
+                 var reader = CodexStorageDatabase.open(f.root.resolve("state_5.sqlite"), true)) {
+                CodexStorageDatabase.execute(reader, "BEGIN");
+                assertEquals(2L, CodexStorageDatabase.scalar(reader, "SELECT count(*) FROM threads"));
+                var result = f.service().deleteSessions(List.of("idle"), UUID.randomUUID().toString(), false);
+                assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+                assertEquals(2L, CodexStorageDatabase.scalar(reader, "SELECT count(*) FROM threads"));
+                CodexStorageDatabase.execute(reader, "ROLLBACK");
+            }
+            assertFalse(Files.exists(idle));
+            assertEquals(keptContent, Files.readString(keep));
+            assertTrue(writer.process.isAlive());
+            assertEquals(1L, f.count("state_5.sqlite", "threads"));
+            assertEquals(1L, f.count(CodexStoragePaths.HISTORY_DATABASE, "thread_items"));
+            String databaseId = f.service().databaseStatus().get("databaseId").getAsString();
+            assertEquals("SESSION_WRITER_BUSY", assertThrows(java.io.IOException.class,
+                    () -> f.service().compact(databaseId, UUID.randomUUID().toString())).getMessage());
         }
     }
 
@@ -123,7 +152,8 @@ public class CodexStorageCrashTest {
 
     private static Peer start(Path root, String... arguments) throws Exception {
         var locations = new LinkedHashSet<String>();
-        for (Class<?> type : List.of(CodexStorageOwnerProcess.class, CodexStorageMaintenance.class, Gson.class, org.sqlite.JDBC.class,
+        for (Class<?> type : List.of(CodexStorageOwnerProcess.class, CodexStorageMaintenance.class, CodexStoragePaths.class,
+                CodexStorageFileLock.class, Gson.class, org.sqlite.JDBC.class,
                 org.slf4j.LoggerFactory.class, com.sun.jna.Native.class, com.intellij.openapi.diagnostic.Logger.class, com.intellij.openapi.util.SystemInfoRt.class,
                 Class.forName("kotlin.Unit"))) {
             locations.add(location(type));
@@ -146,6 +176,18 @@ public class CodexStorageCrashTest {
         command.addAll(List.of("-cp", String.join(File.pathSeparator, locations), CodexStorageOwnerProcess.class.getName(), root.toString()));
         command.addAll(List.of(arguments));
         return new Peer(new ProcessBuilder(command).redirectErrorStream(true).start());
+    }
+
+    private static void awaitWriterReady(Peer writer) throws Exception {
+        var reader = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            assertEquals("WRITER_READY", reader.submit(() -> {
+                var output = new java.io.BufferedReader(new java.io.InputStreamReader(writer.process.getInputStream(), StandardCharsets.UTF_8));
+                String line;
+                while ((line = output.readLine()) != null && !line.equals("WRITER_READY")) { }
+                return line;
+            }).get(15, TimeUnit.SECONDS));
+        } finally { reader.shutdownNow(); }
     }
 
     private static String location(Class<?> type) throws Exception {

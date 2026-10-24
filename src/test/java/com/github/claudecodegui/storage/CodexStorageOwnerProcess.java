@@ -3,10 +3,8 @@ package com.github.claudecodegui.storage;
 import com.github.claudecodegui.bridge.AiDataProcessGate;
 import com.github.claudecodegui.settings.AiDataMigrationCoordinator;
 
-import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -26,8 +24,10 @@ public final class CodexStorageOwnerProcess {
         }
         if (arguments[1].equals("writer")) {
             Path lock = Files.createDirectories(root.resolve("thread-writer-locks")).resolve("remove.lock");
-            try (FileChannel channel = FileChannel.open(lock, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-                 var ignored = channel.lock()) {
+            try (var lease = CodexStorageFileLock.tryAcquire(new CodexStoragePaths(root), lock, true)) {
+                if (lease == null) {
+                    throw new IllegalStateException("Unexpected native writer owner");
+                }
                 System.out.println("WRITER_READY");
                 System.out.flush();
                 System.in.read();
@@ -49,7 +49,8 @@ public final class CodexStorageOwnerProcess {
         String boundary = arguments[3];
         int occurrence = Integer.parseInt(arguments[4]);
         AtomicInteger seen = new AtomicInteger();
-        var service = new CodexStorageMaintenance(new CodexStoragePaths(root), new AiDataProcessGate(), coordination,
+        var service = new CodexStorageMaintenance(new CodexStoragePaths(root),
+                new AiDataProcessGate(new AiDataMigrationCoordinator(coordination)), coordination,
                 path -> Long.MAX_VALUE, true, checkpoint -> {
                     if (checkpoint.equals(boundary) && seen.incrementAndGet() == occurrence) {
                         Runtime.getRuntime().halt(77);

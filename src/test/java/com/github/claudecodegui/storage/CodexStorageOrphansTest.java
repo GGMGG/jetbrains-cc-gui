@@ -89,6 +89,29 @@ public class CodexStorageOrphansTest {
         assertEquals(1, preview.get("skippedExistingCount").getAsInt());
     }
 
+    @Test public void nativeWindowsLongPathsPreserveExistingFilesAndAllowProvenMissingHistory() throws Exception {
+        org.junit.Assume.assumeTrue(System.getProperty("os.name", "").startsWith("Windows"));
+        var base = temporary.newFolder().toPath();
+        var f = new CodexStorageFixture(base);
+        f.thread("existing", "/project", 100);
+        f.thread("missing", "/project", 100);
+        var external = Files.writeString(base.resolve("existing.jsonl"), "history");
+        try (Connection connection = CodexStorageDatabase.open(f.root.resolve("state_5.sqlite"), false);
+             PreparedStatement statement = connection.prepareStatement("UPDATE threads SET rollout_path=? WHERE id=?")) {
+            for (String id : java.util.List.of("existing", "missing")) {
+                statement.setString(1, "\\\\?\\" + (id.equals("existing") ? external : base.resolve("missing.jsonl")));
+                statement.setString(2, id);
+                statement.executeUpdate();
+            }
+        }
+        var preview = f.service().previewOrphans();
+        assertEquals(1, preview.get("candidateCount").getAsInt());
+        assertEquals(1, preview.get("skippedExistingCount").getAsInt());
+        assertEquals("missing", preview.getAsJsonArray("candidates").get(0).getAsJsonObject().get("sessionId").getAsString());
+        assertThrows(IOException.class, () -> CodexStoragePaths.declaredRolloutPath("\\\\?\\C:\\unsafe.\\history.jsonl"));
+        assertThrows(IOException.class, () -> CodexStoragePaths.declaredRolloutPath("\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\history.jsonl"));
+    }
+
     @Test public void cleanupResumesAfterDeletionAndFinishesTheCompaction() throws Exception {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("orphan", "/project", 2 * 1024 * 1024);

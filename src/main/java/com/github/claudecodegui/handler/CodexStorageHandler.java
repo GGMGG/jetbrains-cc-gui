@@ -4,22 +4,29 @@ import com.github.claudecodegui.bridge.AiDataProcessGate;
 import com.github.claudecodegui.cache.SessionIndexCache;
 import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.session.ClaudeSession;
+import com.github.claudecodegui.storage.CodexStorageActivity;
 import com.github.claudecodegui.storage.CodexStorageInventory;
 import com.github.claudecodegui.storage.CodexStorageMaintenance;
 import com.github.claudecodegui.storage.CodexStoragePaths;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.intellij.ide.actions.RevealFileAction;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.util.concurrency.AppExecutorUtil;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -27,8 +34,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class CodexStorageHandler {
     private static final Logger LOG = Logger.getInstance(CodexStorageHandler.class);
     static final String[] TYPES = {
-        "get_ai_storage_usage", "cancel_ai_storage_scan", "list_ai_storage_sessions", "get_ai_storage_session",
-        "get_ai_storage_database_status", "compact_ai_storage_database", "get_ai_storage_maintenance_operation",
+        "get_ai_storage_usage", "cancel_ai_storage_scan", "list_ai_storage_sessions", "get_ai_storage_session", "reveal_ai_storage_session",
+        "get_ai_storage_database_status", "get_ai_storage_mutation_status", "compact_ai_storage_database", "get_ai_storage_maintenance_operation",
         "list_ai_storage_maintenance_operations", "preview_ai_storage_orphans", "clean_ai_storage_orphans", "delete_ai_storage_sessions"
     };
     private final HandlerContext context;
@@ -71,6 +78,7 @@ final class CodexStorageHandler {
                 CodexStorageMaintenance maintenance = new CodexStorageMaintenance(paths);
                 JsonElement data = switch (action) {
                     case "get_ai_storage_database_status" -> maintenance.databaseStatus();
+                    case "get_ai_storage_mutation_status" -> mutationStatus(maintenance, context.getSession(), context.getCodexSDKBridge());
                     case "compact_ai_storage_database" -> maintenance.compact(required(request, "databaseId"), required(request, "operationId"));
                     case "preview_ai_storage_orphans" -> maintenance.previewOrphans();
                     case "clean_ai_storage_orphans" -> maintenance.cleanOrphans(required(request, "databaseId"),
@@ -84,6 +92,7 @@ final class CodexStorageHandler {
             }
             response.addProperty("success", true);
         } catch (Exception error) {
+            LOG.warn("[CodexStorage] Request failed: " + action, error);
             response.addProperty("success", false);
             response.addProperty("error", CodexStorageMaintenance.errorCode(error));
         }
@@ -93,9 +102,7 @@ final class CodexStorageHandler {
     }
 
     private JsonObject deleteSessions(JsonObject request, CodexStorageMaintenance maintenance) throws Exception {
-        List<String> ids = deletionTargets(request);
-        requireIdleSession(context.getSession(), ids);
-        JsonObject status = maintenance.deleteSessions(ids, required(request, "operationId"), false, true);
+        JsonObject status = deleteSessionData(request, maintenance, context.getSession(), context.getCodexSDKBridge());
         if (status.has("result") && status.getAsJsonObject("result").has("deletedSessionIds")) {
             boolean metadataClean = true;
             NodeJsServiceCaller caller = new NodeJsServiceCaller(context);
@@ -118,6 +125,73 @@ final class CodexStorageHandler {
         return status;
     }
 
+    static JsonObject deleteSessionData(JsonObject request, CodexStorageMaintenance maintenance,
+                                       ClaudeSession session, CodexSDKBridge bridge) throws Exception {
+        List<String> ids = deletionTargets(request);
+        String operationId = required(request, "operationId");
+        try {
+            if (!java.util.UUID.fromString(operationId).toString().equals(operationId)) {
+                throw new IllegalArgumentException();
+            }
+        } catch (IllegalArgumentException error) {
+            throw new IOException("INVALID_STORAGE_REQUEST", error);
+        }
+        requireIdleSession(session, ids);
+        boolean history = historyDeletionRequested(request);
+        releaseIdleHistorySession(session, ids, bridge).join();
+        return history ? maintenance.deleteHistorySessions(ids, operationId, true) : maintenance.deleteSessions(ids, operationId, false, true);
+    }
+
+    static JsonObject mutationStatus(CodexStorageMaintenance maintenance, ClaudeSession session, CodexSDKBridge bridge) {
+        JsonObject status = maintenance.mutationStatus();
+        if (session != null && bridge != null && "codex".equals(session.getProvider()) && session.getSessionId() != null
+                && bridge.ownsCodexThread(session.getSessionId()) && !session.isBusy()
+                && !session.getState().getExecutionState().hasOwnedPendingWork()) {
+            // Our idle target can be unloaded by the delete handler. Unknown owners remain protected.
+            status.getAsJsonArray("writerSessionIds").asList().removeIf(id -> id.getAsString().equals(session.getSessionId()));
+        }
+        return status;
+    }
+
+    static boolean historyDeletionRequested(JsonObject request) throws IOException {
+        if (!request.has("origin")) {
+            return false;
+        }
+        JsonElement origin = request.get("origin");
+        if (!origin.isJsonPrimitive() || !origin.getAsJsonPrimitive().isString()
+                || !List.of("history", "storage").contains(origin.getAsString())) {
+            throw new IOException("INVALID_STORAGE_REQUEST");
+        }
+        return origin.getAsString().equals("history");
+    }
+
+    static CompletableFuture<Void> releaseIdleHistorySession(ClaudeSession session, Collection<String> ids,
+                                                             CodexSDKBridge bridge) throws IOException {
+        requireIdleSession(session, ids);
+        if (session == null || bridge == null || !"codex".equals(session.getProvider()) || !ids.contains(session.getSessionId())
+                || !bridge.ownsCodexThread(session.getSessionId())) {
+            return CompletableFuture.completedFuture(null);
+        }
+        String sessionId = session.getSessionId();
+        String channelId = session.getChannelId();
+        String cwd = session.getCwd();
+        return bridge.releaseIdleCodexThread(channelId, cwd, sessionId).handle((result, failure) -> {
+            if (failure != null || result == null || result.has("error")) {
+                throw new java.util.concurrent.CompletionException(new IOException("SESSION_RUNNING", failure));
+            }
+            try {
+                if (!java.util.Objects.equals(sessionId, session.getSessionId())
+                        || !"codex".equals(session.getProvider()) || !java.util.Objects.equals(channelId, session.getChannelId())) {
+                    throw new IOException("SELECTED_DATA_CHANGED");
+                }
+                requireIdleSession(session, ids);
+            } catch (IOException error) {
+                throw new java.util.concurrent.CompletionException(error);
+            }
+            return null;
+        });
+    }
+
     static List<String> deletionTargets(JsonObject request) throws IOException {
         JsonElement selected = request.get("sessionIds");
         if (selected == null || !selected.isJsonArray() || selected.getAsJsonArray().isEmpty() || selected.getAsJsonArray().size() > 1000) {
@@ -136,7 +210,11 @@ final class CodexStorageHandler {
     }
 
     static void requireIdleSession(ClaudeSession session, Collection<String> ids) throws IOException {
-        if (session != null && "codex".equals(session.getProvider()) && ids.contains(session.getSessionId()) && session.isBusy()) {
+        if (session != null && "codex".equals(session.getProvider()) && ids.contains(session.getSessionId())
+                && (session.isBusy() || session.getState().getExecutionState().hasOwnedPendingWork())) {
+            throw new IOException("SESSION_RUNNING");
+        }
+        if (!java.util.Collections.disjoint(ids, CodexStorageActivity.runningSessionIds())) {
             throw new IOException("SESSION_RUNNING");
         }
     }
@@ -203,6 +281,7 @@ final class CodexStorageHandler {
                         ? inventory.listPage(request.get("page").getAsInt(), limit, optional(request, "query"), optional(request, "sort"), optional(request, "filter"))
                         : inventory.list(optional(request, "cursor"), limit, optional(request, "query"), optional(request, "sort"), optional(request, "filter"));
                 case "get_ai_storage_session" -> inventory.content(required(request, "sessionId"), optional(request, "cursor"), limit);
+                case "reveal_ai_storage_session" -> revealSession(inventory, paths, required(request, "sessionId"));
                 case "get_ai_storage_usage" -> {
                     String requestId = required(request, "requestId");
                     AtomicBoolean cancelled = new AtomicBoolean();
@@ -218,6 +297,28 @@ final class CodexStorageHandler {
                 default -> throw new IOException("STORAGE_ACTION_UNSUPPORTED");
             };
         }
+    }
+
+    private JsonObject revealSession(CodexStorageInventory inventory, CodexStoragePaths paths, String sessionId) throws IOException {
+        Path file = inventory.sessionFile(sessionId);
+        CompletableFuture<Void> revealed = new CompletableFuture<>();
+        ApplicationManager.getApplication().invokeAndWait(() -> {
+            try {
+                if (disposed || context.isDisposed() || (context.getProject() != null && context.getProject().isDisposed())
+                        || !RevealFileAction.isSupported()) {
+                    throw new IOException("STORAGE_LOCATION_UNAVAILABLE");
+                }
+                paths.revalidate();
+                RevealFileAction.openFile(paths.existingFile(file));
+                revealed.complete(null);
+            } catch (Exception error) {
+                revealed.completeExceptionally(error);
+            }
+        }, ModalityState.any());
+        revealed.join();
+        JsonObject result = new JsonObject();
+        result.addProperty("sessionId", sessionId);
+        return result;
     }
 
     void dispose() {

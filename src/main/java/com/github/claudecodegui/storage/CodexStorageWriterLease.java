@@ -1,22 +1,26 @@
 package com.github.claudecodegui.storage;
 
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /** Uses Codex's native writer/publication lock namespace, in addition to IDE admission and SQLite locks. */
 final class CodexStorageWriterLease implements AutoCloseable {
-    private final List<FileChannel> channels = new ArrayList<>();
-    private final List<FileLock> locks = new ArrayList<>();
+    private final List<CodexStorageFileLock> locks = new ArrayList<>();
 
     static CodexStorageWriterLease acquire(CodexStoragePaths paths) throws IOException {
+        return acquire(paths, true);
+    }
+
+    static CodexStorageWriterLease acquireForHistoryDeletion(CodexStoragePaths paths) throws IOException {
+        return acquire(paths, false);
+    }
+
+    private static CodexStorageWriterLease acquire(CodexStoragePaths paths, boolean requireAllIdle) throws IOException {
         CodexStorageWriterLease lease = new CodexStorageWriterLease();
         try {
             paths.revalidate();
@@ -25,12 +29,14 @@ final class CodexStorageWriterLease implements AutoCloseable {
             Path writers = lease.directory(paths, "thread-writer-locks");
             lease.lock(paths, writers.resolve(".coordination.lock"), true);
             // Coordination excludes new writers and publication until all source work is finished.
-            // Probe existing writers while holding it; never wait for or interrupt a writer.
-            try (var files = Files.list(writers)) {
-                for (Path file : files.filter(path -> !path.getFileName().toString().equals(".coordination.lock")
-                        && path.getFileName().toString().endsWith(".lock")).sorted().toList()) {
-                    if (active(paths, file)) {
-                        throw new IOException("DATABASE_BUSY");
+            // Full maintenance requires every writer to be idle. History deletion checks its resolved family below.
+            if (requireAllIdle) {
+                try (var files = Files.list(writers)) {
+                    for (Path file : files.filter(path -> !path.getFileName().toString().equals(".coordination.lock")
+                            && path.getFileName().toString().endsWith(".lock")).sorted().toList()) {
+                        if (active(paths, file)) {
+                            throw new IOException("DATABASE_BUSY");
+                        }
                     }
                 }
             }
@@ -42,6 +48,16 @@ final class CodexStorageWriterLease implements AutoCloseable {
                 error.addSuppressed(closeError);
             }
             throw error;
+        }
+    }
+
+    void requireIdleSessions(CodexStoragePaths paths, Collection<String> ids) throws IOException {
+        // Coordination remains held, so a new writer cannot enter between this check and deletion.
+        for (String id : ids) {
+            CodexStoragePaths.requireSessionId(id);
+            if (active(paths, paths.root().resolve("thread-writer-locks").resolve(id + ".lock"))) {
+                throw new IOException("SESSION_WRITER_BUSY");
+            }
         }
     }
 
@@ -77,36 +93,38 @@ final class CodexStorageWriterLease implements AutoCloseable {
         return result;
     }
 
-    private static boolean active(CodexStoragePaths paths, Path file) throws IOException {
-        paths.existingFile(file);
-        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
-            try (FileLock lock = channel.tryLock()) {
-                return lock == null;
-            } catch (OverlappingFileLockException error) {
-                return true;
+    /** Observes existing lock files without creating native directories or retaining writer ownership. */
+    static String maintenanceUnavailableReason(CodexStoragePaths paths) throws IOException {
+        String publication = deletionUnavailableReason(paths);
+        return publication == null && !occupiedSessions(paths).isEmpty() ? "SESSION_WRITER_BUSY" : publication;
+    }
+
+    /** A writer for another thread does not prevent selected-session deletion. */
+    static String deletionUnavailableReason(CodexStoragePaths paths) throws IOException {
+        paths.revalidate();
+        for (String name : List.of(".tmp/rollout-maintenance.lock", "thread-writer-locks/.coordination.lock")) {
+            Path file = paths.root().resolve(name);
+            if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) && active(paths, file)) {
+                return "DATABASE_BUSY";
             }
+        }
+        return null;
+    }
+
+    private static boolean active(CodexStoragePaths paths, Path file) throws IOException {
+        try (CodexStorageFileLock lock = CodexStorageFileLock.tryAcquire(paths, file, false)) {
+            return lock == null;
         } catch (java.nio.file.NoSuchFileException ignored) {
             return false;
         }
     }
 
     private void lock(CodexStoragePaths paths, Path file, boolean create) throws IOException {
-        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
-            paths.existingFile(file);
+        CodexStorageFileLock lock = CodexStorageFileLock.tryAcquire(paths, file, create);
+        if (lock == null) {
+            throw new IOException("DATABASE_BUSY");
         }
-        FileChannel channel = create
-                ? FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)
-                : FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
-        channels.add(channel);
-        try {
-            FileLock lock = channel.tryLock();
-            if (lock == null) {
-                throw new IOException("DATABASE_BUSY");
-            }
-            locks.add(lock);
-        } catch (OverlappingFileLockException error) {
-            throw new IOException("DATABASE_BUSY", error);
-        }
+        locks.add(lock);
     }
 
     @Override
@@ -115,13 +133,6 @@ final class CodexStorageWriterLease implements AutoCloseable {
         for (int i = locks.size() - 1; i >= 0; i--) {
             try {
                 locks.get(i).close();
-            } catch (IOException error) {
-                failure = error;
-            }
-        }
-        for (int i = channels.size() - 1; i >= 0; i--) {
-            try {
-                channels.get(i).close();
             } catch (IOException error) {
                 failure = error;
             }

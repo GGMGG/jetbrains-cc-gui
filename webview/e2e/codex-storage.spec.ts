@@ -7,9 +7,20 @@ test.beforeEach(async ({ page }) => {
     localStorage.setItem('lastSeenChangelogVersion', version);
     const bridge = window as Window & {
       storageRequests: string[];
+      storageMutationAllowed: boolean;
+      storageDeletionAllowed: boolean;
+      storageRunningSessionIds: string[];
+      storageWriterSessionIds: string[];
+      storageCleanupMode: 'complete' | 'pending' | 'error' | 'refused';
+      storageCompleteCleanup?: () => void;
       sendToJava: (message: string) => void;
     };
     bridge.storageRequests = [];
+    bridge.storageMutationAllowed = true;
+    bridge.storageDeletionAllowed = true;
+    bridge.storageRunningSessionIds = ['running'];
+    bridge.storageWriterSessionIds = ['client-owned'];
+    bridge.storageCleanupMode = 'complete';
     const row = (id: string, running = false) => ({ sessionId: id,
       title: id === 'idle' && new URLSearchParams(location.search).has('storage-content-pages') ? 'Codex 会话内容预览与分页验证 '.repeat(12) : id,
       cwd: '/project/' + id, storageMode: 'database',
@@ -40,10 +51,20 @@ test.beforeEach(async ({ page }) => {
         })), 0);
         return;
       }
-      if (!['get_ai_storage_usage', 'list_ai_storage_sessions', 'get_ai_storage_session', 'get_ai_storage_database_status',
+      if (!['get_ai_storage_usage', 'list_ai_storage_sessions', 'get_ai_storage_session', 'reveal_ai_storage_session', 'get_ai_storage_database_status', 'get_ai_storage_mutation_status',
         'list_ai_storage_maintenance_operations', 'get_ai_storage_maintenance_operation', 'compact_ai_storage_database', 'delete_ai_storage_sessions',
         'preview_ai_storage_orphans', 'clean_ai_storage_orphans'].includes(action)) return;
       const request = JSON.parse(message.slice(split + 1)) as Record<string, unknown>;
+      if (action === 'reveal_ai_storage_session' && new URLSearchParams(location.search).has('storage-location-error')) {
+        setTimeout(() => bridge.onCodexStorageResponse?.(JSON.stringify({ action, requestId: request.requestId,
+          success: false, error: 'SESSION_FILE_NOT_FOUND' })), 0);
+        return;
+      }
+      if (action === 'clean_ai_storage_orphans' && bridge.storageCleanupMode === 'error') {
+        setTimeout(() => bridge.onCodexStorageResponse?.(JSON.stringify({ action, requestId: request.requestId,
+          success: false, error: 'ORPHAN_PREVIEW_EXPIRED' })), 0);
+        return;
+      }
       if (action === 'list_ai_storage_sessions' && new URLSearchParams(location.search).has('storage-read-error')) {
         setTimeout(() => bridge.onCodexStorageResponse?.(JSON.stringify({ action, requestId: request.requestId, success: false, error: 'DATABASE_BUSY' })), 0);
         return;
@@ -57,6 +78,12 @@ test.beforeEach(async ({ page }) => {
       }
       let data: unknown;
       switch (action) {
+        case 'reveal_ai_storage_session': data = { sessionId: request.sessionId }; break;
+        case 'get_ai_storage_mutation_status': data = { available: bridge.storageMutationAllowed,
+          ...(bridge.storageMutationAllowed ? {} : { unavailableReason: 'SESSION_RUNNING' }),
+          deletionAvailable: bridge.storageDeletionAllowed,
+          ...(bridge.storageDeletionAllowed ? {} : { deletionUnavailableReason: 'AI_DATA_MIGRATION_ACTIVE' }),
+          runningSessionIds: bridge.storageRunningSessionIds, writerSessionIds: bridge.storageWriterSessionIds }; break;
         case 'get_ai_storage_usage': data = { canonicalRoot: 'C:/fixture/.codex',
           physicalRoot: 'F:/fixture/编码测试/Codex-history-with-a-long-directory-name/AI Data/.codex', scannedAt: '2026-10-16T00:00:00Z',
           logicalBytes: Object.values(categories).reduce((total, bytes) => total + bytes, 0), categories,
@@ -108,8 +135,24 @@ test.beforeEach(async ({ page }) => {
             targets: cleanup ? [request.previewToken] : compact ? ['thread_history_1.sqlite'] : request.sessionIds, createdAt: '2026-10-16T00:00:00Z', updatedAt: '2026-10-16T00:00:01Z',
             result: cleanup ? { cleanedSessionCount: 93, releasedBytes } : compact ? { releasedBytes, before: { mainBytes }, after: { mainBytes: mainBytes - releasedBytes } }
               : { deletedSessionIds: deletedIds, rolloutBytesRemoved: 0, metadataStatus: 'COMPLETE' } };
+          if (cleanup && bridge.storageCleanupMode === 'refused') {
+            data = { ...data as Record<string, unknown>, state: 'FAILED_CLEAN', error: 'DATABASE_BUSY', result: undefined };
+          }
           operations.unshift(data as Record<string, unknown>);
         }
+      }
+      if (action === 'clean_ai_storage_orphans' && bridge.storageCleanupMode === 'pending') {
+        const receipt = data as Record<string, unknown>;
+        const result = receipt.result;
+        delete receipt.result;
+        receipt.state = 'PREPARING';
+        bridge.storageCompleteCleanup = () => {
+          receipt.state = 'COMPLETED';
+          receipt.result = result;
+          bridge.onCodexStorageResponse?.(JSON.stringify({ action, requestId: request.requestId, success: true, data: receipt }));
+          delete bridge.storageCompleteCleanup;
+        };
+        return;
       }
       setTimeout(() => bridge.onCodexStorageResponse?.(JSON.stringify({ action, requestId: request.requestId,
         success: data !== undefined, ...(data === undefined ? { error: 'OPERATION_NOT_FOUND' } : { data }) })), 0);
@@ -127,6 +170,102 @@ async function openSessions(panel: Locator) {
   const summary = panel.getByText('查看与删除', { exact: true });
   if (!await summary.locator('../..').evaluate(element => (element as HTMLDetailsElement).open)) await summary.click();
 }
+
+test('a target becoming busy closes its deletion confirmation and recovers without rescanning', async ({ page }) => {
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await openSessions(panel);
+  const idle = panel.getByText('/project/idle', { exact: true }).locator('../..');
+  const remove = idle.getByRole('button', { name: '删除', exact: true });
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  await expect(page.locator('.modal-btn-danger')).toBeVisible();
+  await page.evaluate(() => {
+    (window as Window & { storageRunningSessionIds: string[] }).storageRunningSessionIds.push('idle');
+  });
+  await expect(remove).toBeDisabled();
+  await expect(idle.getByRole('checkbox')).toBeDisabled();
+  await expect(page.locator('.modal-btn-danger')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests
+    .filter(message => message.startsWith('delete_ai_storage_sessions:')))).toEqual([]);
+  await page.evaluate(() => {
+    const bridge = window as Window & { storageRunningSessionIds: string[] };
+    bridge.storageRunningSessionIds = bridge.storageRunningSessionIds.filter(id => id !== 'idle');
+  });
+  await expect(remove).toBeEnabled();
+  expect(await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests
+    .filter(message => message.startsWith('list_ai_storage_sessions:')))).toHaveLength(1);
+});
+
+test('deletes an idle history while a different Codex session blocks global maintenance', async ({ page }) => {
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await page.evaluate(() => { (window as Window & { storageMutationAllowed: boolean }).storageMutationAllowed = false; });
+  await expect(panel.getByText('有 Codex 会话正在执行，清理和压缩暂不可用；空闲会话仍可删除。', { exact: true })).toBeVisible();
+  await openSessions(panel);
+  const running = panel.getByText('/project/running', { exact: true }).locator('../..');
+  const writer = panel.getByText('/project/client-owned', { exact: true }).locator('../..');
+  const idle = panel.getByText('/project/idle', { exact: true }).locator('../..');
+  await expect(running.getByRole('checkbox')).toBeDisabled();
+  await expect(writer.getByRole('checkbox')).toBeDisabled();
+  await expect(writer).toContainText('客户端占用，暂不可删除');
+  await expect(idle.getByRole('checkbox')).toBeEnabled();
+  await idle.getByRole('button', { name: '删除', exact: true }).click();
+  await page.locator('.modal-btn-danger').click();
+  await expect(idle).toHaveCount(0);
+  const requests = await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests);
+  const deletions = requests.filter(message => message.startsWith('delete_ai_storage_sessions:'));
+  expect(deletions).toHaveLength(1);
+  expect(JSON.parse(deletions[0]!.slice(deletions[0]!.indexOf(':') + 1))).toMatchObject({ sessionIds: ['idle'] });
+  expect(requests.filter(message => message.startsWith('compact_ai_storage_database:') || message.startsWith('clean_ai_storage_orphans:'))).toEqual([]);
+});
+
+test('opens a running session location without previewing or deleting its history', async ({ page }, info) => {
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await openSessions(panel);
+  const running = panel.getByText('/project/running', { exact: true }).locator('../..');
+  const button = running.getByRole('button', { name: '打开存储位置', exact: true });
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(button).toHaveAttribute('aria-busy', 'false');
+  const requests = await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests);
+  const reveals = requests.filter(message => message.startsWith('reveal_ai_storage_session:'));
+  expect(reveals).toHaveLength(1);
+  expect(JSON.parse(reveals[0]!.slice(reveals[0]!.indexOf(':') + 1))).toMatchObject({ sessionId: 'running', provider: 'codex' });
+  expect(requests.filter(message => /^(get_ai_storage_session|delete_ai_storage_sessions|compact_ai_storage_database):/.test(message))).toEqual([]);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.screenshot({ path: info.outputPath('codex-storage-open-location.png'), animations: 'disabled' });
+});
+
+test('reports a missing history file and restores the open-location button', async ({ page }) => {
+  await page.evaluate(() => history.replaceState(null, '', '/?storage-location-error=1'));
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await openSessions(panel);
+  const idle = panel.getByText('/project/idle', { exact: true }).locator('../..');
+  const button = idle.getByRole('button', { name: '打开存储位置', exact: true });
+  await button.click();
+  await expect(page.getByText('未找到该会话的聊天记录文件，请刷新列表后重试。', { exact: true })).toBeVisible();
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveAttribute('aria-busy', 'false');
+});
+
+test('bulk deletion skips protected targets and refuses the entire batch if one becomes busy before submission', async ({ page }) => {
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await openSessions(panel);
+  await panel.getByRole('checkbox', { name: '全选本页可删除会话' }).check();
+  const running = panel.getByText('/project/running', { exact: true }).locator('../..');
+  const writer = panel.getByText('/project/client-owned', { exact: true }).locator('../..');
+  await expect(running.getByRole('checkbox')).not.toBeChecked();
+  await expect(writer.getByRole('checkbox')).not.toBeChecked();
+  await panel.getByRole('button', { name: /删除所选/ }).click();
+  await page.evaluate(() => {
+    (window as Window & { storageWriterSessionIds: string[] }).storageWriterSessionIds.push('idle');
+  });
+  await page.locator('.modal-btn-danger').click();
+  const idle = panel.getByText('/project/idle', { exact: true }).locator('../..');
+  await expect(idle.getByRole('checkbox')).toBeDisabled();
+  expect(await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests
+    .filter(message => message.startsWith('delete_ai_storage_sessions:')))).toEqual([]);
+});
 
 test('browse all sessions, protect running targets, confirm irreversible deletion and keep the layout usable', async ({ page }, info) => {
   const panel = page.getByRole('region', { name: 'Codex 空间管理' });
@@ -354,6 +493,55 @@ test('requires a reviewed missing-rollout preview before destructive cleanup and
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('codex-storage-cleanup-completed.png') });
 });
+
+test('shows pending cleanup progress without randomUUID and reports completion once', async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => { errors.push(error.message); });
+  await page.evaluate(() => {
+    Object.defineProperty(window.crypto, 'randomUUID', { value: undefined, configurable: true });
+    (window as Window & { storageCleanupMode: string }).storageCleanupMode = 'pending';
+  });
+  const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+  await panel.getByRole('button', { name: '分析可清理空间', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '永久清理并压缩', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const progress = panel.getByRole('status').filter({ hasText: '清理残留并压缩' });
+  await expect(progress).toContainText(/处理中|检查中/);
+  await expect(panel.getByRole('button', { name: '分析可清理空间', exact: true })).toBeDisabled();
+  await expect(progress).toContainText('检查中');
+  await progress.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('codex-storage-cleanup-progress.png') });
+  await page.evaluate(() => (window as Window & { storageCompleteCleanup?: () => void }).storageCompleteCleanup?.());
+  const completed = page.locator('.toast-message').filter({ hasText: '已清理 93 个残留会话' });
+  await expect(completed).toContainText('本次净释放：466.0 MiB');
+  await expect(panel.getByText('检查中', { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: '分析可清理空间', exact: true })).toBeEnabled();
+  const requests = await page.evaluate(() => (window as Window & { storageRequests: string[] }).storageRequests
+    .filter(message => message.startsWith('clean_ai_storage_orphans:')));
+  expect(requests).toHaveLength(1);
+  const request = JSON.parse(requests[0].slice(requests[0].indexOf(':') + 1)) as { operationId: string };
+  expect(request.operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  expect(errors).toEqual([]);
+});
+
+for (const failure of ['error', 'refused'] as const) {
+  test(`reports cleanup ${failure} after closing confirmation and allows a fresh attempt`, async ({ page }, info) => {
+    await page.evaluate(mode => { (window as Window & { storageCleanupMode: string }).storageCleanupMode = mode; }, failure);
+    const panel = page.getByRole('region', { name: 'Codex 空间管理' });
+    await panel.getByRole('button', { name: '分析可清理空间', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '永久清理并压缩', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(panel.getByRole('alert')).toContainText(failure === 'error' ? '清理范围已发生变化' : '数据正在使用或维护中');
+    await panel.getByRole('alert').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: info.outputPath(`codex-storage-cleanup-${failure}.png`) });
+    await expect(panel.getByRole('button', { name: '分析可清理空间', exact: true })).toBeEnabled();
+    await page.evaluate(() => { (window as Window & { storageCleanupMode: string }).storageCleanupMode = 'complete'; });
+    await panel.getByRole('button', { name: '分析可清理空间', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '永久清理并压缩', exact: true }).click();
+    await expect(page.locator('.toast-message').filter({ hasText: '已清理 93 个残留会话' })).toBeVisible();
+    await expect(panel.getByRole('alert')).toHaveCount(0);
+  });
+}
 
 test('hides destructive cleanup for empty analysis and locates free-page compaction without executing it', async ({ page }, info) => {
   await page.goto('/?storage-no-orphans=1');

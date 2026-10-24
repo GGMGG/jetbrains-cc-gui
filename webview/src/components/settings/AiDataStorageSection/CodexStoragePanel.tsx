@@ -7,7 +7,7 @@ import ConfirmDialog from '../../ConfirmDialog';
 import { HistoryConfirmDialogs } from '../../history/HistoryConfirmDialogs';
 import { useHistorySelection } from '../../history/useHistorySelection';
 import {
-  CodexStorageError, deleteCodexStorageSessions, isTerminalOperation, lastMaintenanceId, newMaintenanceId,
+  CodexStorageError, deleteCodexStorageSessions, forgetMaintenanceId, isTerminalOperation, lastMaintenanceId, newMaintenanceId,
   operationSucceeded, storageRequest, subscribeCodexDeletion,
 } from './codexStorageBridge';
 import type {
@@ -17,6 +17,7 @@ import type {
 import styles from './codexStorage.module.less';
 import layout from './style.module.less';
 import CodexStorageContentRecord from './CodexStorageContentRecord';
+import { useCodexStorageMutationStatus } from './useCodexStorageMutationStatus';
 
 interface CodexStoragePanelProps {
   addToast: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void;
@@ -30,6 +31,7 @@ export function storageBytes(bytes: number): string {
 }
 
 function operationNeedsAttention(operation: CodexMaintenanceOperation): boolean {
+  if (operation.state === 'FAILED_CLEAN' && ['DATABASE_BUSY', 'SESSION_RUNNING', 'SESSION_WRITER_BUSY'].includes(operation.error ?? '')) return false;
   return !operationSucceeded(operation) || operation.state === 'COMPLETED_WITH_WARNINGS'
     || !!operation.error || !!operation.result?.warning
     || !!(operation.result?.metadataStatus && operation.result.metadataStatus !== 'COMPLETE');
@@ -38,6 +40,10 @@ function operationNeedsAttention(operation: CodexMaintenanceOperation): boolean 
 /** Cross-project maintenance uses the existing history selection and irreversible confirmation. */
 export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) {
   const { t } = useTranslation();
+  const { status: mutationStatus, refresh: refreshMutationStatus } = useCodexStorageMutationStatus();
+  const [checkingAdmission, setCheckingAdmission] = useState(false);
+  const [pendingKind, setPendingKind] = useState<'delete' | 'compact' | 'clean' | null>(null);
+  const startingOperation = useRef(false);
   const [usage, setUsage] = useState<CodexStorageUsage | null>(null);
   const [database, setDatabase] = useState<CodexDatabaseStatus | null>(null);
   const [databaseError, setDatabaseError] = useState<string | null>(null);
@@ -53,6 +59,9 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [revealingId, setRevealingId] = useState<string | null>(null);
+  const revealing = useRef(false);
+  const bulkDeleteTargets = useRef<string[]>([]);
   const [opened, setOpened] = useState<CodexStorageSession | null>(null);
   const [content, setContent] = useState<CodexStorageContent | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
@@ -79,9 +88,26 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
   criteria.current = sessionCriteria;
 
   const reason = (code: string) => t(`settings.codexStorage.errors.${code}`, { defaultValue: t('settings.codexStorage.errors.STORAGE_OPERATION_FAILED') });
+  const scanErrors = (errors: string[]) => errors.length > 0 ? (
+    <details className={styles.scanErrors}>
+      <summary>{t('settings.codexStorage.scanErrors', { count: errors.length })}</summary>
+      <ul>{errors.slice(0, 20).map((error, index) => {
+        const separator = error.lastIndexOf(': ');
+        const file = separator < 0 ? '' : error.slice(0, separator);
+        const code = separator < 0 ? error : error.slice(separator + 2);
+        return <li key={`${index}:${error}`}>{file ? <code>{file}: </code> : null}{reason(code)}</li>;
+      })}</ul>
+    </details>
+  ) : null;
   const releasedLabel = useCallback((bytes: number) => bytes > 0
     ? t('settings.codexStorage.released', { size: storageBytes(bytes) })
     : bytes < 0 ? t('settings.codexStorage.increased', { size: storageBytes(-bytes) }) : t('settings.codexStorage.noSavings'), [t]);
+
+  const reportOperationError = useCallback((code: string) => {
+    if (!mounted.current) return;
+    setError(code);
+    toastRef.current(t(`settings.codexStorage.errors.${code}`, { defaultValue: t('settings.codexStorage.errors.STORAGE_OPERATION_FAILED') }), 'error');
+  }, [t]);
 
   const closeContent = useCallback(() => {
     contentGeneration.current++;
@@ -154,9 +180,16 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
         throw cause;
       }),
       storageRequest('list_ai_storage_maintenance_operations'), loadSessions(),
-      previousId ? storageRequest('get_ai_storage_maintenance_operation', { operationId: previousId }) : Promise.resolve(null),
+      previousId ? storageRequest('get_ai_storage_maintenance_operation', { operationId: previousId }).catch((cause: unknown) => {
+        if (cause instanceof CodexStorageError && ['OPERATION_NOT_FOUND', 'STORAGE_IDENTITY_CHANGED'].includes(cause.code)) {
+          forgetMaintenanceId(previousId);
+          return null;
+        }
+        throw cause;
+      }) : Promise.resolve(null),
     ]);
     if (!mounted.current || generation !== refreshGeneration.current) return;
+    void refreshMutationStatus();
     if (results[2].status === 'fulfilled') {
       const known = results[4].status === 'fulfilled' ? results[4].value : null;
       const merged = known ? [known, ...results[2].value.filter(item => item.operationId !== known.operationId)] : results[2].value;
@@ -167,7 +200,7 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
       setError(failure.reason instanceof CodexStorageError ? failure.reason.code : 'STORAGE_OPERATION_FAILED');
     }
     setRefreshing(false);
-  }, [loadSessions]);
+  }, [loadSessions, refreshMutationStatus]);
 
   const updateOperation = useCallback((operation: CodexMaintenanceOperation) => {
     if (!mounted.current) return;
@@ -179,7 +212,12 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
       setBusyId(current => current === operation.operationId ? null : current);
       if (!completedRef.current.has(operation.operationId)) {
         completedRef.current.add(operation.operationId);
-        if (!operationNeedsAttention(operation) && operation.kind !== 'DELETE_SESSIONS') {
+        if (!operationSucceeded(operation)) {
+          reportOperationError(operation.error ?? 'STORAGE_OPERATION_FAILED');
+        } else {
+          setError(null);
+        }
+        if (operationSucceeded(operation) && !operationNeedsAttention(operation) && operation.kind !== 'DELETE_SESSIONS') {
           const result = operation.result;
           const summary = operation.kind === 'COMPACT_DATABASE' ? t('settings.codexStorage.compacted')
             : result?.cleanedSessionCount !== undefined ? t('settings.codexStorage.orphans.cleanedCount', { count: result.cleanedSessionCount })
@@ -187,10 +225,10 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
           toastRef.current([summary, ...(result?.releasedBytes !== undefined ? [releasedLabel(result.releasedBytes)] : [])].join(' · '),
             (result?.releasedBytes ?? 0) < 0 ? 'warning' : 'success');
         }
-        void refresh();
+        void refresh(false);
       }
     }
-  }, [refresh, releasedLabel, t]);
+  }, [refresh, releasedLabel, reportOperationError, t]);
 
   useEffect(() => {
     mounted.current = true;
@@ -234,37 +272,82 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
   }, [busyId, updateOperation]);
 
   const runOperation = async (kind: 'delete' | 'compact' | 'clean', targets: string[], existingId?: string, databaseId?: string) => {
-    if (busyId) return;
-    const operationId = existingId ?? newMaintenanceId();
-    setBusyId(operationId);
+    if (busyId || startingOperation.current) return;
+    startingOperation.current = true;
+    setPendingKind(kind);
+    setCheckingAdmission(true);
     setError(null);
     try {
+      const admission = await refreshMutationStatus();
+      if (!mounted.current) return;
+      if (kind === 'delete') {
+        if (!admission.deletionAvailable) throw new CodexStorageError(admission.deletionUnavailableReason ?? 'STORAGE_OPERATION_FAILED');
+        if (targets.length === 0) throw new CodexStorageError('INVALID_SESSION_SELECTION');
+        if (targets.some(id => admission.runningSessionIds.includes(id))) throw new CodexStorageError('SESSION_RUNNING');
+        if (targets.some(id => admission.writerSessionIds.includes(id))) throw new CodexStorageError('SESSION_WRITER_BUSY');
+      } else if (!admission.available) {
+        throw new CodexStorageError(admission.unavailableReason ?? 'STORAGE_OPERATION_FAILED');
+      }
+      const operationId = existingId ?? newMaintenanceId();
+      setBusyId(operationId);
+      setCheckingAdmission(false);
       const operation = kind === 'delete'
         ? await deleteCodexStorageSessions(targets, operationId)
         : kind === 'clean'
         ? await storageRequest('clean_ai_storage_orphans', { operationId, databaseId: databaseId ?? database?.databaseId, previewToken: targets[0] })
         : await storageRequest('compact_ai_storage_database', { operationId, databaseId: database?.databaseId });
       updateOperation(operation);
-      setBusyId(null);
     } catch (cause) {
       if (!mounted.current) return;
       const code = cause instanceof CodexStorageError ? cause.code : 'STORAGE_OPERATION_FAILED';
-      setError(code);
+      reportOperationError(code);
       if (code !== 'STORAGE_RESPONSE_TIMEOUT') setBusyId(null);
       void refresh(false);
+    } finally {
+      startingOperation.current = false;
+      if (mounted.current) setCheckingAdmission(false);
     }
   };
 
-  const eligible = useMemo(() => sessions.filter(row => !row.running && !row.deletionUnavailableReason)
-    .map(row => ({ sessionId: row.sessionId, title: row.title, messageCount: 0 })), [sessions]);
+  const protectedSessions = useMemo(() => {
+    if (!mutationStatus) return sessions;
+    const running = new Set(mutationStatus.runningSessionIds);
+    const writers = new Set(mutationStatus.writerSessionIds);
+    return sessions.map(session => ({ ...session, running: running.has(session.sessionId),
+      deletionUnavailableReason: writers.has(session.sessionId) ? 'SESSION_WRITER_BUSY'
+        : ['SESSION_RUNNING', 'SESSION_WRITER_BUSY'].includes(session.deletionUnavailableReason ?? '') ? undefined : session.deletionUnavailableReason }));
+  }, [sessions, mutationStatus]);
+  const eligible = useMemo(() => protectedSessions.filter(row => !row.running && !row.deletionUnavailableReason)
+    .map(row => ({ sessionId: row.sessionId, title: row.title, messageCount: 0 })), [protectedSessions]);
+  const eligibleIds = useMemo(() => new Set(eligible.map(row => row.sessionId)), [eligible]);
   const onDeleteSessions = (ids: string[]) => { void runOperation('delete', ids); };
   const selection = useHistorySelection(eligible, onDeleteSessions);
   const pendingOperation = operations.find(operation => !isTerminalOperation(operation));
   const latestOperation = operations[0];
   const visibleOperation = pendingOperation ?? operations.find(operation => operation.result?.metadataStatus && operation.result.metadataStatus !== 'COMPLETE')
     ?? (latestOperation && operationNeedsAttention(latestOperation) ? latestOperation : undefined);
-  const blocked = busyId !== null || pendingOperation !== undefined;
+  const blocked = checkingAdmission || busyId !== null || pendingOperation !== undefined;
   const sessionBlocked = blocked || listLoading;
+  const mutationBlocked = !mutationStatus?.available;
+  const deletionAdmissionBlocked = !mutationStatus?.deletionAvailable;
+  const deletionBlocked = sessionBlocked || deletionAdmissionBlocked || checkingAdmission;
+  const mutationReason = mutationStatus?.unavailableReason;
+  const deletionReason = mutationStatus?.deletionUnavailableReason;
+  const exitSelection = selection.exitSelectionMode;
+  const cancelDeleteSelected = selection.cancelDeleteSelected;
+
+  useEffect(() => {
+    if (deletionAdmissionBlocked) {
+      setDeletingId(null);
+      exitSelection();
+    }
+  }, [deletionAdmissionBlocked, exitSelection]);
+
+  useEffect(() => {
+    if (deletionAdmissionBlocked) return;
+    setDeletingId(current => current && !eligibleIds.has(current) ? null : current);
+    if (selection.isDeletingSelected && bulkDeleteTargets.current.some(id => !eligibleIds.has(id))) cancelDeleteSelected();
+  }, [deletionAdmissionBlocked, eligibleIds, cancelDeleteSelected, selection.isDeletingSelected]);
   const hasOrphans = (orphanPreview?.candidateCount ?? 0) > 0;
   const reusableBytes = database && database.freelistCount !== undefined && database.pageSize !== undefined
     ? database.freelistCount * database.pageSize : null;
@@ -296,6 +379,21 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
     if (advancedDetails.current) advancedDetails.current.open = true;
     compactionView.current?.scrollIntoView?.({ block: 'center' });
     compactionView.current?.focus({ preventScroll: true });
+  };
+
+  const openLocation = async (sessionId: string) => {
+    if (revealing.current) return;
+    revealing.current = true;
+    setRevealingId(sessionId);
+    try {
+      await storageRequest('reveal_ai_storage_session', { sessionId });
+    } catch (cause) {
+      const code = cause instanceof CodexStorageError ? cause.code : 'STORAGE_LOCATION_UNAVAILABLE';
+      if (mounted.current) toastRef.current(code === 'STORAGE_RESPONSE_TIMEOUT' ? t('settings.codexStorage.openLocationTimeout') : reason(code), 'error');
+    } finally {
+      revealing.current = false;
+      if (mounted.current) setRevealingId(null);
+    }
   };
 
   const openContent = async (session: CodexStorageSession, cursor?: string, pageIndex = 0) => {
@@ -339,6 +437,7 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
             <div key={key}><small>{t(`settings.codexStorage.${key}`)}</small><strong>{storageBytes(bytes)}</strong></div>)}
         </div> : <p className={styles.hint} role="status">{t('common.loading')}</p>}
         {usage && !usage.complete ? <p className={styles.warning} role="status">{t('settings.codexStorage.usageIncomplete')}</p> : null}
+        {usage && !usage.complete ? scanErrors(usage.errors) : null}
         <div className={styles.cleanupRow}>
           <div><strong>{t('settings.codexStorage.databaseCleanup')}</strong>
             <p className={styles.hint}>{t('settings.codexStorage.orphans.hint')}</p>
@@ -346,6 +445,12 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
           <button type="button" className={styles.primary} disabled={blocked || analyzing || !!databaseError || !database?.supported}
             onClick={() => { void analyzeOrphans(); }}>{t(analyzing ? 'settings.codexStorage.orphans.analyzing' : 'settings.codexStorage.orphans.analyze')}</button>
         </div>
+        {checkingAdmission || busyId && visibleOperation?.operationId !== busyId ? <div className={styles.operation} role="status" aria-live="polite">
+          <span className="codicon codicon-loading codicon-modifier-spin" aria-hidden="true" />
+          <strong>{t(pendingKind === 'clean' ? 'settings.codexStorage.orphans.cleanup'
+            : pendingKind === 'delete' ? 'settings.codexStorage.deletion' : 'settings.codexStorage.compact')}</strong>
+          <span>{t(checkingAdmission ? 'settings.codexStorage.checkingAvailability' : 'settings.codexStorage.processing')}</span>
+        </div> : null}
         <details ref={advancedDetails} className={`${styles.details} ${styles.advanced}`}>
           <summary>{t('settings.codexStorage.advancedDetails')}</summary>
           <div className={styles.advancedBody}>
@@ -357,7 +462,7 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
             <div ref={compactionView} className={styles.compaction} role="group" aria-label={t('settings.codexStorage.databaseCompaction')} tabIndex={-1}>
               <div className={styles.compactionHeading}>
                 <div><h5>{t('settings.codexStorage.databaseCompaction')}</h5><code>thread_history_1.sqlite</code></div>
-                <button type="button" disabled={blocked || !!databaseError || !database?.supported}
+                <button type="button" disabled={blocked || mutationBlocked || checkingAdmission || !!databaseError || !database?.supported}
                   onClick={() => { void runOperation('compact', []); }}>{t('settings.codexStorage.compact')}</button>
               </div>
               {database ? <dl className={styles.databaseMetrics}>
@@ -379,6 +484,15 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
         </details>
         {database?.unavailableReason ? <p className={styles.warning}>{reason(database.unavailableReason)}</p> : null}
         {databaseError ? <p role="alert" className={styles.warning}>{reason(databaseError)}</p> : null}
+        {mutationBlocked || deletionAdmissionBlocked ? <p role="status" className={styles.warning}>
+          {t(!mutationStatus ? 'settings.codexStorage.checkingAvailability'
+            : deletionAdmissionBlocked ? 'settings.codexStorage.deletionUnavailable'
+            : mutationReason === 'SESSION_RUNNING' ? 'settings.codexStorage.mutationRunning'
+            : mutationReason === 'SESSION_WRITER_BUSY' ? 'settings.codexStorage.mutationWriterBusy'
+            : 'settings.codexStorage.mutationUnavailable')}
+          {mutationStatus && (deletionAdmissionBlocked || !['SESSION_RUNNING', 'SESSION_WRITER_BUSY'].includes(mutationReason ?? ''))
+            ? ` ${reason((deletionAdmissionBlocked ? deletionReason : mutationReason) ?? 'STORAGE_OPERATION_FAILED')}` : null}
+        </p> : null}
       </div>
 
       {(visibleOperation ? [visibleOperation] : []).map(operation => <div className={styles.operation} key={operation.operationId} role="status">
@@ -390,7 +504,10 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
         {operation.result?.cleanedSessionCount !== undefined ? <span>{t('settings.codexStorage.orphans.cleanedCount', { count: operation.result.cleanedSessionCount })}</span> : null}
         {operation.error ? <span className={styles.warning}>{reason(operation.error)}</span> : null}
         {operation.result?.warning ? <span className={styles.warning}>{reason(operation.result.warning)}</span> : null}
-        {!isTerminalOperation(operation) || (operation.result?.metadataStatus && operation.result.metadataStatus !== 'COMPLETE') ? <button type="button" disabled={busyId !== null || (operation.kind !== 'DELETE_SESSIONS' && !database)}
+        {!isTerminalOperation(operation) || (operation.result?.metadataStatus && operation.result.metadataStatus !== 'COMPLETE') ? <button type="button"
+          disabled={busyId !== null || checkingAdmission || (operation.kind === 'DELETE_SESSIONS'
+            ? deletionAdmissionBlocked || operation.targets.some(id => mutationStatus?.runningSessionIds.includes(id) || mutationStatus?.writerSessionIds.includes(id))
+            : mutationBlocked || !database)}
           onClick={() => { void runOperation(operation.kind === 'DELETE_SESSIONS' ? 'delete'
             : operation.kind === 'CLEAN_ORPHANED_HISTORY' ? 'clean' : 'compact', operation.targets, operation.operationId); }}>{t('settings.codexStorage.continueOperation')}</button> : null}
       </div>)}
@@ -398,6 +515,7 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
       {page && !page.complete && page.total > 0 ? <p className={styles.warning} role="status">{t('settings.codexStorage.incomplete')}</p> : null}
       {listError || page && !page.complete && page.total === 0
         ? <p role="alert" className={styles.warning}>{t('settings.codexStorage.sessionLoadFailed')} {reason(listError ?? 'INVENTORY_INCOMPLETE')}</p> : null}
+      {page && !page.complete ? scanErrors(page.errors) : null}
       <details className={layout.group}>
         <summary className={layout.groupHeader}>
           <span className="codicon codicon-history" aria-hidden="true" /><h4>{sessionsTitle}</h4>
@@ -415,15 +533,18 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
             </select>
           </div>
           <div className={styles.selectionBar}>
-            <label className={styles.selectAll}><input type="checkbox" checked={selection.allVisibleSelected} disabled={sessionBlocked || eligible.length === 0}
+            <label className={styles.selectAll}><input type="checkbox" checked={selection.allVisibleSelected} disabled={deletionBlocked || eligible.length === 0}
               onChange={selection.toggleSelectAllVisible} />{t('settings.codexStorage.selectVisible')}</label>
-            {selection.selectedCount > 0 ? <button type="button" className={styles.danger} disabled={sessionBlocked}
-              onClick={selection.startDeleteSelected}>{t('history.deleteSelected', { count: selection.selectedCount })}</button> : null}
+            {selection.selectedCount > 0 ? <button type="button" className={styles.danger} disabled={deletionBlocked}
+              onClick={() => {
+                bulkDeleteTargets.current = eligible.filter(row => selection.selectedSessionIds.has(row.sessionId)).map(row => row.sessionId);
+                selection.startDeleteSelected();
+              }}>{t('history.deleteSelected', { count: selection.selectedCount })}</button> : null}
           </div>
           <div ref={sessionListView} className={styles.sessions} aria-busy={listLoading}>
-            {sessions.map(session => <div className={styles.session} key={session.sessionId}>
+            {protectedSessions.map(session => <div className={styles.session} key={session.sessionId}>
               <input type="checkbox" aria-label={t('settings.codexStorage.selectSession', { title: sessionTitle(session) })}
-                checked={selection.selectedSessionIds.has(session.sessionId)} disabled={sessionBlocked || session.running || !!session.deletionUnavailableReason}
+                checked={eligibleIds.has(session.sessionId) && selection.selectedSessionIds.has(session.sessionId)} disabled={deletionBlocked || session.running || !!session.deletionUnavailableReason}
                 onChange={() => selection.toggleSessionSelection(session.sessionId)} />
               <div className={styles.identity}><div className={styles.sessionTitle}><strong title={`${sessionTitle(session)}\n${session.sessionId}`}>{sessionTitle(session)}</strong>
                 <small>{storageBytes(session.fileSize)}</small></div>
@@ -434,12 +555,19 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
                   {session.archived ? ` · ${t('settings.codexStorage.filters.archived')}` : ''}
                   {session.metadataWarning ? ` · ${t('settings.codexStorage.metadataIncomplete')}` : ''}</small>
               </div>
-              <div className={styles.rowActions}><button type="button" className={styles.iconButton} disabled={!session.readable || blocked}
+              <div className={styles.rowActions}>
+              <button type="button" className={styles.iconButton} disabled={blocked || revealingId !== null}
+                aria-label={t('settings.codexStorage.openLocation')} title={t('settings.codexStorage.openLocation')}
+                aria-busy={revealingId === session.sessionId}
+                onClick={() => { void openLocation(session.sessionId); }}>
+                <span className={`codicon codicon-${revealingId === session.sessionId ? 'loading codicon-modifier-spin' : 'folder-opened'}`} aria-hidden="true" />
+              </button>
+              <button type="button" className={styles.iconButton} disabled={!session.readable || blocked}
                 aria-label={t('settings.codexStorage.view')} title={t('settings.codexStorage.view')}
                 onClick={() => { void openContent(session); }}><span className="codicon codicon-preview" aria-hidden="true" /></button>
-              <button type="button" className={`${styles.iconButton} ${styles.danger}`} disabled={sessionBlocked || session.running || !!session.deletionUnavailableReason}
+              <button type="button" className={`${styles.iconButton} ${styles.danger}`} disabled={deletionBlocked || session.running || !!session.deletionUnavailableReason}
                 aria-label={t('common.delete')}
-                title={session.running ? reason('SESSION_RUNNING') : session.deletionUnavailableReason ? reason(session.deletionUnavailableReason) : undefined}
+                title={deletionAdmissionBlocked ? reason(deletionReason ?? 'DATABASE_BUSY') : session.running ? reason('SESSION_RUNNING') : session.deletionUnavailableReason ? reason(session.deletionUnavailableReason) : undefined}
                 onClick={() => setDeletingId(session.sessionId)}><span className="codicon codicon-trash" aria-hidden="true" /></button></div>
             </div>)}
             {page?.complete && !sessions.length && !listLoading && !listError ? <p>{t('settings.codexStorage.empty')}</p> : null}
@@ -494,22 +622,30 @@ export default function CodexStoragePanel({ addToast }: CodexStoragePanelProps) 
         </> : null}
       </Modal>
 
-      {createPortal(<HistoryConfirmDialogs deletingSessionId={deletingId} convertingSessionId={null} isDeletingSelected={selection.isDeletingSelected}
-        selectedCount={selection.selectedCount} t={t} onCancelDelete={() => setDeletingId(null)}
-        onConfirmDelete={() => { if (deletingId && !sessionBlocked) { onDeleteSessions([deletingId]); setDeletingId(null); } }}
+      {createPortal(<HistoryConfirmDialogs deletingSessionId={!deletionBlocked && deletingId && eligibleIds.has(deletingId) ? deletingId : null}
+        convertingSessionId={null} isDeletingSelected={selection.isDeletingSelected && !deletionBlocked && bulkDeleteTargets.current.every(id => eligibleIds.has(id))}
+        selectedCount={bulkDeleteTargets.current.length} t={t} onCancelDelete={() => setDeletingId(null)}
+        onConfirmDelete={() => { if (deletingId && !deletionBlocked && eligibleIds.has(deletingId)) { onDeleteSessions([deletingId]); setDeletingId(null); } }}
         onCancelConvert={() => { }} onConfirmConvert={() => { }} onCancelDeleteSelected={selection.cancelDeleteSelected}
-        onConfirmDeleteSelected={() => { if (!sessionBlocked) selection.confirmDeleteSelected(); }} />, document.body)}
+        onConfirmDeleteSelected={() => {
+          // Keep the reviewed batch intact if selection changes while the confirmation is open.
+          const targets = bulkDeleteTargets.current;
+          if (!deletionBlocked && targets.length > 0 && targets.every(id => eligibleIds.has(id))) {
+            onDeleteSessions(targets);
+            exitSelection();
+          }
+        }} />, document.body)}
       {orphanPreview ? createPortal(<div className={layout.dialog}><ConfirmDialog isOpen
         title={t(hasOrphans ? 'settings.codexStorage.orphans.confirmTitle' : 'settings.codexStorage.orphans.analysisTitle')}
         message={hasOrphans ? t('settings.codexStorage.orphans.summary', { count: orphanPreview.candidateCount, size: storageBytes(orphanPreview.estimatedBytes) })
           : t('settings.codexStorage.orphans.none')}
         onCancel={() => setOrphanPreview(null)} cancelText={t(hasOrphans ? 'common.cancel' : 'common.close')}
         confirmText={t(hasOrphans ? 'settings.codexStorage.orphans.confirm' : 'settings.codexStorage.orphans.openCompaction')}
-        confirmDisabled={hasOrphans && blocked} danger={hasOrphans}
+        confirmDisabled={hasOrphans && (blocked || mutationBlocked || checkingAdmission)} danger={hasOrphans}
         onConfirm={() => {
           if (!hasOrphans) {
             showCompaction();
-          } else if (!blocked) {
+          } else if (!blocked && !mutationBlocked && !checkingAdmission) {
             const preview = orphanPreview;
             setOrphanPreview(null);
             void runOperation('clean', [preview.previewToken], undefined, preview.databaseId);

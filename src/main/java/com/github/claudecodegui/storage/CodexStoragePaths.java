@@ -1,6 +1,6 @@
 package com.github.claudecodegui.storage;
 
-import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.util.CodexHomeResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -28,7 +28,7 @@ public final class CodexStoragePaths {
     }
 
     public static CodexStoragePaths current() throws IOException {
-        return new CodexStoragePaths(Path.of(NodeDetector.resolveHomeForFileOps(), ".codex"));
+        return new CodexStoragePaths(CodexHomeResolver.resolve());
     }
 
     public Path canonical() {
@@ -71,7 +71,12 @@ public final class CodexStoragePaths {
             }
         }
         BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        return path.toRealPath() + "|" + attributes.fileKey() + "|" + attributes.creationTime().toMillis();
+        if (attributes.fileKey() == null) {
+            throw new IOException("STORAGE_IDENTITY_UNSUPPORTED");
+        }
+        // On Unix, creationTime may be synthesized from mutable mtime/ctime.
+        // Use the filesystem's device/inode identity; contents have separate digest checks.
+        return path.toRealPath() + "|" + attributes.fileKey();
     }
 
     static Object physicalFileKey(Path path, BasicFileAttributes attributes) throws IOException {
@@ -84,6 +89,37 @@ public final class CodexStoragePaths {
     public static void requireSessionId(String id) throws IOException {
         if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}") || id.equals("..")) {
             throw new IOException("INVALID_SESSION_ID");
+        }
+    }
+
+    /** Rust's Windows canonical paths use a verbatim prefix that Java's public parser rejects. */
+    static Path declaredRolloutPath(String raw) throws IOException {
+        String value = raw;
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).startsWith("windows")
+                && value.startsWith("\\\\?\\")) {
+            String suffix = value.substring(4);
+            if (suffix.matches("[A-Za-z]:\\\\.*")) {
+                value = suffix;
+            } else if (suffix.regionMatches(true, 0, "UNC\\", 0, 4)) {
+                value = "\\\\" + suffix.substring(4);
+            } else {
+                throw new IOException("UNSAFE_STORAGE_PATH");
+            }
+            // Removing the prefix must not change verbatim filename semantics.
+            for (String segment : value.split("\\\\")) {
+                if (segment.endsWith(".") || segment.endsWith(" ")) {
+                    throw new IOException("UNSAFE_STORAGE_PATH");
+                }
+            }
+        }
+        try {
+            Path path = Path.of(value);
+            if (!path.isAbsolute()) {
+                throw new IOException("INVENTORY_INCOMPLETE");
+            }
+            return path;
+        } catch (RuntimeException error) {
+            throw new IOException("INVENTORY_INCOMPLETE", error);
         }
     }
 }

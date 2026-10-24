@@ -1,6 +1,6 @@
 package com.github.claudecodegui.provider.codex;
 
-import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.util.CodexHomeResolver;
 import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.util.PathUtils;
@@ -11,7 +11,6 @@ import com.intellij.openapi.diagnostic.Logger;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,11 +31,12 @@ public class CodexHistoryReader {
     private final CodexHistoryParser parser;
     private final CodexHistoryIndexService indexService;
     private final CodexHistorySessionService sessionService;
+    private final CodexStoredHistoryReader storedHistory;
     private final ThreadLocal<String> privacyThread = new ThreadLocal<>();
     private final ThreadLocal<Consumer<ByteBuffer>> sourceBytesObserver = new ThreadLocal<>();
 
     private static Path defaultSessionsDir() {
-        return Paths.get(NodeDetector.resolveHomeForFileOps(), ".codex", "sessions");
+        return CodexHomeResolver.resolve().resolve("sessions");
     }
 
     public CodexHistoryReader() {
@@ -48,6 +48,7 @@ public class CodexHistoryReader {
         this.parser = new CodexHistoryParser(gson);
         this.indexService = new CodexHistoryIndexService(sessionsDir, parser);
         this.sessionService = new CodexHistorySessionService(sessionsDir, gson);
+        this.storedHistory = new CodexStoredHistoryReader(sessionsDir.toAbsolutePath().normalize().getParent());
     }
 
     CodexHistoryReader(Path sessionsDir, Gson gson, SessionIndexManager indexManager) {
@@ -55,6 +56,7 @@ public class CodexHistoryReader {
         this.parser = new CodexHistoryParser(gson);
         this.indexService = new CodexHistoryIndexService(sessionsDir, parser, indexManager);
         this.sessionService = new CodexHistorySessionService(sessionsDir, gson);
+        this.storedHistory = new CodexStoredHistoryReader(sessionsDir.toAbsolutePath().normalize().getParent());
     }
 
     /**
@@ -88,7 +90,17 @@ public class CodexHistoryReader {
     public List<SessionInfo> readAllSessions() throws IOException {
         logSessionAccessWithoutLocalConfigAuthorization();
         try (var permit = requireReadPermit()) {
-            List<SessionInfo> sessions = indexService.readAllSessions();
+            List<SessionInfo> sessions = new java.util.ArrayList<>(indexService.readAllSessions());
+            java.util.Set<String> known = new java.util.HashSet<>();
+            for (SessionInfo session : sessions) {
+                known.add(session.sessionId);
+            }
+            for (SessionInfo session : storedHistory.sessions()) {
+                if (known.add(session.sessionId)) {
+                    sessions.add(session);
+                }
+            }
+            sessions.sort(java.util.Comparator.comparingLong((SessionInfo session) -> session.lastTimestamp).reversed());
             var running = com.github.claudecodegui.storage.CodexStorageActivity.runningSessionIds();
             for (SessionInfo session : sessions) {
                 session.running = running.contains(session.sessionId);
@@ -111,7 +123,9 @@ public class CodexHistoryReader {
             Map<String, Object> result = new HashMap<>();
             result.put("success", true);
             result.put("sessions", sessions);
-            result.put("total", totalMessages);
+            if (sessions.stream().allMatch(session -> session.messageCount >= 0)) {
+                result.put("total", totalMessages);
+            }
             result.put("sessionCount", sessions.size());
 
             return gson.toJson(result);
@@ -174,7 +188,9 @@ public class CodexHistoryReader {
             Map<String, Object> result = new HashMap<>();
             result.put("success", true);
             result.put("sessions", filteredSessions);
-            result.put("total", totalMessages);
+            if (filteredSessions.stream().allMatch(session -> session.messageCount >= 0)) {
+                result.put("total", totalMessages);
+            }
             result.put("sessionCount", filteredSessions.size());
 
             return gson.toJson(result);

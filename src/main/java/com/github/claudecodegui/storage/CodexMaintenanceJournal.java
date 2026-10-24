@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-/** Metadata-only receipts. All mutations require the shared migration coordinator's exclusive lock. */
+/** Metadata-only receipts. Mutations require the maintenance mutex and shared directory admission. */
 public final class CodexMaintenanceJournal {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Set<String> TERMINAL = Set.of("COMPLETED", "COMPLETED_WITH_WARNINGS", "PARTIAL_COMPLETED", "FAILED_CLEAN", "CANCELLED_CLEAN");
@@ -96,6 +96,7 @@ public final class CodexMaintenanceJournal {
         record.addProperty("version", 1);
         record.addProperty("operationId", operationId);
         record.addProperty("kind", kind);
+        record.addProperty("origin", legacy ? "HISTORY" : "STORAGE");
         record.addProperty("binding", digest);
         record.addProperty("rootIdentity", paths.identity());
         record.addProperty("canonicalRoot", paths.canonical().toString());
@@ -127,7 +128,10 @@ public final class CodexMaintenanceJournal {
         try (var files = Files.list(directory)) {
             for (Path file : files.filter(path -> path.getFileName().toString().endsWith(".json")).toList()) {
                 JsonObject record = read(file);
-                if (paths.identity().equals(record.get("rootIdentity").getAsString())) {
+                JsonObject details = record.has("result") ? record.getAsJsonObject("result") : new JsonObject();
+                boolean metadataUnfinished = details.has("metadataStatus") && !details.get("metadataStatus").getAsString().equals("COMPLETE");
+                if (paths.identity().equals(record.get("rootIdentity").getAsString())
+                        && !(terminal(record) && record.has("origin") && record.get("origin").getAsString().equals("HISTORY") && !metadataUnfinished)) {
                     records.add(publicStatus(record));
                 }
             }

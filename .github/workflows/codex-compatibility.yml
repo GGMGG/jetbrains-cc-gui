@@ -50,3 +50,53 @@ jobs:
         run: |
           export CODEX_CLI_TEST_COMMAND="$(node -e 'process.stdout.write(JSON.stringify([process.execPath, require("node:path").join(process.env.RUNNER_TEMP, "codex-cli-test/node_modules/@openai/codex/bin/codex.js")]))')"
           node --test --test-concurrency=2 ai-bridge/services/codex/*.test.js ai-bridge/services/codex/*.test.mjs ai-bridge/utils/sdk-loader.test.js
+
+  storage-history:
+    name: Local history and native locks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.12.0'
+      - name: Install bridge dependencies
+        working-directory: ai-bridge
+        run: npm ci
+      - name: Verify read-only history and native writer locks
+        run: |
+          wrapper=./gradlew
+          if [ "$RUNNER_OS" = Windows ]; then wrapper=./gradlew.bat; fi
+          "$wrapper" test \
+            --tests '*CodexStoredHistoryReaderTest' \
+            --tests '*CodexHistoryPageIndexTest' \
+            --tests '*HistoryMessageInjectorTest' \
+            --tests '*CodexStorageFileLockTest' \
+            --tests '*CodexSqliteNativeLibraryTest' \
+            --tests '*CodexStoragePlatformTest' \
+            --tests '*CodexStorageMaintenanceTest' \
+            --tests '*CodexStorageMaintenanceWalTest' \
+            --tests '*CodexHistoryDeletionTest' \
+            --tests '*CodexStorageMutationStatusTest' \
+            --tests '*CodexStorageInventoryTest' \
+            --tests '*CodexStorageSafetyTest' \
+            -x buildWebview -x packageAiBridge --max-workers=2
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-storage-${{ matrix.os }}
+          path: build/test-results/test/*.xml
+          if-no-files-found: warn

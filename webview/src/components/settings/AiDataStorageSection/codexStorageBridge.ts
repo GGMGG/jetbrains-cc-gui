@@ -56,6 +56,15 @@ export interface CodexDatabaseStatus {
   pageSize?: number;
 }
 
+export interface CodexStorageMutationStatus {
+  available: boolean;
+  unavailableReason?: string;
+  deletionAvailable: boolean;
+  deletionUnavailableReason?: string;
+  runningSessionIds: string[];
+  writerSessionIds: string[];
+}
+
 export interface CodexMaintenanceOperation {
   operationId: string;
   kind: 'DELETE_SESSIONS' | 'COMPACT_DATABASE' | 'CLEAN_ORPHANED_HISTORY';
@@ -93,7 +102,9 @@ interface StorageData {
   get_ai_storage_usage: CodexStorageUsage;
   list_ai_storage_sessions: CodexStoragePage;
   get_ai_storage_session: CodexStorageContent;
+  reveal_ai_storage_session: { sessionId: string };
   get_ai_storage_database_status: CodexDatabaseStatus;
+  get_ai_storage_mutation_status: CodexStorageMutationStatus;
   compact_ai_storage_database: CodexMaintenanceOperation;
   preview_ai_storage_orphans: CodexOrphanPreview;
   clean_ai_storage_orphans: CodexMaintenanceOperation;
@@ -143,6 +154,15 @@ function validData(action: keyof StorageData, value: unknown): boolean {
     || action === 'delete_ai_storage_sessions' || action === 'get_ai_storage_maintenance_operation') return operation(value);
   if (!object(value)) return false;
   switch (action) {
+    case 'reveal_ai_storage_session':
+      return typeof value.sessionId === 'string' && value.sessionId.length > 0;
+    case 'get_ai_storage_mutation_status':
+      return typeof value.available === 'boolean'
+        && (value.available ? value.unavailableReason === undefined : typeof value.unavailableReason === 'string' && value.unavailableReason.length > 0)
+        && typeof value.deletionAvailable === 'boolean'
+        && (value.deletionAvailable ? value.deletionUnavailableReason === undefined
+          : typeof value.deletionUnavailableReason === 'string' && value.deletionUnavailableReason.length > 0)
+        && strings(value.runningSessionIds) && strings(value.writerSessionIds);
     case 'preview_ai_storage_orphans':
       return typeof value.databaseId === 'string' && typeof value.previewToken === 'string' && /^[a-f0-9]{64}$/.test(value.previewToken)
         && ['candidateCount', 'rowCount', 'estimatedBytes', 'retainedFileSessions', 'skippedBusyCount', 'skippedExistingCount']
@@ -197,7 +217,7 @@ export function receiveCodexStorageResponse(json: string): void {
   clearTimeout(request.timeout);
   if (value.success) {
     request.resolve(value.data);
-    if (operation(value.data) && isTerminalOperation(value.data) && value.data.result?.deletedSessionIds
+    if (operation(value.data) && operationSucceeded(value.data) && value.data.result?.deletedSessionIds
       && !emittedDeletions.has(value.data.operationId)) {
       emittedDeletions.add(value.data.operationId);
       completedListeners.forEach(listener => listener(value.data as CodexMaintenanceOperation));
@@ -235,8 +255,18 @@ export function operationSucceeded(value: CodexMaintenanceOperation): boolean {
   return value.state === 'COMPLETED' || value.state === 'COMPLETED_WITH_WARNINGS';
 }
 
+function createOperationId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  // Embedded pages may expose getRandomValues without the secure-context randomUUID API.
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function newMaintenanceId(): string {
-  const id = crypto.randomUUID();
+  const id = createOperationId();
   // Persist identity before sending. Host-side listing remains authoritative after a reload.
   try { localStorage.setItem('ccgui.codex-storage.last-operation.v1', id); } catch { /* Host discovery still works. */ }
   return id;
@@ -249,8 +279,18 @@ export function lastMaintenanceId(): string | null {
   } catch { return null; }
 }
 
+export function forgetMaintenanceId(id: string): void {
+  try {
+    if (lastMaintenanceId() === id) localStorage.removeItem('ccgui.codex-storage.last-operation.v1');
+  } catch { /* Host-side operation listing remains authoritative. */ }
+}
+
 export function deleteCodexStorageSessions(ids: string[], operationId = newMaintenanceId()): Promise<CodexMaintenanceOperation> {
   return storageRequest('delete_ai_storage_sessions', { sessionIds: ids, operationId });
+}
+
+export function deleteCodexHistorySessions(ids: string[], operationId = createOperationId()): Promise<CodexMaintenanceOperation> {
+  return storageRequest('delete_ai_storage_sessions', { sessionIds: ids, operationId, origin: 'history' });
 }
 
 export function subscribeCodexDeletion(listener: (operation: CodexMaintenanceOperation) => void): () => void {

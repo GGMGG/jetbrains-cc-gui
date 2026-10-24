@@ -1,6 +1,5 @@
 package com.github.claudecodegui.storage;
 
-import com.github.claudecodegui.util.PlatformUtils;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -133,6 +132,16 @@ public class CodexStorageInventoryTest {
         assertEquals("protected", Files.readString(protectedFile));
     }
 
+    @Test public void schemaReadFailuresRetainAnActionableReasonAndDisableDeletion() throws Exception {
+        var f = new CodexStorageFixture(temporary.newFolder().toPath());
+        f.rollout("readable", null, false);
+        f.sql("state_5.sqlite", "DROP TABLE threads");
+        var snapshot = new CodexStorageInventory(f.paths).snapshot();
+        assertTrue(snapshot.errors().contains("state_5.sqlite: DATABASE_SCHEMA_UNSUPPORTED"));
+        assertTrue(snapshot.sessions().get("readable").readable);
+        assertEquals("INVENTORY_INCOMPLETE", snapshot.sessions().get("readable").deletionUnavailableReason);
+    }
+
     @Test public void usageDeduplicatesHardLinksWithPhysicalIdentity() throws Exception {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         var file = f.rollout("linked", null, false);
@@ -154,9 +163,7 @@ public class CodexStorageInventoryTest {
         assertTrue(page.get("complete").getAsBoolean());
         assertTrue(page.getAsJsonArray("errors").isEmpty());
         var snapshot = inventory.snapshot();
-        String expectedUnavailable = PlatformUtils.getPlatformType() == PlatformUtils.PlatformType.WINDOWS
-                ? null : "MAINTENANCE_PLATFORM_UNSUPPORTED";
-        assertEquals(expectedUnavailable, snapshot.sessions().get("readable").deletionUnavailableReason);
+        assertNull(snapshot.sessions().get("readable").deletionUnavailableReason);
         assertNotNull(snapshot.sessions().get("00000000-0000-4000-8000-000000000001").metadataWarning);
         assertFalse(inventory.content("readable", null, 10).getAsJsonArray("records").isEmpty());
     }
@@ -217,9 +224,8 @@ public class CodexStorageInventoryTest {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("client-owned", "/project", 10);
         var directory = Files.createDirectory(f.root.resolve("thread-writer-locks"));
-        try (var channel = java.nio.channels.FileChannel.open(directory.resolve("client-owned.lock"),
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
-             var lock = channel.lock()) {
+        try (var lock = CodexStorageFileLock.tryAcquire(f.paths, directory.resolve("client-owned.lock"), true)) {
+            assertNotNull(lock);
             var snapshot = new CodexStorageInventory(f.paths).snapshot();
             assertTrue(snapshot.errors().isEmpty());
             var session = snapshot.sessions().get("client-owned");

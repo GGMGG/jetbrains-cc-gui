@@ -104,10 +104,7 @@ final class CodexStorageOrphans {
             return false;
         }
         try {
-            Path declared = Path.of(entry.declaredRollout);
-            if (!declared.isAbsolute()) {
-                throw new IOException("INVENTORY_INCOMPLETE");
-            }
+            Path declared = CodexStoragePaths.declaredRolloutPath(entry.declaredRollout);
             Files.readAttributes(declared, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             return true;
         } catch (NoSuchFileException ignored) {

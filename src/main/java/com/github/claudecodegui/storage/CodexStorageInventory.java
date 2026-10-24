@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.intellij.openapi.diagnostic.Logger;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -37,6 +38,7 @@ import java.util.regex.Pattern;
 
 /** Metadata-only cross-project inventory and bounded, on-demand content pages. */
 public final class CodexStorageInventory {
+    private static final Logger LOG = Logger.getInstance(CodexStorageInventory.class);
     private static final Gson GSON = new Gson();
     private static final int RECORD_CHARS = 32 * 1024;
     private static final Pattern ROLLOUT_ID = Pattern.compile(".*-([a-fA-F0-9]{8}-[a-fA-F0-9-]{27,36})\\.jsonl", Pattern.CASE_INSENSITIVE);
@@ -115,8 +117,7 @@ public final class CodexStorageInventory {
     }
 
     private String deletionUnavailableReason() {
-        if (com.github.claudecodegui.util.PlatformUtils.getPlatformType()
-                != com.github.claudecodegui.util.PlatformUtils.PlatformType.WINDOWS || paths.root().toString().startsWith("\\\\")) {
+        if (!CodexStoragePlatform.supportsDeletion(paths)) {
             return "MAINTENANCE_PLATFORM_UNSUPPORTED";
         }
         try (var files = Files.list(paths.root())) {
@@ -254,6 +255,16 @@ public final class CodexStorageInventory {
         return result;
     }
 
+    public Path sessionFile(String sessionId) throws IOException {
+        CodexStoragePaths.requireSessionId(sessionId);
+        Entry entry = snapshot().sessions().get(sessionId);
+        if (entry == null || entry.files.isEmpty()) {
+            throw new IOException("SESSION_FILE_NOT_FOUND");
+        }
+        paths.revalidate();
+        return paths.existingFile(entry.files.get(0));
+    }
+
     public JsonObject content(String sessionId, String cursor, int limit) throws IOException, SQLException {
         CodexStoragePaths.requireSessionId(sessionId);
         Snapshot snapshot = snapshot();
@@ -376,7 +387,7 @@ public final class CodexStorageInventory {
                         }
                     }
                 } catch (IOException | SQLException error) {
-                    errors.add(file.getFileName() + ": READ_FAILED");
+                    errors.add(readError(file, error));
                 }
             }
         }
@@ -404,8 +415,14 @@ public final class CodexStorageInventory {
                 }
             }
         } catch (IOException | SQLException error) {
-            errors.add(file.getFileName() + ": READ_FAILED");
+            errors.add(readError(file, error));
         }
+    }
+
+    private static String readError(Path file, Exception error) {
+        LOG.warn("[CodexStorage] Could not read " + file.getFileName(), error);
+        String code = CodexStorageMaintenance.errorCode(error);
+        return file.getFileName() + ": " + ("STORAGE_OPERATION_FAILED".equals(code) ? "READ_FAILED" : code);
     }
 
     private void readRollouts(Map<String, Entry> entries, List<String> errors, String directory) throws IOException {

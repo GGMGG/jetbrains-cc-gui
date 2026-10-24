@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  deleteCodexStorageSessions, newMaintenanceId, receiveCodexStorageResponse, storageRequest, subscribeCodexDeletion,
+  deleteCodexHistorySessions, deleteCodexStorageSessions, newMaintenanceId, receiveCodexStorageResponse, storageRequest, subscribeCodexDeletion,
 } from './codexStorageBridge';
 
 interface Request { requestId: string; operationId: string; provider: string; sessionIds: string[] }
@@ -13,9 +13,54 @@ const completed = (id: string) => ({ operationId: id, kind: 'DELETE_SESSIONS', s
   createdAt: '2026-10-16T00:00:00Z', updatedAt: '2026-10-16T00:00:01Z', result: { deletedSessionIds: ['one'] } });
 
 beforeEach(() => { sent.mockClear(); window.sendToJava = sent; });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('Codex storage bridge', () => {
+  it('correlates location acknowledgements and propagates missing history file errors', async () => {
+    const response = storageRequest('reveal_ai_storage_session', { sessionId: 'one' });
+    const request = lastRequest();
+    expect(sent.mock.calls.at(-1)?.[0]).toMatch(/^reveal_ai_storage_session:/);
+    expect(request).toMatchObject({ provider: 'codex', sessionId: 'one' });
+    receiveCodexStorageResponse(JSON.stringify({ ...request, action: 'reveal_ai_storage_session', success: true, data: {} }));
+    receiveCodexStorageResponse(JSON.stringify({ ...request, action: 'reveal_ai_storage_session', success: true, data: { sessionId: 'one' } }));
+    await expect(response).resolves.toEqual({ sessionId: 'one' });
+    const missing = storageRequest('reveal_ai_storage_session', { sessionId: 'deleted' });
+    receiveCodexStorageResponse(JSON.stringify({ ...lastRequest(), action: 'reveal_ai_storage_session', success: false, error: 'SESSION_FILE_NOT_FOUND' }));
+    await expect(missing).rejects.toMatchObject({ code: 'SESSION_FILE_NOT_FOUND' });
+  });
+
+  it('dispatches maintenance and history deletion when an embedded browser lacks randomUUID', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+    const id = newMaintenanceId();
+    const anotherId = newMaintenanceId();
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(anotherId).not.toBe(id);
+    expect(localStorage.getItem('ccgui.codex-storage.last-operation.v1')).toBe(anotherId);
+    const response = deleteCodexHistorySessions(['one']);
+    const request = lastRequest();
+    expect(request).toMatchObject({ origin: 'history', sessionIds: ['one'], provider: 'codex' });
+    expect(request.operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    receiveCodexStorageResponse(JSON.stringify({ action: 'delete_ai_storage_sessions', requestId: request.requestId,
+      success: true, data: completed(request.operationId) }));
+    await expect(response).resolves.toMatchObject({ state: 'COMPLETED' });
+    expect(localStorage.getItem('ccgui.codex-storage.last-operation.v1')).toBe(anotherId);
+  });
+
+  it('requires independent maintenance and deletion admission with complete target protection', async () => {
+    const response = storageRequest('get_ai_storage_mutation_status');
+    const request = lastRequest();
+    const data = { available: false, unavailableReason: 'SESSION_RUNNING', deletionAvailable: true,
+      runningSessionIds: ['active'], writerSessionIds: ['native-idle'] };
+    for (const invalid of [{ available: 'false' }, { available: false }, { available: false, unavailableReason: '' },
+      { ...data, available: true }, { ...data, deletionAvailable: 'true' }, { ...data, deletionAvailable: false },
+      { ...data, deletionUnavailableReason: 'DATABASE_BUSY' }, { ...data, runningSessionIds: undefined },
+      { ...data, writerSessionIds: [3] }]) {
+      receiveCodexStorageResponse(JSON.stringify({ ...request, action: 'get_ai_storage_mutation_status', success: true, data: invalid }));
+    }
+    receiveCodexStorageResponse(JSON.stringify({ ...request, action: 'get_ai_storage_mutation_status', success: true, data }));
+    await expect(response).resolves.toEqual(data);
+  });
+
   it('validates an orphan preview before accepting a cleanup capability', async () => {
     const response = storageRequest('preview_ai_storage_orphans');
     const request = lastRequest();
