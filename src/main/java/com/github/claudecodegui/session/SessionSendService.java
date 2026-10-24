@@ -215,6 +215,30 @@ public class SessionSendService {
             String clientMessageId,
             JsonObject nativeCodexSettings
     ) {
+        return sendMessageToProvider(channelId, input, attachments, openedFilesJson, externalAgentPrompt, fileTagPaths,
+                requestedPermissionMode, requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                clientMessageId, nativeCodexSettings, state.getTurnOwner());
+    }
+
+    public CompletableFuture<Void> sendMessageToProvider(
+            String channelId, String input, List<ClaudeSession.Attachment> attachments, JsonObject openedFilesJson,
+            String externalAgentPrompt, List<String> fileTagPaths, String requestedPermissionMode,
+            String requestedReasoningEffort, String requestedCodexFastMode, String requestedDshPreset, Object expectedTurnOwner
+    ) {
+        return sendMessageToProvider(channelId, input, attachments, openedFilesJson, externalAgentPrompt, fileTagPaths,
+                requestedPermissionMode, requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                null, null, expectedTurnOwner);
+    }
+
+    public CompletableFuture<Void> sendMessageToProvider(
+            String channelId, String input, List<ClaudeSession.Attachment> attachments, JsonObject openedFilesJson,
+            String externalAgentPrompt, List<String> fileTagPaths, String requestedPermissionMode,
+            String requestedReasoningEffort, String requestedCodexFastMode, String requestedDshPreset,
+            String clientMessageId, JsonObject nativeCodexSettings, Object expectedTurnOwner
+    ) {
+        if (!state.isCurrentTurn(expectedTurnOwner)) {
+            return CompletableFuture.completedFuture(null);
+        }
         String agentPrompt = externalAgentPrompt;
         if (agentPrompt == null) {
             agentPrompt = getAgentPrompt();
@@ -257,7 +281,8 @@ public class SessionSendService {
                     normalizedRequestedEffort,
                     effectiveCodexServiceTier,
                     clientMessageId,
-                    nativeCodexSettings
+                    nativeCodexSettings,
+                    expectedTurnOwner
             );
         }
 
@@ -304,7 +329,7 @@ public class SessionSendService {
         }
 
         return sendToClaude(channelId, input, attachments, openedFilesJson, agentPrompt,
-                effectivePermissionMode, normalizedRequestedEffort);
+                effectivePermissionMode, normalizedRequestedEffort, expectedTurnOwner);
     }
 
     public static String normalizeRequestedReasoningEffort(String effort) {
@@ -434,11 +459,12 @@ public class SessionSendService {
             String requestedReasoningEffort,
             String effectiveCodexServiceTier,
             String clientMessageId,
-            JsonObject nativeCodexSettings
+            JsonObject nativeCodexSettings,
+            Object expectedTurnOwner
     ) {
-        CompletableFuture<Void> turnCompletion = new CompletableFuture<>();
+        SessionExecutionOwnership execution = state.executionOwnershipForOwner(expectedTurnOwner);
         CodexMessageHandler handler = new CodexMessageHandler(this.state,
-                this.callbackFacade.getCallbackHandler(), clientMessageId, turnCompletion);
+                this.callbackFacade.getCallbackHandler(), clientMessageId, expectedTurnOwner);
         String accessMode = CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE;
         try {
             accessMode = new CodemossSettingsService().getCodexRuntimeAccessMode();
@@ -449,7 +475,7 @@ public class SessionSendService {
         String accessError = getCodexRuntimeAccessError(accessMode);
         if (accessError != null) {
             handler.onError(accessError);
-            return turnCompletion;
+            return CompletableFuture.completedFuture(null);
         }
 
         String contextAppend = this.contextService.buildCodexContextAppend(openedFilesJson, fileTagPaths);
@@ -457,7 +483,7 @@ public class SessionSendService {
         String finalInput = (input != null ? input : "") + contextAppend;
         String configuredModel = new CodexSettingsManager(gson).resolveModelAlias(state.getModel());
 
-        codexSDKBridge.sendMessage(
+        CompletableFuture<com.github.claudecodegui.provider.common.SDKResult> backend = codexSDKBridge.sendMessage(
                 channelId,
                 finalInput,
                 state.getSessionId(),
@@ -471,16 +497,11 @@ public class SessionSendService {
                 handler,
                 clientMessageId,
                 nativeCodexSettings
-        ).whenComplete((result, error) -> {
-            // Bridge completion remains a fallback for startup failures or missing terminal events.
-            // MESSAGE_END can finish the turn before the bridge future settles.
-            if (error != null) {
-                turnCompletion.completeExceptionally(error);
-            } else {
-                turnCompletion.complete(null);
-            }
-        });
-        return turnCompletion;
+        );
+        if (execution != null) {
+            execution.bindResult(backend);
+        }
+        return backend.thenApply(result -> null);
     }
 
     private CompletableFuture<Void> sendToGrok(
@@ -754,15 +775,19 @@ public class SessionSendService {
             JsonObject openedFilesJson,
             String agentPrompt,
             String effectivePermissionMode,
-            String requestedReasoningEffort
+            String requestedReasoningEffort,
+            Object expectedTurnOwner
     ) {
+        SessionExecutionOwnership execution = state.executionOwnershipForOwner(expectedTurnOwner);
         ClaudeMessageHandler handler = new ClaudeMessageHandler(
                 project,
                 state,
                 callbackFacade.getCallbackHandler(),
                 messageParser,
                 messageMerger,
-                gson
+                gson,
+                null,
+                expectedTurnOwner
         );
 
         Boolean streaming = readStreamingEnabled();
@@ -773,7 +798,7 @@ public class SessionSendService {
                 + ", cwd=" + state.getCwd()
                 + ", model=" + currentModel);
 
-        return claudeSDKBridge.sendMessage(
+        CompletableFuture<com.github.claudecodegui.provider.common.SDKResult> backend = claudeSDKBridge.sendMessage(
                         channelId,
                         input,
                         state.getSessionId(),
@@ -788,7 +813,11 @@ public class SessionSendService {
                         false,
                         requestedReasoningEffort != null ? requestedReasoningEffort : state.getReasoningEffort(),
                         handler
-                ).thenApply(result -> null);
+                );
+        if (execution != null) {
+            execution.bindResult(backend);
+        }
+        return backend.thenApply(result -> null);
     }
 
     private boolean readAutoOpenFileEnabled() {
