@@ -21,7 +21,7 @@ final class CodexStorageFixture {
     final AiDataProcessGate gate;
 
     CodexStorageFixture(Path base) throws Exception {
-        root = Files.createDirectory(base.resolve("codex"));
+        root = Files.createDirectory(base.resolve("codex")).toRealPath();
         coordination = base.resolve("coordination");
         gate = new AiDataProcessGate(new AiDataMigrationCoordinator(coordination));
         paths = new CodexStoragePaths(root);

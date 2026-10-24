@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { CodexAppServerClient } from './codex-appserver-client.js';
 import { readNativeHistoryPage } from './codex-native-history.js';
 import { buildTurnSettings } from './persistent-codex-service.js';
@@ -47,7 +48,10 @@ test('official CLI supports isolated native catalogs, effective permissions and 
   t.after(async () => {
     client.close();
     await client.waitForExit();
-    rmSync(root, { recursive: true, force: true });
+    const cleanupRoot = realpathSync(root);
+    assert.equal(dirname(cleanupRoot), realpathSync(tmpdir()));
+    assert.ok(basename(cleanupRoot).startsWith('codex-real-cli-'));
+    await rm(cleanupRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   await client.start();
 
