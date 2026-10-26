@@ -71,6 +71,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * Chat window instance. Coordinates UI components, session management,
@@ -116,7 +117,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
     private final WebviewEventQueue<JBCefBrowser> webviewEventQueue;
 
     private volatile boolean disposed = false;
-    private volatile boolean initialized = false;
+    private final InitialWebviewStartup initialWebviewStartup = new InitialWebviewStartup();
     private volatile boolean frontendReady = false;
     private final FrontendReadyTransitionTracker frontendReadyTransitions =
             new FrontendReadyTransitionTracker();
@@ -235,6 +236,11 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
     }
 
     public ClaudeChatWindow(Project project, boolean skipRegister) {
+        this(project, skipRegister, true);
+    }
+
+    /** Restore inactive tabs without allocating a browser until activation or remote work. */
+    public ClaudeChatWindow(Project project, boolean skipRegister, boolean initializeWebview) {
         this.project = project;
         this.claudeSDKBridge = new ClaudeSDKBridge();
         this.codexSDKBridge = new CodexSDKBridge();
@@ -496,16 +502,9 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             LOG.warn("[PetOffice] Local tab registration unavailable", error);
         }
 
-        // Delay JCEF browser creation to avoid service initialization conflicts
-        // during JBCefApp$Holder class init (ProxyMigrationService dependency).
-        // Operations that depend on browser readiness are also deferred.
-        ToolWindowManager.getInstance(this.project).invokeLater(() -> {
-            if (!this.disposed) {
-                this.webviewInitializer.createUIComponents();
-                this.initialized = true;
-                LOG.info("Window instance fully initialized, project: " + this.project.getName());
-            }
-        });
+        if (initializeWebview) {
+            ensureWebviewInitialized();
+        }
 
         if (!skipRegister) {
             registerInstance();
@@ -562,7 +561,85 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
     }
 
     public boolean isInitialized() {
-        return initialized;
+        return initialWebviewStartup.hasStarted();
+    }
+
+    private void ensureWebviewInitialized() {
+        ensureWebviewInitialized(true);
+    }
+
+    private void ensureWebviewInitialized(boolean force) {
+        initialWebviewStartup.request(
+                () -> disposed || project.isDisposed(),
+                this::isWebviewActive,
+                force,
+                action -> ToolWindowManager.getInstance(project).invokeLater(action),
+                () -> {
+                    webviewInitializer.createUIComponents();
+                    LOG.info("Window webview initialization requested, windowId=" + System.identityHashCode(this)
+                            + ", initializerId=" + System.identityHashCode(webviewInitializer)
+                            + ", project=" + project.getName());
+                });
+    }
+
+    /** Coalesce activation, hierarchy and remote-work requests before the first EDT startup. */
+    static final class InitialWebviewStartup {
+        private boolean requested;
+        private boolean forced;
+        private volatile boolean started;
+
+        boolean hasStarted() {
+            return started;
+        }
+
+        void request(BooleanSupplier disposed, BooleanSupplier active, boolean force,
+                     Consumer<Runnable> scheduler, Runnable initialize) {
+            synchronized (this) {
+                if (disposed.getAsBoolean() || started) {
+                    return;
+                }
+                forced |= force;
+                if (requested) {
+                    return;
+                }
+                requested = true;
+            }
+            try {
+                scheduler.accept(() -> {
+                    synchronized (this) {
+                        boolean eligible = false;
+                        try {
+                            eligible = !disposed.getAsBoolean() && (forced || active.getAsBoolean());
+                        } finally {
+                            if (!eligible) {
+                                requested = false;
+                                forced = false;
+                            }
+                        }
+                        if (!eligible) {
+                            return;
+                        }
+                    }
+                    try {
+                        initialize.run();
+                        started = true;
+                    } finally {
+                        if (!started) {
+                            synchronized (this) {
+                                requested = false;
+                            }
+                        }
+                    }
+                });
+            } catch (RuntimeException | LinkageError error) {
+                synchronized (this) {
+                    requested = false;
+                }
+                if (!disposed.getAsBoolean()) {
+                    throw error;
+                }
+            }
+        }
     }
 
     public Content getParentContent() {
@@ -676,6 +753,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             if (disposed || !isSelectedContent()) {
                 return;
             }
+            ensureWebviewInitialized(false);
             webviewWatchdog.markTabActivated();
             webviewInitializer.onTabActivated();
             JBCefBrowser currentBrowser = browser;
@@ -1306,6 +1384,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
         }
         rebindSurfaceRefreshWindow();
         if (mainPanel.isShowing()) {
+            ensureWebviewInitialized(false);
             resumePendingSurfaceWork("hierarchy_showing");
         }
     }
@@ -3011,16 +3090,60 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             return;
         }
         this.disposed = true;
-        if (petOfficePublisher != null) {
-            petOfficePublisher.navigator().unregister(petOfficeContentHandleId);
+        JBCefBrowser targetBrowser = this.browser;
+        try {
+            disposeWindowResources();
+        } finally {
+            // Native teardown must still run when an unrelated listener/service cleanup fails.
+            this.browser = null;
+            if (handlerContext != null) {
+                handlerContext.setDisposed(true);
+                handlerContext.setBrowser(null);
+            }
+            try {
+                webviewWatchdog.stop();
+            } catch (Exception | LinkageError error) {
+                LOG.warn("Failed to stop webview watchdog", error);
+            }
+            try {
+                if (webviewInitializer != null) {
+                    webviewInitializer.disposeBridges();
+                }
+            } catch (Exception | LinkageError error) {
+                LOG.warn("Failed to finish webview bridge cleanup", error);
+            }
+            try {
+                if (targetBrowser != null) {
+                    targetBrowser.dispose();
+                    LOG.info("Window browser disposal completed, windowId=" + System.identityHashCode(this)
+                            + ", browserId=" + System.identityHashCode(targetBrowser));
+                }
+            } catch (Exception | LinkageError error) {
+                LOG.warn("Failed to clean up browser", error);
+            }
+        }
+    }
+
+    private void disposeWindowResources() {
+        try {
+            if (petOfficePublisher != null) {
+                petOfficePublisher.navigator().unregister(petOfficeContentHandleId);
+            }
+        } catch (Exception | LinkageError error) {
+            LOG.warn("Failed to unregister Office navigation", error);
+        } finally {
             petOfficePublisher = null;
         }
-        if (petOfficeRegistration != null) {
-            petOfficeRegistration.close();
+        try {
+            if (petOfficeRegistration != null) {
+                petOfficeRegistration.close();
+            }
+        } catch (Exception | LinkageError error) {
+            LOG.warn("Failed to close Office session registration", error);
+        } finally {
             petOfficeRegistration = null;
         }
         this.webviewEventQueue.dispose();
-        JBCefBrowser targetBrowser = this.browser;
         cancelScheduledOsrSurfaceRefresh();
         surfaceRefreshCoordinator.invalidate();
         mainPanel.removeHierarchyListener(surfaceRefreshHierarchyListener);
@@ -3147,19 +3270,11 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             LOG.warn("Failed to clean up ZCode processes: " + e.getMessage());
         }
 
-        try {
-            if (targetBrowser != null) {
-                targetBrowser.dispose();
-            }
-        } catch (Exception | LinkageError e) {
-            LOG.warn("Failed to clean up browser: " + e.getMessage(), e);
-        }
-
         if (messageDispatcher != null) {
             messageDispatcher.clear();
         }
 
-        LOG.info("Window resources fully cleaned up, project: " + project.getName());
+        LOG.info("Window service cleanup completed, project: " + project.getName());
     }
 
     // ==================== Host Interface Factories ====================
@@ -3396,7 +3511,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
 
             @Override
             public boolean isDisposed() {
-                return disposed;
+                return disposed || project.isDisposed();
             }
 
             @Override
