@@ -30,7 +30,7 @@ public class CodexConfigCompatibilityNativeTest {
     public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
-    public void migratedConfigPassesNativeStrictValidationAndPreservesNetworkSettings() throws Exception {
+    public void pluginMetadataSeparationPassesNativeStrictValidationAndPreservesNetworkSettings() throws Exception {
         String configuredCommand = System.getenv("CODEX_CLI_TEST_COMMAND");
         Assume.assumeTrue("Set CODEX_CLI_TEST_COMMAND to enable native acceptance", configuredCommand != null);
         List<String> command = new ArrayList<>();
@@ -41,10 +41,10 @@ public class CodexConfigCompatibilityNativeTest {
         Path root = temporary.getRoot().toPath();
         Path home = temporary.newFolder("native home with spaces").toPath();
         Files.writeString(home.resolve("config.toml"), "model = \"gpt-6.1-sol\"\n"
-                + "disable_response_storage = true\nnetwork_access = \"enabled\"\nwindows_wsl_setup_acknowledged = true\n"
+                + "[sandbox_workspace_write]\nnetwork_access = true\n"
                 + "[model_aliases]\n\"gpt-6.1-sol\" = \"vendor/gpt-6.1-sol\"\n"
                 + "[mcp_servers.fixture]\ncommand = \"node\"\nenabled = false\n"
-                + "[profiles.fixture]\nmodel_reasoning_effort = \"medium\"\ndisable_response_storage = true\n");
+                + "[profiles.fixture]\nmodel_reasoning_effort = \"medium\"\n");
         CodexSettingsManager settings = new CodexSettingsManager(new Gson(), home);
         settings.prepareNativeConfig(() -> true);
         assertEquals("vendor/gpt-6.1-sol", settings.resolveModelAlias("gpt-6.1-sol"));

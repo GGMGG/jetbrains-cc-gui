@@ -24,6 +24,26 @@ import static org.junit.Assert.assertTrue;
 /** Checks that controls share the frontend's rule of waiting behind live sends. */
 public class CodexInteractionHandlerTest {
     @Test
+    public void settingsFailuresAlwaysReachThePageForBothSettingsEntryPoints() throws Exception {
+        for (String type : new String[]{"codex_update_settings", "set_codex_approval_preset"}) {
+            CodexSDKBridge bridge = new CodexSDKBridge() {
+                @Override
+                public JsonObject updateCodexSettings(String channel, String cwd, JsonObject settings) {
+                    throw new IllegalStateException("fixture configuration failure");
+                }
+            };
+            RecordingJs callbacks = new RecordingJs();
+            HandlerContext context = new HandlerContext(null, null, bridge, null, callbacks);
+            new CodexInteractionHandler(context).handle(type, "codex_update_settings".equals(type) ? "{}" : "request");
+            JsonObject response = callbacks.results.poll(5, TimeUnit.SECONDS);
+            assertNotNull(type, response);
+            assertTrue(type, response.has("error"));
+            assertEquals("codex_update_settings", response.get("requestType").getAsString());
+            assertTrue(response.get("requestedSettings").isJsonObject());
+        }
+    }
+
+    @Test
     public void ideAnswerContinuesRemoteTaskWithoutAlsoEnqueuingInTheBrowser() throws Exception {
         for (boolean remote : new boolean[]{false, true}) {
             CodexSDKBridge bridge = new CodexSDKBridge() {
