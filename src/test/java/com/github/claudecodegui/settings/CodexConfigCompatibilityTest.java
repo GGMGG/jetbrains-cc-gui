@@ -30,15 +30,15 @@ public class CodexConfigCompatibilityTest {
     public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
-    public void migratesLegacyConfigAndPreservesLocalFeaturesAndOriginalBackup() throws Exception {
+    public void separatesPluginAliasesAndPreservesUserSettingsAndOriginalBackup() throws Exception {
         CodexSettingsManager manager = manager(LEGACY_CONFIG);
         manager.prepareNativeConfig(() -> true);
 
         String nativeConfig = Files.readString(manager.getConfigTomlPath());
-        assertFalse(nativeConfig.contains("disable_response_storage"));
-        assertFalse(nativeConfig.contains("windows_wsl_setup_acknowledged"));
+        assertEquals(Boolean.TRUE, Toml.parse(nativeConfig).getBoolean("disable_response_storage"));
+        assertEquals(Boolean.TRUE, Toml.parse(nativeConfig).getBoolean("windows_wsl_setup_acknowledged"));
         assertFalse(nativeConfig.contains("model_aliases"));
-        assertEquals(Boolean.TRUE, Toml.parse(nativeConfig).getBoolean("sandbox_workspace_write.network_access"));
+        assertEquals("enabled", Toml.parse(nativeConfig).getString("network_access"));
         assertEquals("node", Toml.parse(nativeConfig).getString("mcp_servers.fixture.command"));
         assertEquals(1, Toml.parse(nativeConfig).getArray("skills.config").size());
         assertEquals(LEGACY_CONFIG, Files.readString(sibling(manager, CodexSettingsManager.CLI_MIGRATION_BACKUP_FILE_NAME)));
@@ -65,10 +65,10 @@ public class CodexConfigCompatibilityTest {
                     + "[profiles.fixture]\nnetwork_access = \"disabled\"\ndisable_response_storage = true\n");
             manager.prepareNativeConfig(() -> true);
             var config = Toml.parse(Files.readString(manager.getConfigTomlPath()));
-            assertEquals("true".equals(value), config.getBoolean("sandbox_workspace_write.network_access"));
+            assertEquals("\"disabled\"".equals(value) ? "disabled" : Boolean.valueOf(value), config.get("network_access"));
             assertEquals("disabled", config.getString("profiles.fixture.network_access"));
             assertFalse(config.getTable("profiles.fixture").contains("sandbox_workspace_write"));
-            assertFalse(config.getTable("profiles.fixture").contains("disable_response_storage"));
+            assertEquals(Boolean.TRUE, config.getBoolean("profiles.fixture.disable_response_storage"));
         }
     }
 
@@ -93,7 +93,40 @@ public class CodexConfigCompatibilityTest {
             return true;
         });
         assertEquals(LEGACY_CONFIG, Files.readString(sibling(manager, CodexSettingsManager.CLI_MIGRATION_BACKUP_FILE_NAME)));
-        assertFalse(Files.readString(path).contains("disable_response_storage"));
+        assertEquals(Boolean.TRUE, Toml.parse(Files.readString(path)).getBoolean("disable_response_storage"));
+    }
+
+    @Test
+    public void repeatedMetadataSeparationRetainsEachOriginalWithoutOverwritingTheFirstBackup() throws Exception {
+        CodexSettingsManager manager = manager(LEGACY_CONFIG);
+        manager.prepareNativeConfig(() -> true);
+        String replacement = LEGACY_CONFIG.replace("disable_response_storage = true", "disable_response_storage = false");
+        Files.writeString(manager.getConfigTomlPath(), replacement);
+        manager.prepareNativeConfig(() -> true);
+        assertEquals(LEGACY_CONFIG, Files.readString(sibling(manager, CodexSettingsManager.CLI_MIGRATION_BACKUP_FILE_NAME)));
+        try (var files = Files.list(manager.getConfigTomlPath().getParent())) {
+            var backups = files.filter(path -> path.getFileName().toString().startsWith("config.toml.pre-cli-migration.")
+                    && path.getFileName().toString().endsWith(".bak")).toList();
+            assertEquals(2, backups.size());
+            assertTrue(backups.stream().anyMatch(path -> {
+                try {
+                    return replacement.equals(Files.readString(path));
+                } catch (IOException error) {
+                    throw new java.io.UncheckedIOException(error);
+                }
+            }));
+        }
+    }
+
+    @Test
+    public void ordinaryReadsAndWritesDoNotMigrateUserOrProfileSettings() throws Exception {
+        CodexSettingsManager manager = manager("disable_response_storage = true\nnetwork_access = \"enabled\"\n"
+                + "windows_wsl_setup_acknowledged = true\n[profiles.fixture]\ndisable_response_storage = false\nnetwork_access = false\n");
+        Map<String, Object> before = manager.readConfigToml();
+        manager.updateConfigToml(config -> { config.put("model", "test-model"); return true; });
+        Map<String, Object> after = manager.readConfigToml();
+        for (String key : before.keySet()) assertEquals(before.get(key), after.get(key));
+        assertFalse(Files.exists(sibling(manager, CodexSettingsManager.CLI_MIGRATION_BACKUP_FILE_NAME)));
     }
 
     @Test
@@ -137,7 +170,7 @@ public class CodexConfigCompatibilityTest {
         manager.transitionProvider(second, null, true, () -> { });
         assertEquals("vendor/gpt-6.1-sol", manager.resolveModelAlias("gpt-6.1-sol"));
         assertFalse(Files.readString(manager.getConfigTomlPath()).contains("model_aliases"));
-        assertFalse(Files.readString(manager.getConfigTomlPath()).contains("disable_response_storage"));
+        assertTrue(Files.readString(manager.getConfigTomlPath()).contains("disable_response_storage"));
     }
 
     @Test
@@ -180,8 +213,7 @@ public class CodexConfigCompatibilityTest {
         assertEquals("enabled", input.get("network_access"));
         assertTrue(input.containsKey("model_aliases"));
         assertEquals("alias", manager.resolveModelAlias("gpt-6.1-sol"));
-        assertEquals(Boolean.TRUE, Toml.parse(Files.readString(manager.getConfigTomlPath()))
-                .getBoolean("sandbox_workspace_write.network_access"));
+        assertEquals("enabled", Toml.parse(Files.readString(manager.getConfigTomlPath())).getString("network_access"));
     }
 
     private CodexSettingsManager manager(String config) throws IOException {

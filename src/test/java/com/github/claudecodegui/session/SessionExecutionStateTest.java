@@ -178,6 +178,10 @@ public class SessionExecutionStateTest {
         assertEquals(before, state.getExecutionSnapshot());
         assertTrue(state.isCurrentTurn(owner));
         state.setSessionId("different-history-session");
+        assertEquals(before, state.getExecutionSnapshot());
+        assertTrue(state.isCurrentTurn(owner));
+        state.getExecutionState().finish(state.executionTurnForOwner(owner), SessionExecutionState.Outcome.SUCCEEDED);
+        state.setSessionId("idle-replacement");
         assertNotEquals(before.bindingEpoch(), state.getExecutionSnapshot().bindingEpoch());
         assertFalse(state.isCurrentTurn(owner));
     }
@@ -226,7 +230,7 @@ public class SessionExecutionStateTest {
     @Test
     public void rebindingClearsRetiredTurnFlagsButPreservesClaimedHistoryLoading() {
         for (boolean historyLoading : new boolean[]{false, true}) {
-            for (String change : new String[]{"provider", "session", "restored", "runtime"}) {
+            for (String change : new String[]{"provider", "restored", "runtime"}) {
                 SessionState state = new SessionState();
                 state.setSessionId("original");
                 Object owner = state.beginTurn();
@@ -236,7 +240,6 @@ public class SessionExecutionStateTest {
                 }
                 switch (change) {
                     case "provider" -> state.setProvider("codex");
-                    case "session" -> state.setSessionId("replacement");
                     case "restored" -> state.setRestoredSessionId("replacement");
                     case "runtime" -> state.rotateRuntimeSessionEpoch();
                     default -> throw new AssertionError(change);

@@ -155,7 +155,7 @@ public class HistoryDeleteServiceTest {
         RecordingClaudeSession matching = new RecordingClaudeSession("session-1", "codex");
         HistoryDeleteService.quiesceActiveSessionForDeletion(
                 matching, Collections.singleton("session-1"), "codex").join();
-        assertTrue(matching.interrupted);
+        assertFalse(matching.interrupted);
 
         RecordingClaudeSession otherSession = new RecordingClaudeSession("session-2", "codex");
         HistoryDeleteService.quiesceActiveSessionForDeletion(
@@ -170,7 +170,7 @@ public class HistoryDeleteServiceTest {
 
     @Test
     public void failedQuiesceDoesNotStartDeletionContinuation() {
-        RecordingClaudeSession matching = new RecordingClaudeSession("session-1", "codex") {
+        RecordingClaudeSession matching = new RecordingClaudeSession("session-1", "claude") {
             @Override
             public CompletableFuture<Void> interrupt() {
                 CompletableFuture<Void> failed = new CompletableFuture<>();
@@ -181,7 +181,7 @@ public class HistoryDeleteServiceTest {
         AtomicBoolean deletionStarted = new AtomicBoolean(false);
 
         CompletableFuture<Void> deletion = HistoryDeleteService.quiesceActiveSessionForDeletion(
-                matching, Collections.singleton("session-1"), "codex")
+                matching, Collections.singleton("session-1"), "claude")
                 .thenRun(() -> deletionStarted.set(true));
 
         try {
@@ -198,7 +198,7 @@ public class HistoryDeleteServiceTest {
         CompletableFuture<JsonObject> released = new CompletableFuture<>();
         CodexSDKBridge bridge = new CodexSDKBridge() {
             @Override
-            public CompletableFuture<JsonObject> releaseCodexThread(String channelId, String cwd, String threadId) {
+            public CompletableFuture<JsonObject> releaseIdleCodexThread(String channelId, String cwd, String threadId) {
                 assertEquals("session-1", threadId);
                 return released;
             }
@@ -207,7 +207,7 @@ public class HistoryDeleteServiceTest {
             RecordingClaudeSession matching = new RecordingClaudeSession("session-1", "codex");
             var deletion = HistoryDeleteService.quiesceActiveSessionForDeletion(
                     matching, List.of("session-1"), "codex", bridge);
-            assertTrue(matching.interrupted);
+            assertFalse(matching.interrupted);
             assertFalse(deletion.isDone());
             released.complete(new JsonObject());
             deletion.join();
@@ -217,16 +217,72 @@ public class HistoryDeleteServiceTest {
     }
 
     @Test
+    public void activeCodexDeletionIsRejectedWithoutInterruptingItsTurnOrReleasingTheWriter() {
+        RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+        Object owner = session.getState().beginTurn();
+        AtomicBoolean released = new AtomicBoolean();
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public CompletableFuture<JsonObject> releaseIdleCodexThread(String channel, String cwd, String thread) {
+                released.set(true);
+                return CompletableFuture.completedFuture(new JsonObject());
+            }
+        };
+        var failure = assertThrows(CompletionException.class, () -> HistoryDeleteService.quiesceActiveSessionForDeletion(
+                session, List.of("session-1"), "codex", bridge).join());
+        assertEquals("SESSION_RUNNING", failure.getCause().getMessage());
+        assertFalse(session.interrupted);
+        assertFalse(released.get());
+        assertTrue(session.getState().isCurrentTurn(owner));
+    }
+
+    @Test
+    public void nativeBusyRefusalDoesNotFallBackToInterruptOrStartDeletion() {
+        RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public CompletableFuture<JsonObject> releaseIdleCodexThread(String channel, String cwd, String thread) {
+                JsonObject error = new JsonObject();
+                error.addProperty("error", "SESSION_RUNNING");
+                return CompletableFuture.completedFuture(error);
+            }
+        };
+        AtomicBoolean deleted = new AtomicBoolean();
+        var operation = HistoryDeleteService.quiesceActiveSessionForDeletion(session, List.of("session-1"), "codex", bridge)
+                .thenRun(() -> deleted.set(true));
+        assertThrows(CompletionException.class, operation::join);
+        assertFalse(session.interrupted);
+        assertFalse(deleted.get());
+    }
+
+    @Test
+    public void ownedThreadsInOtherWindowsAndOwnedSubagentsAreProtectedBeforeLookingAtTheSelectedRoot() {
+        for (boolean ownedByCurrentBridge : new boolean[]{false, true}) {
+            RecordingClaudeSession session = new RecordingClaudeSession("current-root", "codex");
+            CodexSDKBridge bridge = new CodexSDKBridge() {
+                @Override
+                public boolean hasCodexThreadOwner(String thread) {
+                    return "other-owned-thread".equals(thread);
+                }
+
+                @Override
+                public boolean ownsCodexThread(String thread) {
+                    return ownedByCurrentBridge;
+                }
+            };
+            var failure = assertThrows(CompletionException.class, () -> HistoryDeleteService.quiesceActiveSessionForDeletion(
+                    session, List.of("other-owned-thread"), "codex", bridge).join());
+            assertEquals("SESSION_RUNNING", failure.getCause().getMessage());
+            assertFalse(session.interrupted);
+        }
+    }
+
+    @Test
     public void abortedDeletionReloadsHistoryAfterOptimisticFrontendRemoval() throws Exception {
         HandlerContext context = new HandlerContext(null, null, null, null, null);
-        context.setSession(new RecordingClaudeSession("session-1", "codex") {
-            @Override
-            public CompletableFuture<Void> interrupt() {
-                CompletableFuture<Void> failed = new CompletableFuture<>();
-                failed.completeExceptionally(new IllegalStateException("interrupt failed"));
-                return failed;
-            }
-        });
+        RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+        session.getState().beginTurn();
+        context.setSession(session);
         RecordingHistoryLoadService historyLoadService = new RecordingHistoryLoadService(context);
         HistoryDeleteService service = new HistoryDeleteService(context, null, historyLoadService);
 

@@ -1090,6 +1090,11 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 && this.bridgeOwnerId.equals(CodexThreadOwnerRegistry.ownerOf(this.ownerScope, threadId));
     }
 
+    /** Whether any chat window in this IDE currently holds a native writer for the thread. */
+    public boolean hasCodexThreadOwner(String threadId) {
+        return threadId != null && CodexThreadOwnerRegistry.ownerOf(this.ownerScope, threadId) != null;
+    }
+
     /** Release an idle owner for deletion without cancelling a turn that started concurrently. */
     public CompletableFuture<JsonObject> releaseIdleCodexThread(String channelId, String cwd, String threadId) {
         CompletableFuture<JsonObject> release = runCodexLifecycleOperation(
@@ -1283,7 +1288,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
         params.addProperty("sessionEpoch", sessionEpoch);
         payloadWriter.accept(params);
         if ("codex.updateSettings".equals(method)) {
-            this.captureRuntimeConfiguration(params);
+            try {
+                this.captureRuntimeConfiguration(params);
+            } catch (RuntimeException error) {
+                LOG.warn("[Codex] Could not prepare the settings update", error);
+                return interactionError("Codex provider configuration could not be captured");
+            }
         }
         return this.appServerRequestExecutor.sendControlCommand(daemon, method, params, 10_000L);
     }

@@ -3,6 +3,7 @@ package com.github.claudecodegui.handler.history;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.NodeJsServiceCaller;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.dsh.DshHistoryReader;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 
@@ -193,31 +194,43 @@ class HistoryDeleteService {
             String currentProvider,
             CodexSDKBridge bridge
     ) {
-        if (session == null || sessionIds == null || sessionIds.isEmpty()) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
-        String activeSessionId = session.getSessionId();
-        if (activeSessionId == null
+        String activeSessionId = session == null || !Objects.equals(session.getProvider(), currentProvider)
+                ? null : session.getSessionId();
+        if ("codex".equals(currentProvider) && bridge != null) {
+            for (String target : sessionIds) {
+                if (bridge.hasCodexThreadOwner(target)
+                        && (!Objects.equals(target, activeSessionId) || !bridge.ownsCodexThread(target))) {
+                    return CompletableFuture.failedFuture(new java.io.IOException("SESSION_RUNNING"));
+                }
+            }
+        }
+        if (session == null || activeSessionId == null
                 || !sessionIds.contains(activeSessionId)
                 || !Objects.equals(session.getProvider(), currentProvider)) {
             return CompletableFuture.completedFuture(null);
         }
         String channelId = session.getChannelId();
         String cwd = session.getCwd();
-        CompletableFuture<Void> stopped = session.interrupt();
-        if (!"codex".equals(currentProvider) || bridge == null) {
-            return stopped;
+        if (!"codex".equals(currentProvider)) {
+            return session.interrupt();
         }
-        return stopped.thenCompose(ignored -> {
+        if (session.isBusy() || session.getState().getExecutionState().hasLiveTurn()) {
+            return CompletableFuture.failedFuture(new java.io.IOException("SESSION_RUNNING"));
+        }
+        if (bridge == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return bridge.releaseIdleCodexThread(channelId, cwd, activeSessionId).thenAccept(result -> {
+            if (result == null || result.has("error")) {
+                throw new java.util.concurrent.CompletionException(new java.io.IOException("SESSION_RUNNING"));
+            }
             if (!Objects.equals(activeSessionId, session.getSessionId())
                     || !Objects.equals(currentProvider, session.getProvider()) || !Objects.equals(channelId, session.getChannelId())) {
-                return CompletableFuture.failedFuture(new java.io.IOException("SELECTED_DATA_CHANGED"));
+                throw new java.util.concurrent.CompletionException(new java.io.IOException("SELECTED_DATA_CHANGED"));
             }
-            return bridge.releaseCodexThread(channelId, cwd, activeSessionId).thenAccept(result -> {
-                if (result == null || result.has("error")) {
-                    throw new java.util.concurrent.CompletionException(new java.io.IOException("SESSION_RUNNING"));
-                }
-            });
         });
     }
 

@@ -381,8 +381,9 @@ public class SessionState {
     public void setSessionId(String sessionId) {
         synchronized (messageStateLock) {
             if (!java.util.Objects.equals(this.sessionId, sessionId)) {
-                // Initial provider identity discovery also preserves an already completed turn's terminal event.
-                if (this.sessionId != null || executionState.currentTurn() == null) {
+                // Native recovery may replace a provider ID mid-turn without replacing its actor.
+                // Initial identity discovery also preserves an already completed turn's terminal event.
+                if (!executionState.hasLiveTurn() && (this.sessionId != null || executionState.currentTurn() == null)) {
                     rebindExecution();
                 }
                 this.sessionId = sessionId;
