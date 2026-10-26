@@ -34,7 +34,7 @@ public class CodexProviderTransportIntegrationTest {
     public TemporaryFolder folder = new TemporaryFolder();
 
     @Test
-    public void nativeBootstrapHistoryAndChatMigrateLegacyConfigBeforeDispatch() throws Exception {
+    public void nativeBootstrapHistoryAndChatPreserveLegacyUserConfiguration() throws Exception {
         for (int entryPoint = 0; entryPoint < 3; entryPoint++) {
             try (Fixture fixture = fixture("async-question-completed")) {
                 Path home = Path.of(fixture.scope);
@@ -52,13 +52,26 @@ public class CodexProviderTransportIntegrationTest {
                     assertTrue(fixture.send().get(15, TimeUnit.SECONDS).success);
                 }
                 String migrated = Files.readString(home.resolve("config.toml"));
-                assertFalse(migrated.contains("disable_response_storage"));
+                assertTrue(migrated.contains("disable_response_storage = true"));
                 assertFalse(migrated.contains("model_aliases"));
-                assertTrue(migrated.contains("[sandbox_workspace_write]"));
+                assertTrue(migrated.contains("network_access = \"enabled\""));
                 assertEquals(legacy, Files.readString(home.resolve("config.toml.pre-cli-migration.bak")));
                 assertEquals("vendor-model", new com.github.claudecodegui.settings.CodexSettingsManager(new com.google.gson.Gson(), home)
                         .resolveModelAlias("test-model"));
             }
+        }
+    }
+
+    @Test
+    public void malformedConfigurationReturnsASettingsErrorInsteadOfThrowingOrLosingTheAcknowledgement() throws Exception {
+        try (Fixture fixture = fixture("async-question-completed")) {
+            JsonObject connected = fixture.bridge.preconnectCodex("fixture", fixture.cwd.toString(), null).get(15, TimeUnit.SECONDS);
+            assertFalse(connected.toString(), connected.has("error"));
+            Path config = Path.of(fixture.scope).resolve("config.toml");
+            Files.writeString(config, "model = [\n");
+            JsonObject result = fixture.bridge.updateCodexSettings("fixture", fixture.cwd.toString(), new JsonObject());
+            assertTrue(result.toString(), result.has("error"));
+            assertEquals("model = [\n", Files.readString(config));
         }
     }
 

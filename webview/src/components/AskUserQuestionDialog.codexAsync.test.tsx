@@ -23,8 +23,28 @@ function QuestionPage() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   delete window.onCodexRuntimeEvent;
   vi.clearAllMocks();
+});
+
+it.each([false, true])('keeps a non-blocking question answerable past five minutes, including explicit cancellation: %s', cancel => {
+  vi.useFakeTimers();
+  const { container } = render(<QuestionPage />);
+  act(() => window.onCodexRuntimeEvent?.(JSON.stringify({ kind: 'interactionRequested', interactionKey: 'long-lived',
+    dialogToken: 'long-lived-token', deliverySequence: 1,
+    payload: { method: 'item/agentMessage/requestUserInput', params: { isBlocking: false,
+      questions: [{ id: 'question-1', question: 'Still answerable?', header: '', multiSelect: false,
+        options: [{ label: 'Continue', description: '' }] }] } } })));
+  expect(container.querySelector('.countdown-timer')).toBeNull();
+  act(() => vi.advanceTimersByTime(301_000));
+  expect(screen.getByText('Still answerable?')).toBeTruthy();
+  expect(vi.mocked(sendBridgeEvent).mock.calls.filter(([name]) => name === 'codex_interaction_response')).toHaveLength(0);
+  fireEvent.click(screen.getByText('Continue'));
+  fireEvent.click(screen.getByText(cancel ? '取消' : '提交'));
+  const replies = vi.mocked(sendBridgeEvent).mock.calls.filter(([name]) => name === 'codex_interaction_response');
+  expect(replies).toHaveLength(1);
+  expect(JSON.parse(replies[0]![1]!).result).toEqual({ answers: cancel ? {} : { 'question-1': { answers: ['Continue'] } } });
 });
 
 it.each([false, true])('renders native async choices and returns the selected B or cancellation: %s', cancel => {

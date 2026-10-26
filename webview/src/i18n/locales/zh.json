@@ -1390,6 +1390,7 @@
     "confirmDelete": "确认删除",
     "deleteMessage": "确定要删除这个会话吗?此操作无法撤销。",
     "deleteSession": "删除此会话",
+    "sessionInUse": "会话正在使用中，无法删除。",
     "selectMode": "多选",
     "exitSelectMode": "退出多选",
     "selectedSessions": "已选择 {{count}} 个会话",
