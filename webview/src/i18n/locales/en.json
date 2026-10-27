@@ -1624,7 +1624,8 @@
     "allowWithRule": "Allow with this command rule",
     "allowWithNetworkRule": "Allow with this network rule",
     "codexDeliveryRetry": "Codex did not receive your choice ({{error}}). Please choose again.",
-    "codexDeliveryFailed": "Codex did not receive your choice ({{error}}). If the conversation does not continue, click Stop and send your message again."
+    "codexDeliveryFailed": "Codex did not receive your choice ({{error}}). If the conversation does not continue, click Stop and send your message again.",
+    "codexDeliveryUnconfirmed": "Codex has not confirmed your choice yet ({{error}}). It may still take effect, so do not answer again; if the conversation does not continue, click Stop and send your message again."
   },
   "askUserQuestion": {
     "title": "Claude has some questions for you",
