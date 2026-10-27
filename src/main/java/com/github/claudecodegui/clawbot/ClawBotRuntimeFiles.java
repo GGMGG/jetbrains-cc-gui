@@ -46,7 +46,7 @@ final class ClawBotRuntimeFiles {
     }
 
     Path path(String name) throws IOException {
-        if (!Set.of("gateway.auth", "leader.json", "gateway.lock").contains(name)) {
+        if (!Set.of("gateway.auth", "leader.json", "gateway.lock", "progress-settings.json").contains(name)) {
             throw new IOException("CLAWBOT_RUNTIME_FILE_INVALID");
         }
         return root.resolve(name);
