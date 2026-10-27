@@ -45,6 +45,14 @@ describe('GenericToolBlock', () => {
     expect(container.querySelector('.tool-status-indicator.error')).toBeTruthy();
   });
 
+  it('does not present a local Promise computation as a tool card', () => {
+    const code = 'Promise.resolve(ALL_TOOLS.filter(tool => /jetbrains/i.test(tool.name)))';
+    const { container } = render(<GenericToolBlock name="Promise.resolve" input={{ code }}
+      result={{ type: 'tool_result', is_error: false, content: '[]' }} />);
+    expect(container.querySelector('.task-container')).toBeNull();
+    expect(container.textContent).toBe('');
+  });
+
   it('shows text from typed native results without dumping image data as text', () => {
     const { container } = render(<GenericToolBlock name="inspect" input={{}}
       result={{ type: 'tool_result', content: [{ type: 'text', text: 'Native tool output' },

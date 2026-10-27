@@ -4,7 +4,15 @@ import {
   isToolName,
   FILE_MODIFY_TOOL_NAMES,
   EDIT_TOOL_NAMES,
+  isNonRenderedToolUse,
 } from './toolConstants';
+
+describe('local Promise computations', () => {
+  it.each([false, true])('keeps orchestration out of tool rows with streaming=%s', isStreaming => {
+    expect(isNonRenderedToolUse({ type: 'tool_use', name: 'Promise.resolve', input: { code: 'Promise.resolve(ALL_TOOLS)' } }, isStreaming)).toBe(true);
+    expect(isNonRenderedToolUse({ type: 'tool_use', name: 'exec_command', input: { cmd: 'pwd' } }, isStreaming)).toBe(false);
+  });
+});
 
 describe('normalizeToolName', () => {
   it('lowercases standard names', () => {

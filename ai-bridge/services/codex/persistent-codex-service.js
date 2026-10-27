@@ -472,7 +472,7 @@ export async function codexSendPersistent(stdinData, { titleDependencies = {}, n
     threadId: stdinData?.threadId || null,
     clientMessageId,
     settings: buildTurnSettings(stdinData) ?? undefined,
-    markerPayload: { input: buildNativeInput(stdinData) },
+    markerPayload: { input: buildNativeInput(stdinData), additionalContext: stdinData?.additionalContext },
   });
   // Capture the marker emitter so legacy markers carry this operation's
   // identity even while background events flow through the process channel.

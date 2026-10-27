@@ -1045,7 +1045,9 @@
     "previewUnavailable": "Native file preview is unavailable. You can deny or cancel this request.",
     "requestedPermissions": "Requested native permissions",
     "allowWithRule": "Allow with this command rule",
-    "allowWithNetworkRule": "Allow with this network rule"
+    "allowWithNetworkRule": "Allow with this network rule",
+    "codexDeliveryRetry": "Codex को आपका चुनाव नहीं मिला ({{error}})। कृपया फिर से चुनें।",
+    "codexDeliveryFailed": "Codex को आपका चुनाव नहीं मिला ({{error}})। अगर बातचीत आगे नहीं बढ़ती, तो रोकें पर क्लिक करके संदेश फिर से भेजें।"
   },
   "askUserQuestion": {
     "title": "Claude के पास आपके लिए कुछ प्रश्न हैं",
@@ -2005,6 +2007,14 @@
     "copied": "कॉपी किया गया",
     "openDependencySettings": "निर्भरता प्रबंधन खोलें",
     "recommended": "अनुशंसित",
+    "updateClaudeSdk": "SDK अपडेट करें",
+    "updatingClaudeSdk": "अपडेट हो रहा है...",
+    "updateClaudeSdkSuccess": "{{version}} पर अपडेट हो गया। अपना संदेश फिर से भेजें।",
+    "updateClaudeSdkFailed": "अपडेट विफल: {{error}}",
+    "updateClaudeSdkFailedUnknown": "अपडेट विफल। विवरण के लिए निर्भरता प्रबंधन खोलें।",
+    "updateClaudeSdkTimedOut": "15 मिनट बाद भी कोई परिणाम नहीं। अपडेट की स्थिति निर्भरता प्रबंधन में देखें।",
+    "updateClaudeSdkCustomCli": "SDK {{version}} पर अपडेट हो गया, लेकिन प्लगइन आपका कस्टम Claude CLI ({{path}}) चलाता है। उसे विकल्प 2 से अपडेट करें।",
+    "updateClaudeSdkAlreadyLatest": "{{version}} पहले से ही इस प्लगइन द्वारा समर्थित सबसे नया SDK है, और इस मॉडल को नए Claude Code की ज़रूरत है। नया रिलीज़ आने पर प्लगइन अपडेट करें, या कोई दूसरा मॉडल चुनें।",
     "codexWriterConflict": {
       "title": "Codex थ्रेड व्यस्त है",
       "intro": "कोई अन्य Codex टर्न या क्लाइंट इस बातचीत में लिख रहा है। यह संदेश भेजना शुरू नहीं हो सका।",
@@ -2029,6 +2039,21 @@
         "downgrade": {
           "title": "विकल्प 2: पुराने संस्करण पर वापस जाएं",
           "step0": "निर्भरता प्रबंधन में SDK संस्करण को v0.2.112 या उससे पहले के संस्करण पर स्विच करें। स्विच करने के बाद IDEA को पुनरारंभ करें।"
+        }
+      }
+    },
+    "claudeCodeVersionTooOld": {
+      "title": "Claude Code SDK इस मॉडल के लिए बहुत पुराना है",
+      "intro": "प्लगइन आपके टर्मिनल के claude कमांड के बजाय अपने SDK में शामिल Claude Code चलाता है। वह शामिल संस्करण इस मॉडल के लिए ज़रूरी संस्करण से पुराना है।",
+      "reason": "SDK प्लगइन से अलग इंस्टॉल होता है, इसलिए प्लगइन या टर्मिनल के claude कमांड को अपडेट करने से SDK अपडेट नहीं होता।",
+      "solutions": {
+        "updateSdk": {
+          "title": "विकल्प 1: Claude Code SDK अपडेट करें",
+          "step0": "समर्थित नवीनतम SDK इंस्टॉल करता है। इसके बाद प्लगइन अपनी Claude प्रक्रिया फिर से शुरू करता है, इसलिए आप तुरंत संदेश दोबारा भेज सकते हैं।"
+        },
+        "updateCustomCli": {
+          "title": "विकल्प 2: अपना कस्टम Claude CLI अपडेट करें",
+          "step0": "अगर आपने \"Claude CLI पथ (ओवरराइड)\" सेट किया है, तो प्लगइन SDK के बजाय वही बाइनरी चलाता है। उसे टर्मिनल में अपडेट करें:"
         }
       }
     },

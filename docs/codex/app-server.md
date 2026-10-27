@@ -40,6 +40,18 @@
 
 示例 NDJSON 可由 Node fixture（`persistent-codex-service.test.js`）与 Java fixture 共同解析。
 
+### IDE 上下文与用户正文
+
+`codex.send.message` 只携带用户输入；活动文件与选区行号、最多 20 个其他打开文件路径、工作区信息分别通过 `additionalContext` 的 `ide_context`、`open_tabs`、`workspace_context` 片段传递，显式文件/终端引用分别使用带序号的 `referenced_files_<index>` / `terminal_context_<index>` 片段。每片段为 `{kind:"application", value:"..."}`，随本次 operation 冻结；各片段分别使用原生长度预算，长标签列表不会截掉活动文件或挤占显式引用。片段描述编辑器状态，不断言活动文件就是问题主题，也不内联文件正文或所选代码。角色与项目模块仍使用原来的 `developerInstructions`，编辑器变化不参与运行时 fingerprint 或持久设置 revision。
+
+仅在发送包含非空上下文时，当前 client 使用同一已解析 CLI 命令和环境执行一次 `app-server generate-json-schema --out <temp> --experimental`，读取 `v2/TurnStartParams.json` 的 `additionalContext` 字段；五秒超时、命令失败或 schema 不支持均回退。结果只缓存于当前 client，替换 CLI/重启 child 后重新探测，临时 schema 在探测结束时删除。探测不创建 thread 或 turn；绝不通过失败后重发 `turn/start` 来判断兼容性。
+
+支持该实验字段时，原生 `turn/start.input` 保留原始用户正文与图片，另传 `additionalContext`。Codex 将 application 片段作为模型可见的 developer 上下文，独立于可见的 `userMessage` item；它仍可能写入原生历史，并受原生每片段约 1,000 token 的截断和相邻状态去重约束。片段更新追加到上下文，不能删除历史中已发送的旧内容。
+
+不支持时采用官方 CLI/桌面端的文本约定：`# Context from my IDE setup:` 开头放上下文，再以 `## My request for Codex:` 引出用户输入。图片相对顺序不变，text element 偏移按 UTF-8 字节调整。此回退仍把上下文存入原始用户正文，支持该约定的客户端在展示时隐藏；插件的 `UserMessageSanitizer` 同步剥离此包装，保留旧版追加上下文的历史清理能力。兼容性由目标客户端版本决定，不承诺任意旧客户端都隐藏包装。
+
+`codex-ide-context.test.js` 覆盖 schema 探测/失败回退、临时文件清理、多片段回退与媒体/UTF-8 偏移；`codex-appserver-service.test.js` 和 `persistent-codex-service.test.js` 验证逐轮冻结、单次派发、原始用户正文及运行时复用。已取消的 operation 在能力探测前退出，探测期间取消也不会创建 thread/turn。Java 定向测试验证独立上下文预算、daemon 载荷拷贝和历史显示清理。
+
 ## 持久 service 运行时状态与恢复
 
 `CodexAppServerService`（`ai-bridge/services/codex/codex-appserver-service.js`）是每个聊天宿主一实例的常驻编排层。状态与恢复语义：
@@ -133,7 +145,11 @@ GUI 的 env_key 查找使用实际 CODEX_HOME/config.toml，只读 TOML provider
 
 历史页的 begin、batch/chunk、complete/error 都由窗口 FIFO 队列传输。同一页的连续 batch/chunk 共用一个待发送项，避免大页触及 512 项恢复溢出上限时丢失中间记录；发送脚本仍按参数大小分段，执行失败后保留批次顺序并按既有重试预算处理。
 
-在 inactive、CLI/传输不可用，或原生投影遗漏工具、明文思考及 compact 前记录时，选择整个 legacy 只读 transcript；一次加载不会拼接两个来源。旧分页/整读共用 wrapper 回放器，静态 shell_command/exec_command 可显示 Bash 卡片，未知或混合 wrapper 保留通用卡片和输出。明文 reasoning summary/content 显示为可展开思考；仅加密记录保留已知思考状态，界面隐藏空占位，不显示密文，也不拆开连续工具批次。response_item 保留记录中的轮次标识，并使用 session_meta 的线程标识，让正文、思考与原生工具按同一轮合并。内部 `external_codex_apps_open_page` 标签被去除，实际用户文字与图片保留。这些显示记录不会回注模型。
+在 inactive、CLI/传输不可用，或原生投影遗漏工具、明文思考及 compact 前记录时，选择整个 legacy 只读 transcript；一次加载不会拼接两个来源。旧分页/整读共用 wrapper 回放器，静态 shell_command/exec_command 可显示 Bash 卡片，未知或结果无法归属的 wrapper 保留通用卡片和输出。明文 reasoning summary/content 显示为可展开思考；仅加密记录保留已知思考状态，界面隐藏空占位，不显示密文，也不拆开连续工具批次。response_item 保留记录中的轮次标识，并使用 session_meta 的线程标识，让正文、思考与原生工具按同一轮合并。内部 `external_codex_apps_open_page` 标签被去除，实际用户文字与图片保留。这些显示记录不会回注模型。
+
+`Promise.all` / `Promise.allSettled` 的历史结果按原数组索引关联。除 `{i, ...result}` 等索引信封外，也识别 `forEach` 和按批次数组长度遍历的 `for` 循环打印的独立索引标签（模板字符串或 `"Result " + i`），并核对随后打印的结果来自同一数组位置。标签后的数组、基本值及普通文本也保留在对应槽位，不再要求结果必须是 JSON 对象；与标签同名的返回文字仍作为数据处理。混合的 `write_stdin` 与 `exec_command` 因此可分别回放；轮询只更新原进程的命令卡片，不生成额外命令。无法确认结果归属时保留原 wrapper 与输出。
+
+批次中的非工具 `Promise.resolve(...)` 条目保留原表达式及该索引的实际结果，作为内部编排数据，不显示独立工具卡片，也不计入或打断命令分组；实时与历史展示使用相同过滤规则。回放不执行表达式，不根据本地值中的 `exit_code` 等字段推断命令状态；`Promise.all` 返回对象内的 `status` 仍属于数据，不作为 `allSettled` 状态封套解包。本地值直接展开到索引信封、缺少独立 `result` 时，保留整个 wrapper 与输出，避免把正文的 `status` / `error` 当成状态。`allSettled` 将 `r.value` 或条件分支结果放入 `result` 时，本地值也原样保留；只有源码明确按索引打印整个 settled receipt 时，才解包本地嵌套封套。内部 rejection 标记独立于结果正文，返回字段不能冒充失败状态；空数组、null 和明确 rejection 分别保留在原始消息数据中。缺少可关联的独立结果时，保留整个 wrapper 与输出。
 
 原生子代理卡片使用实际 child thread ID；历史/status 先验证 parentThreadId 祖先链，active 子线程不因父终态或旧的 completed turn 被显示为完成。跨 Tab 的显示查询只读；切换根会话后旧请求不能更新新页面。节点状态未知时继续查询，不猜测完成。
 
@@ -142,7 +158,7 @@ GUI 的 env_key 查找使用实际 CODEX_HOME/config.toml，只读 TOML provider
 ## 编辑、命令、图片和 compact 的显示
 
 - `apply_patch`（直接或旧 exec 的静态实参）与 `fileChange` 共用 Claude 的编辑标题、操作栏、diff 和默认展开设置，展示全部文件、增删行和真实状态，变化类型及移动路径保留在悬停说明。真实错误为红色状态，详情收进展开区域。混合/部分动态 wrapper 中可确认的 literal 补丁也可预览；缺少单独结果时为灰色 unknown，完整 wrapper 与输出保留。历史只用于显示，不执行补丁；hunk 只在聊天中预览，不冒充完整 old/new 文件内容。
-- `commandExecution` 的原生类型不保证提供“执行原因/summary”；已有 description/summary/title 被保留，原生批准 `reason` 与旧 `justification` 单列为批准理由。`commandActions` 的读取、列目录和搜索可形成动作摘要；不能把前一段思考或命令名编造成执行动机。
+- `commandExecution` 的原生类型不保证提供“执行原因/summary”；已有 description/summary/title 被保留，原生批准 `reason` 与旧 `justification` 单列为批准理由。`commandActions` 的读取、列目录和搜索可形成动作摘要；legacy 历史回执的 `parsed_cmd` 沿用相同显示规则（兼容 `list_files` / `listFiles`）。缺少动作摘要时直接显示命令，历史回放不再生成 `Read last lines`、`Run node` 等通用英文标签，保证批量命令的单行展示与流式一致；旧字面量数组回放同样保留 Bash 工具类型，不再按命令文本改成 Read 或 Glob。不能把前一段思考或命令名编造成执行动机。
 - `dynamicToolCall` 使用原生 namespace/tool/arguments，文本和图片结果保留为标准结果块数组。inProgress 不显示已完成，终态和 success=false 按实际状态显示。通用卡片展开可查看已有结果正文/图片，混合 wrapper 的实际错误输出也可查看。
 - MCP 的 content 保持块数组，原生 image/data/mimeType 映射为共用图片 source，structuredContent 单独保留为可读块；实时与旧历史回执共用显示约定。网页 item/started 即可显示，在所属 operation 中断或失败后补配对终态，避免持续 pending。
 - 桌面端完整附件包装在显示/复制时剥离，保留真实任务及普通文件引用。图片以正文气泡外的缩略图组显示，Codex 气泡复用 Claude 的主题色；仅图片不渲染空气泡，预览支持键盘关闭并恢复焦点。
@@ -191,6 +207,10 @@ MCP form elicitation 会把 `requestedSchema.properties` 映射成带稳定字�
 
 输出片段不表示命令完成；明确终态及空的 MCP 结果仍会收尾。失败/中断只更新当前操作尚未结束的工具，已结束回合的运行时输出缓存会释放。异步批准预览以请求实例校验租约，原生 resolved 使旧回调失效，同一 RPC ID 后续使用不受旧回调影响。
 
-旧 wrapper 仅在操作完整可确认且结果可关联时被替换。具有独立 FileChange/CommandExecution/ImageView 或结构化结果的已知混合调用恢复为共用卡片；Promise 数组接受 `i` 或 `index` 结果封套并按实际槽位配对，两者冲突时保留通用卡片。运行中命令的延迟原生完成记录和空输入轮询均更新原命令，不生成第二张卡片。`write_stdin` 的字面量输入（包括 Ctrl+C）关联已知进程，或通过原生 `process_id` 恢复对应命令；中断回执只结束原命令，后续命令保留各自结果。原生回执带进程标识时优先按该标识匹配，避免相同命令文本误关联；同批次的同名命令以结果中的 `session_id` 和回执的 `process_id` 配对，即使完成顺序相反也不交换目录、输出或状态，缺少唯一关联时保留 wrapper；旧回执缺少标识时，仅接受命令文本与线程/回合归属唯一的目标，存在同名进程或同名后续命令时保留 wrapper。输入的目标或结果无法确认时仍保留完整 wrapper。历史来源选择按已恢复的具体调用身份判断，额外 exec 数量不能覆盖完整投影。缺少独立结果的混合类型、多补丁、动态输入或不确定对象保留完整通用卡片和输出，其中静态补丁可另行灰色预览，不把共同结果归给各补丁。CRLF、顶层 Script failed 错误封套、结构化失败及未配对输入缓存预算均纳入处理。不同明确时间的 compact 记录继续独立显示。实时/历史图片共用原生 URL、legacy image_url、base64/source 和 localImage 转换，清理正文时保留附件；不完整文件变化整体回退通用卡片并保留状态。
+流式尾部传输按完整 raw 内容比较快照差异，结构签名仅用于调度节流；思考正文或原生 item 元信息变化也会扩大待发送后缀。前端应用 `updateMessageTail` 前先提交定时器中等待的完整快照，避免尾部更新的 sequence 淘汰其依赖的基线，丢失批次之间的说明、思考或编辑卡片。
+
+历史 wrapper 中相同命令在不同显式绝对工作目录执行时，可按唯一匹配的命令及目录关联原生回执；原生 `file:` URI 与对应本地路径按目录比较，已确认结果归属的进程身份仍优先。无索引并行输出中的 `session_id` 不按到达顺序分配给源码调用；这类批次仅用独立原生回执确认各命令结果。Windows 路径统一分隔符，POSIX 绝对路径中的反斜杠保留为文件名字符。相同目录、相对目录或缺少唯一目录证据时继续保留原有保守回退，不能靠完成顺序交换命令的输出。纯命令批次与包含编辑的混合批次沿用逐个工具投影及分组。
+
+旧 wrapper 仅在操作完整可确认且结果可关联时被替换。具有独立 FileChange/CommandExecution/ImageView 或结构化结果的已知混合调用恢复为共用卡片；Promise 数组接受 `i` 或 `index` 结果封套并按实际槽位配对，两者冲突时保留通用卡片。运行中命令的延迟原生完成记录和空输入轮询均更新原命令，不生成第二张卡片。`write_stdin` 的字面量输入（包括 Ctrl+C）关联已知进程，或通过原生 `process_id` 恢复对应命令；中断回执只结束原命令，后续命令保留各自结果。原生回执带进程标识时优先按该标识匹配，避免相同命令文本误关联；同批次的同名命令以结果中的 `session_id` 和回执的 `process_id` 配对，即使完成顺序相反也不交换目录、输出或状态，缺少唯一关联时保留 wrapper；旧回执缺少标识时，仅接受命令文本与线程/回合归属唯一的目标，或由显式绝对工作目录唯一确认的目标；仍有同名进程或同名后续命令无法区分时保留 wrapper。输入的目标或结果无法确认时仍保留完整 wrapper。历史来源选择按已恢复的具体调用身份判断，额外 exec 数量不能覆盖完整投影。缺少独立结果的混合类型、多补丁、动态输入或不确定对象保留完整通用卡片和输出，其中静态补丁可另行灰色预览，不把共同结果归给各补丁。CRLF、顶层 Script failed 错误封套、结构化失败及未配对输入缓存预算均纳入处理。不同明确时间的 compact 记录继续独立显示。实时/历史图片共用原生 URL、legacy image_url、base64/source 和 localImage 转换，清理正文时保留附件；不完整文件变化整体回退通用卡片并保留状态。
 
 原生控制指令不依赖共享 SDK 安装查询；/compact、/review、/diff 桥接无法派发时显示错误，不提示“已开始”或生成模型消息。目录重复 cursor/页数限制/桥接派发失败会结束 loading 并显示错误。/diff 同时排空 Git stdout/stderr，输出各自受限，结果按会话对象、sessionId 和 cwd 校验。dynamic/collab started 和失败/中断收尾进入同一工具显示路径；receiver 存在不能替代启动调用的 completed 状态，父回合的收尾也不改变仍活动的 child。

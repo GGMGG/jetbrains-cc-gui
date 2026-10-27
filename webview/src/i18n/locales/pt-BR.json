@@ -1183,7 +1183,9 @@
     "previewUnavailable": "Native file preview is unavailable. You can deny or cancel this request.",
     "requestedPermissions": "Requested native permissions",
     "allowWithRule": "Allow with this command rule",
-    "allowWithNetworkRule": "Allow with this network rule"
+    "allowWithNetworkRule": "Allow with this network rule",
+    "codexDeliveryRetry": "O Codex não recebeu sua escolha ({{error}}). Escolha novamente.",
+    "codexDeliveryFailed": "O Codex não recebeu sua escolha ({{error}}). Se a conversa não continuar, clique em Parar e envie a mensagem novamente."
   },
   "askUserQuestion": {
     "title": "Claude tem algumas perguntas para você",
@@ -2148,6 +2150,14 @@
     "copied": "Copiado",
     "openDependencySettings": "Abrir Gerenciamento de Dependências",
     "recommended": "Recomendado",
+    "updateClaudeSdk": "Atualizar SDK",
+    "updatingClaudeSdk": "Atualizando...",
+    "updateClaudeSdkSuccess": "Atualizado para {{version}}. Envie sua mensagem novamente.",
+    "updateClaudeSdkFailed": "Falha na atualização: {{error}}",
+    "updateClaudeSdkFailedUnknown": "Falha na atualização. Abra Gerenciamento de Dependências para ver os detalhes.",
+    "updateClaudeSdkTimedOut": "Nenhum resultado após 15 minutos. Verifique o status da atualização em Gerenciamento de Dependências.",
+    "updateClaudeSdkCustomCli": "SDK atualizado para {{version}}, mas o plugin executa seu CLI do Claude personalizado ({{path}}). Atualize-o pela opção 2.",
+    "updateClaudeSdkAlreadyLatest": "{{version}} já é o SDK mais recente que este plugin suporta, e este modelo precisa de um Claude Code mais novo. Atualize o plugin quando sair uma nova versão ou escolha outro modelo.",
     "codexWriterConflict": {
       "title": "Thread do Codex ocupada",
       "intro": "Outro turno ou cliente do Codex está gravando nesta conversa. Não foi possível iniciar este envio.",
@@ -2172,6 +2182,21 @@
         "downgrade": {
           "title": "Opção 2: reverter para uma versão anterior",
           "step0": "Em Gerenciamento de Dependências, altere a versão do SDK para v0.2.112 ou anterior. Reinicie o IDEA após a alteração."
+        }
+      }
+    },
+    "claudeCodeVersionTooOld": {
+      "title": "O SDK do Claude Code é antigo demais para este modelo",
+      "intro": "O plugin executa o Claude Code incluído no próprio SDK, e não o comando claude do seu terminal. Essa versão incluída é anterior à exigida por este modelo.",
+      "reason": "O SDK é instalado separadamente do plugin, então atualizar o plugin ou o comando claude do terminal não o atualiza.",
+      "solutions": {
+        "updateSdk": {
+          "title": "Opção 1: atualize o SDK do Claude Code",
+          "step0": "Instala o SDK compatível mais recente. Em seguida, o plugin reinicia o processo do Claude, então você pode reenviar a mensagem logo depois."
+        },
+        "updateCustomCli": {
+          "title": "Opção 2: atualize seu CLI do Claude personalizado",
+          "step0": "Se você definiu \"Caminho do CLI do Claude (substituição)\", o plugin executa esse binário em vez do SDK. Atualize-o em um terminal:"
         }
       }
     },

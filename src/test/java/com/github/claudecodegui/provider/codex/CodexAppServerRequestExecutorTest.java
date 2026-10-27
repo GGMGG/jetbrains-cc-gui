@@ -88,6 +88,26 @@ public class CodexAppServerRequestExecutorTest {
     }
 
     @Test
+    public void timedOutControlCommandStillCarriesAnErrorMessage() {
+        CodexAppServerRequestExecutor executor = new CodexAppServerRequestExecutor(
+                Logger.getInstance(CodexAppServerRequestExecutorTest.class), ignored -> { });
+        DaemonBridge silentDaemon = new DaemonBridge(null, null, null) {
+            @Override
+            public CompletableFuture<Boolean> sendCommand(String method, JsonObject params, DaemonOutputCallback callback) {
+                return new CompletableFuture<>();
+            }
+        };
+
+        JsonObject result = executor.sendControlCommand(silentDaemon, "codex.respondInteraction", new JsonObject(), 10L);
+
+        // A null message becomes JsonNull, which Gson drops when the ack is sent
+        // to the page, so the failure would read as a success there.
+        assertTrue(result.has("error"));
+        assertTrue(result.get("error").isJsonPrimitive());
+        assertTrue(result.get("error").getAsString().contains("codex.respondInteraction"));
+    }
+
+    @Test
     public void reviewAndCompactMarkersReachTheChatConsumer() {
         RecordingDaemon daemon = new RecordingDaemon();
         AtomicInteger markers = new AtomicInteger();
@@ -98,6 +118,7 @@ public class CodexAppServerRequestExecutorTest {
         assertEquals(1, markers.get());
     }
 
+    /** Keeps the user message separate from a copied native context snapshot. */
     @Test
     public void sendParamsCarryNativeSettingsWithoutInternalMetadata() {
         JsonObject nativeSettings = new JsonObject();
@@ -106,6 +127,12 @@ public class CodexAppServerRequestExecutorTest {
         nativeSettings.addProperty("sandboxSelection", "workspace-write");
         nativeSettings.addProperty("sandboxSource", "user");
         nativeSettings.addProperty("revision", 42);
+        JsonObject additionalContext = new JsonObject();
+        JsonObject editor = new JsonObject();
+        editor.addProperty("kind", "application");
+        editor.addProperty("value", "Active file: src/Editor.java");
+        additionalContext.add("ide_context", editor);
+        nativeSettings.add("additionalContext", additionalContext);
 
         JsonObject params = CodexAppServerRequestExecutor.buildSendParams(
                 "channel", "epoch", "client", "task", "thread", "C:/repo",
@@ -115,6 +142,11 @@ public class CodexAppServerRequestExecutorTest {
         assertEquals("plan", params.get("collaborationMode").getAsString());
         assertEquals("request", params.get("approvalPreset").getAsString());
         assertEquals("workspace-write", params.get("sandboxSelection").getAsString());
+        assertEquals("task", params.get("message").getAsString());
+        assertEquals(additionalContext, params.getAsJsonObject("additionalContext"));
+        editor.addProperty("value", "changed after enqueue");
+        assertEquals("Active file: src/Editor.java",
+                params.getAsJsonObject("additionalContext").getAsJsonObject("ide_context").get("value").getAsString());
         assertTrue(!params.has("sandboxSource"));
         assertTrue(!params.has("revision"));
         // Managed credentials are resolved daemon-side; they never travel per request.

@@ -5,6 +5,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** Verifies native Codex control commands fail truthfully before a thread exists. */
@@ -22,5 +23,19 @@ public class CodexSDKBridgeCommandTest {
 
         assertTrue(result.has("error"));
         assertTrue(result.get("error").getAsString().contains("Start a Codex conversation"));
+    }
+
+    @Test
+    public void answeringAnUnknownInteractionIsMarkedNotRetryable() throws Exception {
+        CodexSDKBridge bridge = new CodexSDKBridge(temporaryFolder.newFolder("sessions").toPath());
+        JsonObject decision = new JsonObject();
+        decision.addProperty("decision", "accept");
+
+        JsonObject result = bridge.respondCodexInteraction(
+                "channel", temporaryFolder.getRoot().getAbsolutePath(), "missing-key", "missing-token", decision);
+
+        assertTrue(result.has("error"));
+        assertTrue(result.has("retryable"));
+        assertFalse(result.get("retryable").getAsBoolean());
     }
 }

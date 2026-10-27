@@ -63,6 +63,7 @@ function makeService({
       };
       client = new CodexAppServerClient({
         command: ['in-process-peer'],
+        contextSupportProbe: async () => true,
         ...clientOpts,
         spawnFn: () => ({
           stdin: clientToPeer,
@@ -84,6 +85,88 @@ function makeService({
 function eventsOf(events, kind) {
   return events.filter((event) => event.kind === kind);
 }
+
+test('editor context stays operation-scoped and separate from native user input', async () => {
+  let probes = 0;
+  const { service, dispatched } = makeService({ clientOpts: { contextSupportProbe: async () => { probes += 1; return true; } } });
+  const context = { ide_context: { kind: 'application', value: 'Active file: First.java' } };
+  try {
+    const first = service.send({ input: [{ type: 'text', text: 'first' }], additionalContext: context });
+    context.ide_context.value = 'Active file: Next.java';
+    const second = service.send({ input: [{ type: 'text', text: 'second' }], additionalContext: context });
+    assert.equal((await first).outcome, 'completed');
+    assert.equal((await second).outcome, 'completed');
+    const turns = dispatched.filter(entry => entry.method === 'turn/start');
+    assert.deepEqual(turns.map(entry => entry.params.input), ['first', 'second'].map(text => [{ type: 'text', text }]));
+    assert.deepEqual(turns.map(entry => entry.params.additionalContext.ide_context.value), ['Active file: First.java', 'Active file: Next.java']);
+    assert.equal(probes, 1);
+    await service.resetRuntime();
+    await service.send({ input: [{ type: 'text', text: 'cold' }], additionalContext: context });
+    assert.equal(probes, 2, 'a replacement executable must be probed again');
+  } finally { await service.resetRuntime(); }
+});
+
+test('legacy editor context is prefixed once without retrying turn/start', async () => {
+  const { service, dispatched } = makeService({ clientOpts: { contextSupportProbe: async () => false } });
+  try {
+    await service.send({ input: [{ type: 'text', text: 'inspect' }],
+      additionalContext: { ide_context: { kind: 'application', value: 'Active file: App.java' } } });
+    const turns = dispatched.filter(entry => entry.method === 'turn/start');
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0].params.additionalContext, undefined);
+    assert.match(turns[0].params.input[0].text, /^# Context from my IDE setup:\n/);
+    assert.match(turns[0].params.input[0].text, /\n## My request for Codex:\ninspect$/);
+  } finally { await service.resetRuntime(); }
+});
+
+test('stopping during schema discovery cannot create a thread or send a turn', async () => {
+  let releaseProbe;
+  let announceProbe;
+  const probing = new Promise(resolveProbe => { announceProbe = resolveProbe; });
+  const { service, dispatched } = makeService({ clientOpts: { contextSupportProbe: () => {
+    announceProbe();
+    return new Promise(resolveProbe => { releaseProbe = resolveProbe; });
+  } } });
+  try {
+    const pending = service.send({ input: [{ type: 'text', text: 'cancel this' }],
+      additionalContext: { ide_context: { kind: 'application', value: 'App.java' } } });
+    await probing;
+    service.stopOperation(service.activeOperationId);
+    assert.equal((await pending).outcome, 'cancelled');
+    releaseProbe(true);
+    await new Promise(resolveTick => setImmediate(resolveTick));
+    assert.equal(dispatched.some(entry => ['thread/start', 'thread/resume', 'turn/start'].includes(entry.method)), false);
+  } finally { releaseProbe?.(false); await service.resetRuntime(); }
+});
+
+test('an immediately cancelled send never starts schema discovery', async () => {
+  let probes = 0;
+  const { service, dispatched } = makeService({ clientOpts: { contextSupportProbe: async () => { probes += 1; return true; } } });
+  try {
+    await service.ensureRuntime();
+    const pending = service.send({ input: [{ type: 'text', text: 'cancel immediately' }],
+      additionalContext: { ide_context: { kind: 'application', value: 'App.java' } } });
+    service.stopOperation(service.activeOperationId);
+    assert.equal((await pending).outcome, 'cancelled');
+    await new Promise(resolveTick => setImmediate(resolveTick));
+    assert.equal(probes, 0);
+    assert.equal(dispatched.some(entry => ['thread/start', 'turn/start'].includes(entry.method)), false);
+  } finally { await service.resetRuntime(); }
+});
+
+test('empty editor state never starts a schema probe or reuses the preceding context', async () => {
+  let probes = 0;
+  const { service, dispatched } = makeService({ clientOpts: { contextSupportProbe: async () => { probes += 1; return true; } } });
+  try {
+    await service.send({ input: [{ type: 'text', text: 'with context' }],
+      additionalContext: { ide_context: { kind: 'application', value: 'App.java' } } });
+    await service.send({ input: [{ type: 'text', text: 'without context' }], additionalContext: {} });
+    const turns = dispatched.filter(entry => entry.method === 'turn/start');
+    assert.deepEqual(turns[1].params.input, [{ type: 'text', text: 'without context' }]);
+    assert.equal(turns[1].params.additionalContext, undefined);
+    assert.equal(probes, 1);
+  } finally { await service.resetRuntime(); }
+});
 
 test('restored usage cannot steal sends around a manual compaction', async () => {
   const markers = [];

@@ -42,6 +42,24 @@ const {
 
 setCodexPristineBaseEnv({ ...process.env, CODEX_HOME: join(testCwd, 'native-home') });
 
+test('daemon sends keep changing editor context separate without rebuilding the runtime', async () => {
+  const channelId = 'editor-context';
+  const data = { channelId, cwd: testCwd, codexCommandPrefix: peerCommandPrefix('editor-context') };
+  for (const [message, file] of [['inspect the selection', 'App.java'], ['look here now', 'Service.java']]) {
+    const result = await codexSendPersistent({ ...data, message,
+      additionalContext: { ide_context: { kind: 'application', value: `Active file: ${file}` } } },
+    { titleDependencies: { enabled: async () => false } });
+    assert.equal(result.outcome, 'completed');
+  }
+  const items = codexEvents().filter(event => event.channelId === channelId && event.kind === 'itemCompleted');
+  const users = items.filter(event => event.payload.item.type === 'userMessage');
+  assert.deepEqual(users.map(event => event.payload.item.content), ['inspect the selection', 'look here now']
+    .map(text => [{ type: 'text', text }]));
+  const turns = items.filter(event => event.payload.item.type === 'agentMessage').map(event => JSON.parse(event.payload.item.text));
+  assert.deepEqual(turns.map(turn => turn.additionalContext.ide_context.value), ['Active file: App.java', 'Active file: Service.java']);
+  assert.ok(items.every(event => event.runtimeGeneration === 1));
+});
+
 // The webview mirrors this mapping when it derives an access scope from the
 // permission mode (deriveCodexAccessScopeFromMode). A drift here is what made a
 // Full Auto session keep running inside the workspace sandbox.

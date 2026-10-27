@@ -81,6 +81,43 @@ public class HistoryMessageInjectorTest {
         }
     }
 
+    /** Legacy fallback commands use their arguments unless an explicit summary was recorded. */
+    @Test
+    public void legacyFallbackKeepsCommandLabelsWithTheirActualArguments() {
+        JsonObject message = CodexExecHistoryReplay.createToolUseMessage("command-labels", List.of(
+                new CodexExecHistoryReplay.Command("git diff -- src", null, null, null, null),
+                new CodexExecHistoryReplay.Command("node scripts/verify.mjs", "Verify output", null, null, null)), null);
+        JsonArray blocks = message.getAsJsonObject("raw").getAsJsonArray("content");
+        JsonObject bareInput = blocks.get(0).getAsJsonObject().getAsJsonObject("input");
+        assertEquals("git diff -- src", bareInput.get("command").getAsString());
+        assertFalse(bareInput.has("description"));
+        assertEquals("Verify output", blocks.get(1).getAsJsonObject().getAsJsonObject("input").get("description").getAsString());
+    }
+
+    /** Mapped literal commands use the same command cards as native execution, including file reads and searches. */
+    @Test
+    public void legacyMappedCommandsKeepTheirCommandToolIdentity() {
+        JsonArray records = new JsonArray();
+        records.add(customToolCall("2026-10-23T00:00:00Z", "mapped-commands", "exec", """
+                const commands = [
+                  {command:'cat CLAUDE.md'},
+                  {command:'rg --files src'},
+                  {command:'tail -n 20 /tmp/build.log'}
+                ];
+                const results=await Promise.all(commands.map(command=>tools.shell_command(command)));
+                results.forEach(text);
+                """));
+        records.add(customToolCallOutput("2026-10-23T00:00:01Z", "mapped-commands", "done"));
+
+        List<JsonObject> messages = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(records);
+        JsonArray tools = messages.get(0).getAsJsonObject("raw").getAsJsonArray("content");
+        assertEquals(3, tools.size());
+        for (JsonElement tool : tools) {
+            assertEquals("bash", tool.getAsJsonObject().get("name").getAsString());
+            assertFalse(tool.getAsJsonObject().getAsJsonObject("input").has("description"));
+        }
+    }
+
     /**
      * The shared browser fixtures live under webview/e2e, outside the JVM test roots;
      * locate them upward so the check does not depend on the working directory.
@@ -812,6 +849,7 @@ public class HistoryMessageInjectorTest {
         assertEquals(258400, usage.get("model_context_window").getAsInt());
     }
 
+    /** Batch replay preserves executable arguments and results without replacing commands with generic labels. */
     @Test
     public void convertCodexMessagesReplaysBatchExecAsOriginalCommandGroup() {
         JsonArray messages = new JsonArray();
@@ -858,7 +896,7 @@ public class HistoryMessageInjectorTest {
         assertEquals("bash", toolUses.get(2).getAsJsonObject().get("name").getAsString());
         JsonObject firstInput = toolUses.get(0).getAsJsonObject().getAsJsonObject("input");
         assertTrue(firstInput.get("command").getAsString().startsWith("\"C:\\Windows\\System32"));
-        assertTrue(firstInput.get("description").getAsString().startsWith("Run \"C:\\Windows"));
+        assertFalse(firstInput.has("description"));
         assertEquals("\\\\wsl.localhost\\Ubuntu\\home\\demo", firstInput.get("workdir").getAsString());
         assertEquals(10000, firstInput.get("timeout_ms").getAsInt());
 
@@ -877,8 +915,9 @@ public class HistoryMessageInjectorTest {
         assertEquals("wait", getOnlyRawContentBlock(result.get(2)).get("name").getAsString());
     }
 
+    /** A replayed command keeps its arguments so the frontend can apply the live display rules. */
     @Test
-    public void convertCodexMessagesReplaysSingleExecWithLiveDescriptionAndResult() {
+    public void convertCodexMessagesReplaysSingleExecWithLiveCommandLabelAndResult() {
         JsonArray messages = new JsonArray();
         messages.add(customToolCall(
                 "2026-07-23T02:00:00.000Z",
@@ -904,7 +943,7 @@ public class HistoryMessageInjectorTest {
         assertEquals("tool_use", toolUse.get("type").getAsString());
         assertEquals("bash", toolUse.get("name").getAsString());
         assertEquals("git status", toolUse.getAsJsonObject("input").get("command").getAsString());
-        assertEquals("Check git status", toolUse.getAsJsonObject("input").get("description").getAsString());
+        assertFalse(toolUse.getAsJsonObject("input").has("description"));
         JsonObject toolResult = getOnlyRawContentBlock(result.get(1));
         assertFalse(toolResult.get("is_error").getAsBoolean());
         assertTrue(toolResult.get("content").getAsString().contains("On branch main"));

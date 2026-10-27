@@ -21,7 +21,7 @@
  */
 
 import { createInterface } from 'node:readline';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -303,6 +303,19 @@ export const SCENARIOS = {
         { id: 'restored-command', type: 'commandExecution', command: 'echo fixture',
           status: 'completed', aggregatedOutput: 'fixture', exitCode: 0 },
       ]) ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId, item } });
+      ctx.notify(turnCompleted(turnId));
+    },
+  },
+
+  'editor-context': {
+    async onTurnStart(params, ctx) {
+      const turnId = `context-turn-${ctx.currentId}`;
+      ctx.reply(ctx.currentId, { turn: { id: turnId, status: 'inProgress', items: [] } });
+      ctx.notify({ method: 'turn/started', params: { threadId: THREAD_ID, turn: { id: turnId, status: 'inProgress' } } });
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId,
+        item: { id: `user-${turnId}`, type: 'userMessage', clientId: params.clientUserMessageId, content: params.input } } });
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId,
+        item: { id: `agent-${turnId}`, type: 'agentMessage', text: JSON.stringify(params) } } });
       ctx.notify(turnCompleted(turnId));
     },
   },
@@ -1207,11 +1220,17 @@ function parseArgs(argv) {
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const args = parseArgs(process.argv.slice(2));
-  const dir = dirname(fileURLToPath(import.meta.url));
-  startPeer({
-    scenario: args.scenario,
-    trace: args.trace ? resolve(dir, args.trace) : null,
-    quiet: args.quiet,
-  });
+  if (process.argv.includes('generate-json-schema')) {
+    const directory = process.argv[process.argv.indexOf('--out') + 1];
+    mkdirSync(resolve(directory, 'v2'), { recursive: true });
+    writeFileSync(resolve(directory, 'v2', 'TurnStartParams.json'), JSON.stringify({ properties: { additionalContext: {} } }));
+  } else {
+    const args = parseArgs(process.argv.slice(2));
+    const dir = dirname(fileURLToPath(import.meta.url));
+    startPeer({
+      scenario: args.scenario,
+      trace: args.trace ? resolve(dir, args.trace) : null,
+      quiet: args.quiet,
+    });
+  }
 }

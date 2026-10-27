@@ -4,6 +4,7 @@ import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.model.NodeDetectionResult;
 import com.github.claudecodegui.util.PlatformUtils;
+import com.github.claudecodegui.util.WslPathUtil;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
@@ -14,6 +15,8 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +30,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,6 +45,9 @@ public class DependencyManager {
     private static final String DEPS_DIR_NAME = "dependencies";
     private static final String MANIFEST_FILE = "manifest.json";
     private static final String INSTALLED_MARKER = ".installed";
+    // Every chat window installs into the same dependencies directory, so installs of one SDK
+    // (e.g. the chat's update button and the Dependencies page) run one after another.
+    private static final Map<SdkDefinition, ReentrantLock> INSTALL_LOCKS = new ConcurrentHashMap<>();
 
     private final Gson gson;
     private final NodeDetector nodeDetector;
@@ -215,81 +222,79 @@ public class DependencyManager {
             String nodePath = nodeDetector.findNodeExecutable();
             String npmPath = getNpmPath(nodePath);
 
-            ProcessBuilder pb = new ProcessBuilder(buildNpmCommand(
-                    nodePath, npmPath, "view", sdk.getNpmPackage(), "version"));
-            configureProcessEnvironment(pb);
-
-            Process process = pb.start();
-            StringBuilder output = new StringBuilder();
-
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line.trim());
-                }
-            }
-
-            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return null;
-            }
-
-            if (process.exitValue() == 0) {
-                return output.toString().trim();
-            }
+            return queryRegistry(nodePath, npmPath, "view", sdk.getNpmPackage(), "version").trim();
         } catch (Exception e) {
             LOG.warn("[DependencyManager] Failed to get latest version: " + e.getMessage());
-        }
-
-        List<String> fallbackVersions = sdk.getFallbackVersions();
-        if (!fallbackVersions.isEmpty()) {
-            return fallbackVersions.get(0);
         }
 
         return null;
     }
 
     public List<String> getAvailableVersions(String sdkId) {
+        return getVersionInfo(sdkId).versions();
+    }
+
+    public record VersionQueryResult(List<String> versions, String latestVersion, String error) { }
+
+    /** Fetches the list and latest tag together, without presenting bundled recommendations as remote versions. */
+    public VersionQueryResult getVersionInfo(String sdkId) {
         SdkDefinition sdk = SdkDefinition.fromId(sdkId);
         if (sdk == null) {
-            return Collections.emptyList();
+            return new VersionQueryResult(List.of(), null, "UNKNOWN_SDK");
         }
-
         try {
             String nodePath = nodeDetector.findNodeExecutable();
             String npmPath = getNpmPath(nodePath);
-
-            ProcessBuilder pb = new ProcessBuilder(buildNpmCommand(
-                    nodePath, npmPath, "view", sdk.getNpmPackage(), "versions", "--json"));
-            configureProcessEnvironment(pb);
-
-            Process process = pb.start();
-            StringBuilder output = new StringBuilder();
-
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line);
-                }
-            }
-
-            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return Collections.emptyList();
-            }
-
-            if (process.exitValue() != 0) {
-                return Collections.emptyList();
-            }
-
-            return parseVersionList(output.toString());
+            return parseVersionInfo(queryRegistry(nodePath, npmPath, "view", sdk.getNpmPackage(), "versions", "dist-tags.latest", "--json"));
         } catch (Exception e) {
-            LOG.warn("[DependencyManager] Failed to get available versions: " + e.getMessage());
-            return Collections.emptyList();
+            String code = e.getMessage();
+            if (code == null || !code.matches("NPM_QUERY_(?:TIMEOUT|INVALID_RESPONSE|EXIT_[0-9]+(?:: [A-Z0-9_]+)?)")) {
+                code = "NPM_QUERY_FAILED";
+            }
+            LOG.warn("[DependencyManager] Failed to get available versions: " + code);
+            return new VersionQueryResult(List.of(), null, code);
+        }
+    }
+
+    static VersionQueryResult parseVersionInfo(String output) throws IOException {
+        try {
+            JsonObject metadata = JsonParser.parseString(output).getAsJsonObject();
+            List<String> versions = parseVersionList(metadata.get("versions").toString());
+            if (versions.isEmpty()) {
+                throw new IOException("NPM_QUERY_INVALID_RESPONSE");
+            }
+            String latest = metadata.has("dist-tags.latest") ? metadata.get("dist-tags.latest").getAsString() : null;
+            return new VersionQueryResult(versions, versions.contains(latest) ? latest : null, null);
+        } catch (RuntimeException error) {
+            throw new IOException("NPM_QUERY_INVALID_RESPONSE", error);
+        }
+    }
+
+    private String queryRegistry(String nodePath, String npmPath, String... arguments) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder(buildNpmCommand(nodePath, npmPath, arguments));
+        configureProcessEnvironment(builder);
+        String cache = getDependenciesDir().resolve(".npm-query-cache").toString();
+        if (NodeDetector.isWslPath(nodePath)) {
+            cache = WslPathUtil.convertToWslPath(cache);
+        }
+        return runNpmQueryWithCacheFallback(builder, 30_000, cache);
+    }
+
+    /** Retry cache access failures once using plugin-owned storage, preserving registry/auth/proxy settings. */
+    static String runNpmQueryWithCacheFallback(ProcessBuilder builder, long timeoutMillis, String cache) throws Exception {
+        long started = System.nanoTime();
+        try {
+            return runNpmQuery(builder, timeoutMillis);
+        } catch (IOException error) {
+            if (error.getMessage() == null || !error.getMessage().matches("NPM_QUERY_EXIT_[0-9]+: (?:EPERM|EACCES)")) {
+                throw error;
+            }
+            long remaining = timeoutMillis - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            if (remaining <= 0) {
+                throw new IOException("NPM_QUERY_TIMEOUT");
+            }
+            builder.command().add("--cache=" + cache);
+            return runNpmQuery(builder, remaining);
         }
     }
 
@@ -299,6 +304,56 @@ public class DependencyManager {
             return Collections.emptyList();
         }
         return sdk.getFallbackVersions();
+    }
+
+    /** Drains both pipes while enforcing the deadline, including a stalled npm registry request. */
+    static String runNpmQuery(ProcessBuilder builder, long timeoutMillis) throws Exception {
+        Process process = builder.start();
+        CompletableFuture<String> stdout = drainQueryOutput(process.getInputStream());
+        CompletableFuture<String> stderr = drainQueryOutput(process.getErrorStream());
+        try {
+            process.getOutputStream().close();
+            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                throw new IOException("NPM_QUERY_TIMEOUT");
+            }
+            String output = stdout.get(2, TimeUnit.SECONDS);
+            String diagnostic = stderr.get(2, TimeUnit.SECONDS);
+            if (process.exitValue() != 0) {
+                Matcher code = Pattern.compile("npm (?:ERR!|error) code ([A-Z0-9_]+)").matcher(diagnostic);
+                throw new IOException("NPM_QUERY_EXIT_" + process.exitValue() + (code.find() ? ": " + code.group(1) : ""));
+            }
+            return output;
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw error;
+        } finally {
+            if (process.isAlive()) {
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
+                process.destroyForcibly();
+            }
+            process.getInputStream().close();
+            process.getErrorStream().close();
+        }
+    }
+
+    private static CompletableFuture<String> drainQueryOutput(InputStream input) {
+        CompletableFuture<String> result = new CompletableFuture<>();
+        Thread reader = new Thread(() -> {
+            try (input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    // Keep draining noisy stderr without retaining unbounded diagnostics.
+                    output.write(buffer, 0, Math.min(read, Math.max(0, 1024 * 1024 - output.size())));
+                }
+                result.complete(output.toString(StandardCharsets.UTF_8));
+            } catch (IOException error) {
+                result.completeExceptionally(error);
+            }
+        }, "ccgui-npm-query-output");
+        reader.setDaemon(true);
+        reader.start();
+        return result;
     }
 
     /**
@@ -346,13 +401,36 @@ public class DependencyManager {
     }
 
     /**
-     * Installs an SDK at a requested version (synchronous).
+     * Installs an SDK at a requested version (synchronous). Waits while another install of the
+     * same SDK is running so two npm installs never write the same directory at once.
      */
     public InstallResult installSdkSync(String sdkId, String requestedVersion, Consumer<String> logCallback) {
         SdkDefinition sdk = SdkDefinition.fromId(sdkId);
         if (sdk == null) {
             return InstallResult.failure(sdkId, "Unknown SDK: " + sdkId, "");
         }
+
+        ReentrantLock lock = INSTALL_LOCKS.computeIfAbsent(sdk, key -> new ReentrantLock());
+        if (!lock.tryLock()) {
+            if (logCallback != null) {
+                logCallback.accept("Waiting for another installation of " + sdk.getDisplayName() + " to finish...");
+            }
+            try {
+                lock.lockInterruptibly();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return InstallResult.failure(sdkId, "Installation interrupted", "");
+            }
+        }
+        try {
+            return installSdkLocked(sdk, sdkId, requestedVersion, logCallback);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private InstallResult installSdkLocked(SdkDefinition sdk, String sdkId, String requestedVersion,
+                                           Consumer<String> logCallback) {
 
         StringBuilder logs = new StringBuilder();
         Consumer<String> log = (msg) -> {
@@ -419,6 +497,7 @@ public class DependencyManager {
             List<String> packages = buildPackageSpecs(sdk, normalizedRequestedVersion);
             int maxRetries = 2;
             InstallResult lastResult = null;
+            boolean installed = false;
 
             for (int attempt = 0; attempt <= maxRetries; attempt++) {
                 if (attempt > 0) {
@@ -471,6 +550,7 @@ public class DependencyManager {
                 int exitCode = process.exitValue();
                 if (exitCode == 0) {
                     // Installation succeeded, proceed to next steps
+                    installed = true;
                     break;
                 }
 
@@ -525,6 +605,13 @@ public class DependencyManager {
                     Thread.currentThread().interrupt();
                     return InstallResult.failure(sdkId, "Installation interrupted", logs.toString());
                 }
+            }
+
+            if (!installed) {
+                // Every attempt timed out; report it instead of falling through to success.
+                return lastResult != null
+                        ? lastResult
+                        : InstallResult.failure(sdkId, "npm install did not complete", logs.toString());
             }
 
             // 6. Create the installation marker file
