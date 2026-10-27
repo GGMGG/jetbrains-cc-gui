@@ -1185,7 +1185,8 @@
     "allowWithRule": "Allow with this command rule",
     "allowWithNetworkRule": "Allow with this network rule",
     "codexDeliveryRetry": "O Codex não recebeu sua escolha ({{error}}). Escolha novamente.",
-    "codexDeliveryFailed": "O Codex não recebeu sua escolha ({{error}}). Se a conversa não continuar, clique em Parar e envie a mensagem novamente."
+    "codexDeliveryFailed": "O Codex não recebeu sua escolha ({{error}}). Se a conversa não continuar, clique em Parar e envie a mensagem novamente.",
+    "codexDeliveryUnconfirmed": "O Codex ainda não confirmou sua escolha ({{error}}). Ela ainda pode ter efeito, então não responda de novo; se a conversa não continuar, clique em Parar e envie a mensagem novamente."
   },
   "askUserQuestion": {
     "title": "Claude tem algumas perguntas para você",
