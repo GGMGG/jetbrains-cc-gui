@@ -87,6 +87,7 @@ public class PetOfficeIpcServerTest {
             assertFalse(fake.isAlive());
             assertNotNull(captured.get());
             assertFalse(captured.get().has("token"));
+            assertFalse(captured.get().has("authProof"));
             assertFalse(captured.get().toString().contains(endpoint.token()));
             assertFalse(endpoint.toString().contains(endpoint.token()));
         }
@@ -202,6 +203,40 @@ public class PetOfficeIpcServerTest {
         }
     }
 
+    @Test
+    public void aCapturedAuthenticationCannotBeReplayedAgainstANewServerChallenge() throws Exception {
+        var registry = new PetOfficeParticipantRegistry();
+        try (var server = new PetOfficeIpcServer("host", registry, () -> true, () -> { })) {
+            JsonObject hello = new JsonObject();
+            hello.addProperty("schemaVersion", PetOfficeEndpoint.VERSION);
+            hello.addProperty("leaderEpoch", server.endpoint().leaderEpoch());
+            hello.addProperty("connectionEpoch", UUID.randomUUID().toString());
+            hello.addProperty("requestId", UUID.randomUUID().toString());
+            hello.addProperty("instanceId", "idea");
+            hello.addProperty("type", "HELLO");
+            JsonObject captured;
+            try (var peer = new Socket("127.0.0.1", server.endpoint().port())) {
+                peer.setSoTimeout(3000);
+                PetOfficeIpcFrameCodec.write(peer.getOutputStream(), hello);
+                captured = PetOfficeIpcFrameCodec.read(peer.getInputStream());
+                captured.addProperty("type", "AUTH");
+                captured.addProperty("authProof", PetOfficeIpcAuthentication.proof(server.endpoint(), "challenge-client", "idea",
+                        hello.get("connectionEpoch").getAsString(), hello.get("requestId").getAsString(), captured.get("serverNonce").getAsString()));
+                PetOfficeIpcFrameCodec.write(peer.getOutputStream(), captured);
+                assertEquals("WELCOME", PetOfficeIpcFrameCodec.read(peer.getInputStream()).get("type").getAsString());
+            }
+            try (var replay = new Socket("127.0.0.1", server.endpoint().port())) {
+                replay.setSoTimeout(3000);
+                PetOfficeIpcFrameCodec.write(replay.getOutputStream(), hello);
+                var next = PetOfficeIpcFrameCodec.read(replay.getInputStream());
+                assertNotEquals(captured.get("serverNonce"), next.get("serverNonce"));
+                PetOfficeIpcFrameCodec.write(replay.getOutputStream(), captured);
+                assertEquals(-1, replay.getInputStream().read());
+            }
+            assertTrue(registry.view("host", server.endpoint().leaderEpoch()).snapshot().sources().isEmpty());
+        }
+    }
+
     private static final class RawPeer implements AutoCloseable {
         private final PetOfficeEndpoint endpoint;
         private final String owner;
@@ -216,8 +251,7 @@ public class PetOfficeIpcServerTest {
             JsonObject hello = new JsonObject();
             hello.addProperty("instanceId", owner);
             JsonObject packet = packet("HELLO", hello);
-            packet.addProperty("authProof", PetOfficeIpcAuthentication.proof(endpoint, "client", owner, epoch, packet.get("requestId").getAsString()));
-            PetOfficeIpcFrameCodec.write(socket.getOutputStream(), packet);
+            PetOfficeIpcHandshake.client(socket, endpoint, packet);
             JsonObject welcome = PetOfficeIpcFrameCodec.read(socket.getInputStream());
             assertTrue(PetOfficeIpcAuthentication.verify(endpoint, "server", owner, epoch, packet.get("requestId").getAsString(), welcome));
         }

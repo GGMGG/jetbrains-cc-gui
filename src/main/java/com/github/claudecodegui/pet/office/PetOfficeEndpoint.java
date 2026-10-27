@@ -5,7 +5,7 @@ import java.io.IOException;
 
 /** Typed endpoint metadata. The diagnostic representation never contains the authentication secret. */
 record PetOfficeEndpoint(int port, String leaderEpoch, String token, String ownerInstanceId) {
-    static final int VERSION = 3;
+    static final int VERSION = 4;
 
     @Override
     public String toString() { return "PetOfficeEndpoint[port=" + port + ", protocolVersion=" + VERSION + "]"; }
