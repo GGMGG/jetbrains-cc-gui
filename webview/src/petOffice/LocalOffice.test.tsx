@@ -3,8 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import LocalOffice from './LocalOffice';
 import type { LocalOfficeSnapshot, LocalOfficeSource } from './officeLocalModel';
 
-const bridge = vi.hoisted(() => ({ read: vi.fn(), activate: vi.fn() }));
-vi.mock('./officeLocalBridge', () => ({ readLocalOffice: bridge.read, activateLocalOfficeSource: bridge.activate }));
+const bridge = vi.hoisted(() => ({ read: vi.fn(), activate: vi.fn(), update: vi.fn() }));
+vi.mock('./officeLocalBridge', () => ({ readLocalOffice: bridge.read, activateLocalOfficeSource: bridge.activate, updateOfficeWindowPreferences: bridge.update }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
   t: (key: string, values?: Record<string, unknown>) => key === 'activate' ? `Open ${values?.title}` : key,
 }) }));
@@ -62,4 +62,17 @@ it('aborts the native read and stops polling when the page closes', async () => 
   expect(signal?.aborted).toBe(true);
   await vi.advanceTimersByTimeAsync(10000);
   expect(bridge.read).toHaveBeenCalledTimes(1);
+});
+
+it('does not replace an acknowledged setting with an older delayed scene', async () => {
+  const settings = { revision: 'initial', generation: 0, officeName: '', topmost: true, zoom: 100, recovered: false };
+  bridge.read.mockResolvedValue({ ...snapshot(), settings });
+  bridge.update.mockResolvedValue({ ...settings, revision: 'saved', generation: 1, officeName: 'Team' });
+  await mount();
+  fireEvent.click(screen.getByRole('button', { name: 'windowSettings' }));
+  fireEvent.change(screen.getByLabelText('officeName'), { target: { value: 'Team' } });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'save' })); });
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Team');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'refresh' })); });
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Team');
 });

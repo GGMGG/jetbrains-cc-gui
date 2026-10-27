@@ -17,6 +17,15 @@ export interface LocalOfficeSnapshot {
   sampledAt: number;
   capacityReached: boolean;
   sources: LocalOfficeSource[];
+  settings?: OfficeWindowSettings;
+}
+export interface OfficeWindowSettings {
+  revision: string;
+  generation: number;
+  officeName: string;
+  topmost: boolean;
+  zoom: number;
+  recovered: boolean;
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -27,6 +36,13 @@ function identifier(value: unknown): value is string {
 }
 function integer(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
 function invalid(): never { throw new Error('OFFICE_RESPONSE_INVALID'); }
+
+export function parseOfficeWindowSettings(value: unknown): OfficeWindowSettings {
+  if (!object(value) || !identifier(value.revision) || !integer(value.generation) || !text(value.officeName, 64)
+    || /[\u0000-\u001f\u007f-\u009f]/.test(value.officeName) || typeof value.topmost !== 'boolean'
+    || !integer(value.zoom) || value.zoom < 75 || value.zoom > 150 || typeof value.recovered !== 'boolean') return invalid();
+  return { revision: value.revision, generation: value.generation, officeName: value.officeName, topmost: value.topmost, zoom: value.zoom, recovered: value.recovered };
+}
 
 /** Only display metadata and opaque navigation authority enter the standalone page. */
 export function parseLocalOfficeSnapshot(value: unknown): LocalOfficeSnapshot {
@@ -50,5 +66,6 @@ export function parseLocalOfficeSnapshot(value: unknown): LocalOfficeSnapshot {
       provider: item.provider, modelLabel: item.modelLabel, phase: item.execution.phase as OfficePhase,
       interactionId: item.execution.pendingInteractionId };
   });
-  return { watermark: value.watermark, sampledAt: value.sampledAt, capacityReached: value.capacityReached, sources };
+  return { watermark: value.watermark, sampledAt: value.sampledAt, capacityReached: value.capacityReached, sources,
+    settings: value.settings === undefined ? undefined : parseOfficeWindowSettings(value.settings) };
 }
