@@ -53,9 +53,10 @@ export function validateCommand(command) {
 // cmd.exe metacharacters that allow command chaining / redirection. When a Windows .cmd
 // shim must be launched via shell:true, any arg/command containing these turns into command
 // injection (e.g. args ['-y', 'pkg & calc.exe'] -> cmd.exe also runs calc.exe).
+// Expansion and quote syntax is also refused because cmd.exe interprets it inside quotes.
 // '(' and ')' are intentionally NOT included: legitimate Windows paths such as
 // "C:\\Program Files (x86)\\..." contain them.
-const SHELL_METACHARACTER_REGEX = /[&|;<>\r\n`]/;
+const SHELL_METACHARACTER_REGEX = /[&|;<>\r\n`"%!^]/;
 
 /**
  * @param {string} value - command or argument value
