@@ -4,12 +4,14 @@
   "description": "Java bridge for Claude SDK and native Codex app-server",
   "type": "module",
   "dependencies": {
+    "qrcode": "1.5.4",
     "smol-toml": "1.9.0",
     "sql.js": "^1.12.0"
   },
   "scripts": {
     "test:claude": "node channel-manager.js claude send",
     "test:codex": "node channel-manager.js codex send",
-    "test:sdk-status": "node channel-manager.js system getSdkStatus"
+    "test:sdk-status": "node channel-manager.js system getSdkStatus",
+    "test:weixin": "node --test services/weixin/*.test.js"
   }
 }
