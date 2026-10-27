@@ -57,6 +57,16 @@ final class PetOfficePrivateFiles {
         writeBytes(name, value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8), lease);
     }
 
+    long byteLength(String name) throws IOException {
+        UserPrincipal owner = validateDirectory();
+        Path file = privatePath(name);
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) { return 0; }
+        validateFile(file, owner);
+        long length = Files.size(file);
+        if (length > limit(name)) { throw new IOException("OFFICE_ENDPOINT_INVALID"); }
+        return length;
+    }
+
     void writeBytes(String name, byte[] bytes, PetOfficeRuntimeLease lease) throws IOException {
         java.util.Objects.requireNonNull(lease, "lease");
         synchronized (lease) {
