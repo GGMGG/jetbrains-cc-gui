@@ -1562,7 +1562,9 @@
         "WAL_SPACE_RETAINED": "内容已核对通过，部分 WAL 空间暂未释放。",
         "INTERRUPTED_COMPACTION_VERIFIED": "已核对中断后的数据库，内容保持完整；未重复执行整理。",
         "ORPHAN_PREVIEW_EXPIRED": "清理范围已发生变化，请重新分析后确认。",
-        "NO_ORPHANED_HISTORY": "没有可清理的残留历史。"
+        "NO_ORPHANED_HISTORY": "没有可清理的残留历史。",
+        "STORAGE_OPERATION_PENDING": "请先处理待确认的删除请求，再开始新的删除。",
+        "STORAGE_RECOVERY_UNAVAILABLE": "无法保存删除请求的恢复信息。"
       },
       "states": {
         "ACCEPTED": "已登记",
@@ -1598,6 +1600,12 @@
       },
       "released": "释放 {{bytes}} B",
       "increased": "大小增加 {{bytes}} B"
+    },
+    "codexDeletion": {
+      "recovery": "有一个涉及 {{count}} 个会话的删除请求需要确认。请检查状态，或重试原请求。",
+      "check": "检查删除状态",
+      "retry": "重试原删除请求",
+      "selectSession": "选择 {{title}}"
     }
   },
   "history": {

@@ -398,6 +398,47 @@ public class CodexProviderTransportIntegrationTest {
         } finally { bridge.cleanupAllProcesses(); }
     }
 
+    @Test
+    public void permanentDeletionRefusesSendPreconnectCompactAndReviewBeforeStartingNativeRuntime() throws Exception {
+        try (Fixture fixture = this.fixture("idle")) {
+            Path home = Path.of(fixture.scope);
+            var journal = new com.github.claudecodegui.storage.CodexMaintenanceJournal(home.resolve("coordination"));
+            var record = journal.claim(java.util.UUID.randomUUID().toString(), "DELETE_SESSIONS",
+                    new com.github.claudecodegui.storage.CodexStoragePaths(home), List.of("deleted-thread"), false);
+            var family = new com.google.gson.JsonArray();
+            family.add("deleted-thread");
+            record.add("family", family);
+            record.addProperty("mutationStarted", true);
+            journal.state(record, "COMPLETED");
+
+            SDKResult send = fixture.send("deleted-thread").get(10, TimeUnit.SECONDS);
+            assertFalse(send.success);
+            assertEquals("SESSION_PERMANENTLY_DELETED", send.error);
+            for (var result : List.of(
+                    fixture.bridge.preconnectCodex("fixture", fixture.cwd.toString(), "deleted-thread"),
+                    fixture.bridge.compactCodex("fixture", fixture.cwd.toString(), "deleted-thread"),
+                    fixture.bridge.reviewCodex("fixture", fixture.cwd.toString(), "deleted-thread"))) {
+                assertEquals("SESSION_PERMANENTLY_DELETED", result.get(10, TimeUnit.SECONDS).get("error").getAsString());
+            }
+            assertEquals(null, CodexThreadOwnerRegistry.ownerOf(fixture.scope, "deleted-thread"));
+            assertTrue(fixture.trace().isEmpty());
+        }
+    }
+
+    @Test
+    public void pendingMaintenanceAlsoRefusesANewThreadOnAnAlreadyAssembledBridge() throws Exception {
+        try (Fixture fixture = this.fixture("idle")) {
+            Path home = Path.of(fixture.scope);
+            var journal = new com.github.claudecodegui.storage.CodexMaintenanceJournal(home.resolve("coordination"));
+            journal.claim(java.util.UUID.randomUUID().toString(), "COMPACT_DATABASE",
+                    new com.github.claudecodegui.storage.CodexStoragePaths(home), List.of("database"), false);
+            SDKResult send = fixture.send().get(10, TimeUnit.SECONDS);
+            assertFalse(send.success);
+            assertEquals("AI_DATA_MAINTENANCE_PENDING", send.error);
+            assertTrue(fixture.trace().isEmpty());
+        }
+    }
+
     private Fixture fixture(String scenario) throws Exception {
         Path root = this.folder.newFolder(scenario).toPath();
         Path cwd = Files.createDirectory(root.resolve("workspace"));

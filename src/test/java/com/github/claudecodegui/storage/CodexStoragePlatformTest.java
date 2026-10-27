@@ -46,13 +46,13 @@ public class CodexStoragePlatformTest {
         assertEquals("MAINTENANCE_PLATFORM_UNSUPPORTED", compact.getMessage());
     }
 
-    @Test public void productionCapabilitiesProtectMutationsWhileTheInventoryRemainsReadOnly() throws Exception {
+    @Test public void productionCapabilitiesAgreeWithInventoryMutationEligibility() throws Exception {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("remove", "/project", 16);
         var rollout = f.rollout("remove", null, false);
         boolean supported = CodexStoragePlatform.supportsDeletion(f.paths);
         var row = new CodexStorageInventory(f.paths).snapshot().sessions().get("remove");
-        assertEquals("READ_ONLY_STORAGE_VIEW", row.deletionUnavailableReason);
+        assertEquals(supported ? null : "MAINTENANCE_PLATFORM_UNSUPPORTED", row.deletionUnavailableReason);
         var service = new CodexStorageMaintenance(f.paths, f.gate, f.coordination, path -> Long.MAX_VALUE,
                 CodexStoragePlatform.supportsMaintenance(f.paths), supported, checkpoint -> { });
         if (supported) {

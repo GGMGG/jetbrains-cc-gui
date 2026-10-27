@@ -14,6 +14,7 @@ import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.settings.ConfigPathManager;
+import com.github.claudecodegui.storage.CodexStorageRuntimeLease;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
@@ -49,6 +50,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
     private final Map<String, MessageCallback> callbackSubscriptions = new ConcurrentHashMap<>();
     private final String bridgeOwnerId = UUID.randomUUID().toString();
     private final String ownerScope;
+    private final Path storageCoordination;
     private final CodexInteractionRegistry interactionRegistry = new CodexInteractionRegistry();
 
     /** Executor for blocking daemon round-trips; never the common pool, never the UI thread. */
@@ -61,6 +63,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
         super(CodexSDKBridge.class);
         this.settingsService = new CodemossSettingsService();
         this.ownerScope = resolveOwnerScope();
+        this.storageCoordination = com.github.claudecodegui.settings.AiDataMigrationCoordinator.defaultCoordinationDirectory();
         this.historyReader = new CodexHistoryReader();
         this.nativeHistoryEnabled = true;
         this.imageStorageDir = new ConfigPathManager().getConfigDir().resolve(IMAGE_STORAGE_DIR_NAME);
@@ -78,6 +81,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
         super(CodexSDKBridge.class);
         this.settingsService = new CodemossSettingsService();
         this.ownerScope = resolveOwnerScope();
+        this.storageCoordination = com.github.claudecodegui.settings.AiDataMigrationCoordinator.defaultCoordinationDirectory();
         this.historyReader = new CodexHistoryReader(sessionsDir, gson);
         this.nativeHistoryEnabled = false;
         this.imageStorageDir = imageStorageDir;
@@ -93,6 +97,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
         super(CodexSDKBridge.class);
         this.settingsService = settingsService;
         this.ownerScope = ownerScope;
+        this.storageCoordination = sessionsDir.resolve("coordination");
         this.historyReader = new CodexHistoryReader(sessionsDir, this.gson);
         this.nativeHistoryEnabled = true;
         this.imageStorageDir = sessionsDir.resolve(IMAGE_STORAGE_DIR_NAME);
@@ -578,7 +583,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
             AtomicBoolean hadSendError = new AtomicBoolean(false);
             boolean claimedThreadForSend = false;
             boolean daemonDispatchAttempted = false;
-            try {
+            try (CodexStorageRuntimeLease runtime = CodexStorageRuntimeLease.resume(Path.of(this.ownerScope), threadId, this.storageCoordination)) {
                 String accessMode = CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE;
                 try {
                     accessMode = this.settingsService.getCodexRuntimeAccessMode();
@@ -933,22 +938,24 @@ public class CodexSDKBridge extends BaseSDKBridge {
         if (!this.isCodexRuntimeAccessAllowed()) {
             return CompletableFuture.completedFuture(interactionError("Codex runtime access is inactive"));
         }
-        if (threadId != null && !threadId.isBlank() && !CodexThreadOwnerRegistry.claim(
-                this.ownerScope, threadId, this.bridgeOwnerId).acquired()) {
-            return CompletableFuture.completedFuture(interactionError("Codex thread is already owned by another window"));
-        }
-        CompletableFuture<JsonObject> preconnect = this.runCodexLifecycleOperation(
-                "codex.preconnect", channelId, cwd, threadId);
-        // The lifecycle operation registers the channel epoch synchronously; scope
-        // the failure cleanup to that epoch so a newer session reusing the channel
-        // id is never wiped by a stale preconnect finishing late.
-        String sessionEpoch = this.runtimeSessionEpochs.get(safeChannelId(channelId));
-        return preconnect.whenComplete((result, error) -> {
-            if ((error != null || result != null && result.has("error"))
-                    && java.util.Objects.equals(sessionEpoch, this.runtimeSessionEpochs.get(safeChannelId(channelId)))) {
-                this.daemonCoordinator.shutdownDaemon();
-                this.forgetChannelState(channelId, threadId, sessionEpoch);
+        return withCodexResumeLease(threadId, () -> {
+            if (threadId != null && !threadId.isBlank() && !CodexThreadOwnerRegistry.claim(
+                    this.ownerScope, threadId, this.bridgeOwnerId).acquired()) {
+                return CompletableFuture.completedFuture(interactionError("Codex thread is already owned by another window"));
             }
+            CompletableFuture<JsonObject> preconnect = this.runCodexLifecycleOperation(
+                    "codex.preconnect", channelId, cwd, threadId);
+            // The lifecycle operation registers the channel epoch synchronously; scope
+            // the failure cleanup to that epoch so a newer session reusing the channel
+            // id is never wiped by a stale preconnect finishing late.
+            String sessionEpoch = this.runtimeSessionEpochs.get(safeChannelId(channelId));
+            return preconnect.whenComplete((result, error) -> {
+                if ((error != null || result != null && result.has("error"))
+                        && java.util.Objects.equals(sessionEpoch, this.runtimeSessionEpochs.get(safeChannelId(channelId)))) {
+                    this.daemonCoordinator.shutdownDaemon();
+                    this.forgetChannelState(channelId, threadId, sessionEpoch);
+                }
+            });
         });
     }
 
@@ -1157,54 +1164,72 @@ public class CodexSDKBridge extends BaseSDKBridge {
         if (!this.isCodexRuntimeAccessAllowed()) {
             return CompletableFuture.completedFuture(interactionError("Codex runtime access is inactive"));
         }
-        if (threadId != null && !threadId.isBlank() && !CodexThreadOwnerRegistry.claim(
-                this.ownerScope, threadId, this.bridgeOwnerId).acquired()) {
-            return CompletableFuture.completedFuture(interactionError("Codex thread is already owned by another window"));
-        }
-        DaemonBridge daemon = this.daemonCoordinator.getDaemonBridge();
-        if (daemon == null) {
-            CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
-            return CompletableFuture.completedFuture(
-                    interactionError("Codex app-server daemon is unavailable"));
-        }
-        String safeChannelId = channelId == null || channelId.trim().isEmpty()
-                ? "codex" : channelId.trim();
-        JsonObject params = new JsonObject();
-        params.addProperty("channelId", safeChannelId);
-        params.addProperty("cwd", cwd == null ? "" : cwd);
-        params.addProperty("threadId", threadId == null ? "" : threadId);
-        params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
-                safeChannelId, ignored -> UUID.randomUUID().toString()));
+        return withCodexResumeLease(threadId, () -> {
+            if (threadId != null && !threadId.isBlank() && !CodexThreadOwnerRegistry.claim(
+                    this.ownerScope, threadId, this.bridgeOwnerId).acquired()) {
+                return CompletableFuture.completedFuture(interactionError("Codex thread is already owned by another window"));
+            }
+            DaemonBridge daemon = this.daemonCoordinator.getDaemonBridge();
+            if (daemon == null) {
+                CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
+                return CompletableFuture.completedFuture(
+                        interactionError("Codex app-server daemon is unavailable"));
+            }
+            String safeChannelId = channelId == null || channelId.trim().isEmpty()
+                    ? "codex" : channelId.trim();
+            JsonObject params = new JsonObject();
+            params.addProperty("channelId", safeChannelId);
+            params.addProperty("cwd", cwd == null ? "" : cwd);
+            params.addProperty("threadId", threadId == null ? "" : threadId);
+            params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
+                    safeChannelId, ignored -> UUID.randomUUID().toString()));
+            try {
+                this.captureRuntimeConfiguration(params);
+            } catch (Exception error) {
+                CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
+                return CompletableFuture.completedFuture(interactionError(error.getMessage()));
+            }
+            if (callback != null) {
+                // Restoring history does not start a send, so it has no send-created subscription.
+                this.callbackSubscriptions.put(safeChannelId, callback);
+                // Stream-end unlocks controls before the previous send RPC drains.
+                // Its trailing receiver must not intercept this control's approvals.
+                this.activeCallbacks.put(safeChannelId, callback);
+            }
+            MessageCallback operationCallback = callback != null ? callback : this.callbackSubscriptions.get(safeChannelId);
+            return this.dispatchCodexLongOperation(daemon, method, params, operationCallback)
+                    .thenApply(acknowledgement -> {
+                        if (!acknowledgement.has("error")) {
+                            acknowledgement.addProperty("method", method);
+                        }
+                        return acknowledgement;
+                    }).whenComplete((response, failure) -> {
+                        if (callback != null) {
+                            this.activeCallbacks.remove(safeChannelId, callback);
+                        }
+                        if ((failure != null || response != null && response.has("error"))
+                                && java.util.Objects.equals(nativeString(params, "sessionEpoch"), this.runtimeSessionEpochs.get(safeChannelId))) {
+                            // Failed bootstrap releases only this operation's lease, preserving a loaded writer's claims.
+                            CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
+                        }
+                    });
+        });
+    }
+
+    private CompletableFuture<JsonObject> withCodexResumeLease(String threadId, Supplier<CompletableFuture<JsonObject>> operation) {
+        CodexStorageRuntimeLease runtime;
         try {
-            this.captureRuntimeConfiguration(params);
-        } catch (Exception error) {
-            CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
+            runtime = CodexStorageRuntimeLease.resume(Path.of(this.ownerScope), threadId, this.storageCoordination);
+        } catch (java.io.IOException error) {
             return CompletableFuture.completedFuture(interactionError(error.getMessage()));
         }
-        if (callback != null) {
-            // Restoring history does not start a send, so it has no send-created subscription.
-            this.callbackSubscriptions.put(safeChannelId, callback);
-            // Stream-end unlocks controls before the previous send RPC drains.
-            // Its trailing receiver must not intercept this control's approvals.
-            this.activeCallbacks.put(safeChannelId, callback);
+        try {
+            return operation.get().whenComplete((result, error) -> runtime.close());
+        } catch (RuntimeException error) {
+            runtime.close();
+            CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
+            return CompletableFuture.failedFuture(error);
         }
-        MessageCallback operationCallback = callback != null ? callback : this.callbackSubscriptions.get(safeChannelId);
-        return this.dispatchCodexLongOperation(daemon, method, params, operationCallback)
-                .thenApply(acknowledgement -> {
-                    if (!acknowledgement.has("error")) {
-                        acknowledgement.addProperty("method", method);
-                    }
-                    return acknowledgement;
-                }).whenComplete((response, failure) -> {
-                    if (callback != null) {
-                        this.activeCallbacks.remove(safeChannelId, callback);
-                    }
-                    if ((failure != null || response != null && response.has("error"))
-                            && java.util.Objects.equals(nativeString(params, "sessionEpoch"), this.runtimeSessionEpochs.get(safeChannelId))) {
-                        // Failed bootstrap releases only this operation's lease, preserving a loaded writer's claims.
-                        CodexThreadOwnerRegistry.release(this.ownerScope, threadId, this.bridgeOwnerId);
-                    }
-                });
     }
 
     private JsonObject sendCodexControl(

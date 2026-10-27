@@ -32,6 +32,7 @@ public final class CodexStorageMaintenance {
     private final AiDataProcessGate gate;
     private final AiDataMigrationCoordinator coordinator;
     private final CodexMaintenanceJournal journal;
+    private final Path runtimeCoordination;
     private final ToLongFunction<Path> freeSpace;
     private final boolean supportedPlatform;
     private final boolean supportedDeletion;
@@ -58,6 +59,7 @@ public final class CodexStorageMaintenance {
         // another lock so idle app-servers and this operation cannot conflict with themselves.
         this.coordinator = new AiDataMigrationCoordinator(coordination.resolve("codex-storage-lock"));
         this.journal = new CodexMaintenanceJournal(coordination);
+        this.runtimeCoordination = coordination;
         this.freeSpace = freeSpace;
         this.supportedPlatform = supportedPlatform;
         this.supportedDeletion = supportedDeletion;
@@ -328,61 +330,63 @@ public final class CodexStorageMaintenance {
         try (CodexStorageStores stores = CodexStorageStores.forHistoryDeletion(paths)) {
             Set<String> resolved = stores.family(selected, inventory);
             Set<String> ids = record.has("family") ? new LinkedHashSet<>(strings(record.getAsJsonArray("family"))) : resolved;
-            if (!ids.containsAll(resolved)) {
-                throw new IOException("SELECTED_DATA_CHANGED");
-            }
-            if (!record.has("family") && ids.stream().noneMatch(inventory.sessions()::containsKey)) {
-                throw new IOException("SESSION_NOT_FOUND");
-            }
-            if (!java.util.Collections.disjoint(ids, CodexStorageActivity.runningSessionIds())) {
-                throw new IOException("SESSION_RUNNING");
-            }
-            writers.requireIdleSessions(paths, ids);
-            stores.preflightDependencies(ids);
-            List<String> declared = stores.declaredRollouts(ids, inventory);
-            if (!record.has("stores")) {
-                JsonArray files = captureFiles(ids, inventory);
-                List<String> names = new ArrayList<>(declared);
-                names.addAll(rolloutPaths(files));
-                record.add("rolloutNames", GSON.toJsonTree(names.stream().distinct().toList()));
-                record.add("family", GSON.toJsonTree(ids));
-                record.add("files", files);
-                record.add("stores", stores.capture(ids, strings(record.getAsJsonArray("rolloutNames"))));
-                record.add("before", sizes());
-                journal.save(record);
-            }
-            validateFiles(record.getAsJsonArray("files"), inventory, ids);
-            paths.revalidate();
-            record.addProperty("mutationStarted", true);
-            journal.state(record, "COMMITTING");
-            checkpointObserver.accept("delete-intent");
-            long removed = stores.delete(record.getAsJsonObject("stores"), ids, strings(record.getAsJsonArray("rolloutNames")), () -> {
-                journal.save(record);
-                checkpointObserver.accept("database-commit");
-            });
-            long rolloutBytes = 0;
-            Set<String> removedPhysical = new LinkedHashSet<>();
-            for (JsonElement element : record.getAsJsonArray("files")) {
-                JsonObject captured = element.getAsJsonObject();
-                Path file = paths.root().resolve(captured.get("relative").getAsString()).normalize();
-                if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
-                    validateFile(file, captured);
-                    Files.delete(file);
+            try (CodexStorageRuntimeLease runtime = CodexStorageRuntimeLease.deletion(paths, ids, runtimeCoordination)) {
+                if (!ids.containsAll(resolved)) {
+                    throw new IOException("SELECTED_DATA_CHANGED");
                 }
-                String physical = captured.has("physical") ? captured.get("physical").getAsString() : captured.get("identity").getAsString();
-                if (removedPhysical.add(physical)) {
-                    rolloutBytes += captured.get("size").getAsLong();
+                if (!record.has("family") && ids.stream().noneMatch(inventory.sessions()::containsKey)) {
+                    throw new IOException("SESSION_NOT_FOUND");
                 }
-                captured.addProperty("done", true);
-                journal.save(record);
-                checkpointObserver.accept("file-delete");
+                if (!java.util.Collections.disjoint(ids, CodexStorageActivity.runningSessionIds())) {
+                    throw new IOException("SESSION_RUNNING");
+                }
+                writers.requireIdleSessions(paths, ids);
+                stores.preflightDependencies(ids);
+                List<String> declared = stores.declaredRollouts(ids, inventory);
+                if (!record.has("stores")) {
+                    JsonArray files = captureFiles(ids, inventory);
+                    List<String> names = new ArrayList<>(declared);
+                    names.addAll(rolloutPaths(files));
+                    record.add("rolloutNames", GSON.toJsonTree(names.stream().distinct().toList()));
+                    record.add("family", GSON.toJsonTree(ids));
+                    record.add("files", files);
+                    record.add("stores", stores.capture(ids, strings(record.getAsJsonArray("rolloutNames"))));
+                    record.add("before", sizes());
+                    journal.save(record);
+                }
+                validateFiles(record.getAsJsonArray("files"), inventory, ids);
+                paths.revalidate();
+                record.addProperty("mutationStarted", true);
+                journal.state(record, "COMMITTING");
+                checkpointObserver.accept("delete-intent");
+                long removed = stores.delete(record.getAsJsonObject("stores"), ids, strings(record.getAsJsonArray("rolloutNames")), () -> {
+                    journal.save(record);
+                    checkpointObserver.accept("database-commit");
+                });
+                long rolloutBytes = 0;
+                Set<String> removedPhysical = new LinkedHashSet<>();
+                for (JsonElement element : record.getAsJsonArray("files")) {
+                    JsonObject captured = element.getAsJsonObject();
+                    Path file = paths.root().resolve(captured.get("relative").getAsString()).normalize();
+                    if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+                        validateFile(file, captured);
+                        Files.delete(file);
+                    }
+                    String physical = captured.has("physical") ? captured.get("physical").getAsString() : captured.get("identity").getAsString();
+                    if (removedPhysical.add(physical)) {
+                        rolloutBytes += captured.get("size").getAsLong();
+                    }
+                    captured.addProperty("done", true);
+                    journal.save(record);
+                    checkpointObserver.accept("file-delete");
+                }
+                JsonObject result = new JsonObject();
+                result.add("deletedSessionIds", GSON.toJsonTree(ids));
+                result.addProperty("logicalRowsRemovedThisAttempt", removed);
+                result.addProperty("rolloutBytesRemoved", rolloutBytes);
+                result.add("before", record.get("before"));
+                record.add("result", result);
             }
-            JsonObject result = new JsonObject();
-            result.add("deletedSessionIds", GSON.toJsonTree(ids));
-            result.addProperty("logicalRowsRemovedThisAttempt", removed);
-            result.addProperty("rolloutBytesRemoved", rolloutBytes);
-            result.add("before", record.get("before"));
-            record.add("result", result);
         }
         paths.revalidate();
         record.getAsJsonObject("result").add("after", sizes());

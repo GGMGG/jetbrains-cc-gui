@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { receiveCodexStorageResponse, storageRequest } from './codexStorageBridge';
+import { deleteCodexHistorySessions, deleteCodexStorageSessions, pendingCodexDeletion,
+  receiveCodexStorageResponse, retryCodexDeletion, storageRequest, subscribeCodexDeletion } from './codexStorageBridge';
 
 function request() {
   const call = vi.mocked(window.sendToJava!).mock.calls.at(-1)![0];
@@ -8,7 +9,7 @@ function request() {
 const page = { sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false, complete: true, errors: [] };
 
 describe('read-only storage transport', () => {
-  beforeEach(() => { vi.useFakeTimers(); window.sendToJava = vi.fn(); });
+  beforeEach(() => { vi.useFakeTimers(); window.sendToJava = vi.fn(); localStorage.clear(); });
   afterEach(() => { vi.useRealTimers(); window.sendToJava = undefined; });
 
   it('correlates opaque request IDs and actions when two list requests complete out of order', async () => {
@@ -59,5 +60,61 @@ describe('read-only storage transport', () => {
     await vi.advanceTimersByTimeAsync(120_000);
     await rejected;
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('persists exact targets and origin, then retries the same identity after a lost response', async () => {
+    const first = deleteCodexHistorySessions(['selected', 'selected']);
+    const firstRequest = request();
+    const saved = pendingCodexDeletion()!;
+    expect(saved.sessionIds).toEqual(['selected']);
+    expect(saved.origin).toBe('history');
+    const rejected = expect(first).rejects.toMatchObject({ code: 'STORAGE_RESPONSE_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await rejected;
+    await expect(deleteCodexStorageSessions(['new-selection'])).rejects.toMatchObject({ code: 'STORAGE_OPERATION_PENDING' });
+    const retry = retryCodexDeletion();
+    expect(request().requestId).not.toBe(firstRequest.requestId);
+    const call = vi.mocked(window.sendToJava!).mock.calls.at(-1)![0];
+    expect(JSON.parse(call.slice(call.indexOf(':') + 1))).toMatchObject(saved);
+    receiveCodexStorageResponse(JSON.stringify({ requestId: request().requestId, action: 'delete_ai_storage_sessions', success: true,
+      data: { operationId: saved.operationId, kind: 'DELETE_SESSIONS', state: 'COMPLETED', targets: saved.sessionIds,
+        createdAt: 'now', updatedAt: 'now', result: { deletedSessionIds: saved.sessionIds, metadataStatus: 'COMPLETE' } } }));
+    await retry;
+    expect(pendingCodexDeletion()).toBeNull();
+  });
+
+  it('does not notify deletion observers for an uncommitted result and emits one confirmed receipt', async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeCodexDeletion(listener);
+    try {
+      const first = deleteCodexStorageSessions(['selected']);
+      const attempt = pendingCodexDeletion()!;
+      const status = { operationId: attempt.operationId, kind: 'DELETE_SESSIONS', state: 'RECONCILIATION_REQUIRED',
+        targets: ['selected'], createdAt: 'now', updatedAt: 'now' };
+      receiveCodexStorageResponse(JSON.stringify({ requestId: request().requestId, action: 'delete_ai_storage_sessions', success: true, data: status }));
+      await first;
+      expect(listener).not.toHaveBeenCalled();
+      expect(pendingCodexDeletion()).toEqual(attempt);
+      const completed = { ...status, state: 'COMPLETED', result: { deletedSessionIds: ['selected'], metadataStatus: 'COMPLETE' } };
+      for (let index = 0; index < 2; index++) {
+        const query = storageRequest('get_ai_storage_maintenance_operation', { operationId: attempt.operationId });
+        receiveCodexStorageResponse(JSON.stringify({ requestId: request().requestId, action: 'get_ai_storage_maintenance_operation', success: true, data: completed }));
+        await query;
+      }
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(pendingCodexDeletion()).toBeNull();
+    } finally { unsubscribe(); }
+  });
+
+  it('retains metadata cleanup failures for retry and never dispatches unsafe targets', async () => {
+    await expect(deleteCodexStorageSessions(['../outside'])).rejects.toMatchObject({ code: 'INVALID_SESSION_SELECTION' });
+    expect(window.sendToJava).not.toHaveBeenCalled();
+    const deletion = deleteCodexStorageSessions(['selected']);
+    const saved = pendingCodexDeletion()!;
+    receiveCodexStorageResponse(JSON.stringify({ requestId: request().requestId, action: 'delete_ai_storage_sessions', success: true,
+      data: { operationId: saved.operationId, kind: 'DELETE_SESSIONS', state: 'COMPLETED_WITH_WARNINGS', targets: saved.sessionIds,
+        createdAt: 'now', updatedAt: 'now', result: { deletedSessionIds: saved.sessionIds, metadataStatus: 'FAILED', warning: 'METADATA_CLEANUP_FAILED' } } }));
+    await deletion;
+    expect(pendingCodexDeletion()).toEqual(saved);
   });
 });

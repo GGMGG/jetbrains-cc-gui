@@ -84,6 +84,13 @@ public final class CodexStorageInventory {
         readRollouts(entries, errors, "sessions");
         readRollouts(entries, errors, "archived_sessions");
         Set<String> running = new LinkedHashSet<>(CodexStorageActivity.runningSessionIds());
+        Set<String> occupied = new LinkedHashSet<>();
+        try {
+            occupied.addAll(CodexStorageWriterLease.occupiedSessions(paths));
+        } catch (IOException error) {
+            errors.add("thread-writer-locks: READ_FAILED");
+        }
+        String unavailable = deletionUnavailableReason();
         for (Entry entry : entries.values()) {
             entry.running = running.contains(entry.sessionId);
             // Match history display names before title search and pagination are applied.
@@ -94,10 +101,40 @@ public final class CodexStorageInventory {
             if (entry.title.isBlank()) {
                 entry.title = entry.sessionId;
             }
-            entry.deletionUnavailableReason = "READ_ONLY_STORAGE_VIEW";
+            if (entry.running) {
+                entry.deletionUnavailableReason = "SESSION_RUNNING";
+            } else if (occupied.contains(entry.sessionId)) {
+                // An external client can retain its writer lease while idle. It is unsafe to delete,
+                // but the lock alone does not prove that a model turn is executing.
+                entry.deletionUnavailableReason = "SESSION_WRITER_BUSY";
+            } else if (!errors.isEmpty()) {
+                entry.deletionUnavailableReason = "INVENTORY_INCOMPLETE";
+            } else {
+                entry.deletionUnavailableReason = unavailable;
+            }
         }
         paths.revalidate();
         return new Snapshot(entries, errors);
+    }
+
+    private String deletionUnavailableReason() {
+        if (!CodexStoragePlatform.supportsDeletion(paths)) {
+            return "MAINTENANCE_PLATFORM_UNSUPPORTED";
+        }
+        try (var files = Files.list(paths.root())) {
+            for (Path file : files.filter(path -> path.getFileName().toString().endsWith(".sqlite")).toList()) {
+                String name = file.getFileName().toString();
+                if (!CodexStoragePaths.DATABASES.contains(name)) {
+                    return "DATABASE_DEPENDENCY_UNSUPPORTED";
+                }
+                try (Connection connection = CodexStorageDatabase.open(paths.existingFile(file), true)) {
+                    CodexStorageDatabase.requireSupported(connection, name);
+                }
+            }
+            return null;
+        } catch (IOException | SQLException error) {
+            return CodexStorageErrors.errorCode(error);
+        }
     }
 
     public JsonObject list(String cursor, int limit, String query, String sort) throws IOException {

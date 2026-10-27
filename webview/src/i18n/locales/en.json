@@ -1557,7 +1557,9 @@
         "WAL_SPACE_RETAINED": "Content verification passed; some WAL space could not be reclaimed yet.",
         "INTERRUPTED_COMPACTION_VERIFIED": "The interrupted database was verified with its content intact. Compaction was not repeated.",
         "ORPHAN_PREVIEW_EXPIRED": "The cleanup scope changed. Analyze again before confirming.",
-        "NO_ORPHANED_HISTORY": "No stale history to clean."
+        "NO_ORPHANED_HISTORY": "No stale history to clean.",
+        "STORAGE_OPERATION_PENDING": "Finish the pending deletion before starting another one.",
+        "STORAGE_RECOVERY_UNAVAILABLE": "The deletion request could not be saved for recovery."
       },
       "states": {
         "ACCEPTED": "Registered",
@@ -1593,6 +1595,12 @@
       },
       "released": "Released {{bytes}} B",
       "increased": "Size increased by {{bytes}} B"
+    },
+    "codexDeletion": {
+      "recovery": "A deletion request for {{count}} sessions needs confirmation. Check its status or retry the original request.",
+      "check": "Check deletion status",
+      "retry": "Retry original deletion",
+      "selectSession": "Select {{title}}"
     }
   },
   "history": {
