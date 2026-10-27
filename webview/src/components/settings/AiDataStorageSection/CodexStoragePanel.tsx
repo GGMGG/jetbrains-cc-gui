@@ -1,4 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import CodexStorageSessionRelations from './CodexStorageSessionRelations';
 import { useTranslation } from 'react-i18next';
 import { HistoryConfirmDialogs } from '../../history/HistoryConfirmDialogs';
 import { useHistorySelection } from '../../history/useHistorySelection';
@@ -225,7 +226,7 @@ export default function CodexStoragePanel() {
           {selection.isSelectionMode && <input type="checkbox" disabled={!eligibleIds.has(session.sessionId)}
             aria-label={t('settings.codexDeletion.selectSession', { title: session.title })}
             checked={selection.selectedSessionIds.has(session.sessionId)} onChange={() => selection.toggleSessionSelection(session.sessionId)} />}
-          <div className={styles.identity}><strong>{session.title}</strong><code>{session.cwd}</code><small>{session.sessionId}</small></div>
+          <div className={styles.identity}><strong>{session.title}</strong><code>{session.cwd}</code><small>{session.sessionId}</small><CodexStorageSessionRelations session={session} /></div>
           <span>{bytes(session.fileSize)}</span>
           <div className={styles.actions}>
             <button type="button" onClick={() => openContent(session)} disabled={!session.readable}>{t('settings.codexStorage.view')}</button>
@@ -255,6 +256,7 @@ export default function CodexStoragePanel() {
       }} onCancelConvert={() => {}} onConfirmConvert={() => {}}
       onCancelDeleteSelected={selection.cancelDeleteSelected} onConfirmDeleteSelected={selection.confirmDeleteSelected} />
     {selected && <section className={styles.content} aria-label={t('settings.codexStorage.sessionContent')}>
+      <CodexStorageSessionRelations session={selected} />
       <div className={styles.toolbar}><h4>{selected.title}</h4><button type="button" onClick={() => setSelected(null)}>{t('settings.codexStorage.close')}</button></div>
       {contentLoading && <p role="status">{t('common.loading')}</p>}
       {contentError && <p role="alert">{contentError}</p>}

@@ -1578,6 +1578,15 @@
         "PARTIAL_COMPLETED": "部分完成",
         "FAILED_CLEAN": "未执行，检查未通过",
         "CANCELLED_CLEAN": "已取消"
+      },
+      "relations": {
+        "subagent": "子代理",
+        "mainSession": "主会话",
+        "parentSession": "父会话",
+        "childCount": "子代理 {{count}} 个",
+        "childCountHint": "直属子代理数量，包含已归档的会话文件",
+        "parentMissing": "（无会话文件）",
+        "parentUnknown": "父会话信息不可用"
       }
     },
     "codexMaintenance": {

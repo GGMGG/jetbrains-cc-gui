@@ -1573,6 +1573,16 @@
         "PARTIAL_COMPLETED": "Partially completed",
         "FAILED_CLEAN": "Checks failed; no changes applied",
         "CANCELLED_CLEAN": "Cancelled"
+      },
+      "relations": {
+        "subagent": "Subagent",
+        "mainSession": "Main session",
+        "parentSession": "Parent session",
+        "childCount_one": "{{count}} subagent",
+        "childCount_other": "{{count}} subagents",
+        "childCountHint": "Direct subagents with session files, including archived sessions",
+        "parentMissing": "(no session file)",
+        "parentUnknown": "Parent session unavailable"
       }
     },
     "codexMaintenance": {
