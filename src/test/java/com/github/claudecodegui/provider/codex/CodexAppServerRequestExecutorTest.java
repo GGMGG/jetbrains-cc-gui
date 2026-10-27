@@ -110,6 +110,40 @@ public class CodexAppServerRequestExecutorTest {
     }
 
     @Test
+    public void controlAcknowledgementPreservesStructuredRepliesAndNativeFailureReasons() {
+        for (boolean success : new boolean[]{true, false}) {
+            DaemonBridge daemon = new DaemonBridge(null, null, null) {
+                @Override
+                public CompletableFuture<Boolean> sendCommand(String method, JsonObject params, DaemonOutputCallback callback) {
+                    if (success) {
+                        JsonObject result = new JsonObject();
+                        result.addProperty("replied", true);
+                        JsonObject followUp = new JsonObject();
+                        followUp.addProperty("threadId", "owned-thread");
+                        followUp.addProperty("text", "Answer B");
+                        result.add("followUp", followUp);
+                        JsonObject response = new JsonObject();
+                        response.add("result", result);
+                        callback.onResult(response);
+                    } else {
+                        callback.onError("The question belongs to a retired runtime");
+                    }
+                    return CompletableFuture.completedFuture(success);
+                }
+            };
+            JsonObject result = new CodexAppServerRequestExecutor(
+                    Logger.getInstance(CodexAppServerRequestExecutorTest.class), null)
+                    .sendControlCommand(daemon, "codex.respondInteraction", new JsonObject(), 1000L);
+            if (success) {
+                assertTrue(result.get("replied").getAsBoolean());
+                assertEquals("owned-thread", result.getAsJsonObject("followUp").get("threadId").getAsString());
+            } else {
+                assertEquals("The question belongs to a retired runtime", result.get("error").getAsString());
+            }
+        }
+    }
+
+    @Test
     public void timedOutControlCommandStillCarriesAnErrorMessage() {
         CodexAppServerRequestExecutor executor = new CodexAppServerRequestExecutor(
                 Logger.getInstance(CodexAppServerRequestExecutorTest.class), ignored -> { });
@@ -142,7 +176,7 @@ public class CodexAppServerRequestExecutorTest {
 
     /** Keeps the user message separate from a copied native context snapshot. */
     @Test
-    public void sendParamsCarryNativeSettingsWithoutInternalMetadata() {
+    public void sendParamsCarrySandboxProvenanceWithoutInternalRevision() {
         JsonObject nativeSettings = new JsonObject();
         nativeSettings.addProperty("collaborationMode", "plan");
         nativeSettings.addProperty("approvalPreset", "request");
@@ -164,12 +198,12 @@ public class CodexAppServerRequestExecutorTest {
         assertEquals("plan", params.get("collaborationMode").getAsString());
         assertEquals("request", params.get("approvalPreset").getAsString());
         assertEquals("workspace-write", params.get("sandboxSelection").getAsString());
+        assertEquals("user", params.get("sandboxSource").getAsString());
         assertEquals("task", params.get("message").getAsString());
         assertEquals(additionalContext, params.getAsJsonObject("additionalContext"));
         editor.addProperty("value", "changed after enqueue");
         assertEquals("Active file: src/Editor.java",
                 params.getAsJsonObject("additionalContext").getAsJsonObject("ide_context").get("value").getAsString());
-        assertTrue(!params.has("sandboxSource"));
         assertTrue(!params.has("revision"));
         // Managed credentials are resolved daemon-side; they never travel per request.
         assertTrue(!params.has("apiKey"));
