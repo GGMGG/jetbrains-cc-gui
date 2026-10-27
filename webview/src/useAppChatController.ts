@@ -48,6 +48,7 @@ export interface ChatControllerModelSlice {
   codexCollaborationMode: UseMessageSenderOptions['codexCollaborationMode'];
   codexApprovalPreset: UseMessageSenderOptions['codexApprovalPreset'];
   codexSandboxSelection: UseMessageSenderOptions['codexSandboxSelection'];
+  codexSandboxSource?: UseMessageSenderOptions['codexSandboxSource'];
   dshPreset: UseMessageSenderOptions['dshPreset'];
   longContextEnabled: UseMessageSenderOptions['longContextEnabled'];
   handleModeSelect: (mode: PermissionMode) => void;
@@ -151,7 +152,7 @@ export const useAppChatController = ({
     selectedAgent, sdkStatusLoading, currentSdkInstalled,
     codexNativeAutoReviewAvailable,
     reasoningEffort, codexFastMode, codexCollaborationMode, codexApprovalPreset,
-    codexSandboxSelection, dshPreset, longContextEnabled,
+    codexSandboxSelection, codexSandboxSource, dshPreset, longContextEnabled,
     handleModeSelect, handleProviderSelect,
     currentProviderRef, syncActiveProviderModelMapping,
     setPermissionMode, setCurrentProvider,
@@ -291,7 +292,7 @@ export const useAppChatController = ({
   } = useMessageSender({
     t, addToast,
     currentProvider, selectedModel, permissionMode, reasoningEffort, selectedAgent, codexFastMode,
-    codexCollaborationMode, codexApprovalPreset, codexSandboxSelection,
+    codexCollaborationMode, codexApprovalPreset, codexSandboxSelection, codexSandboxSource,
     codexNativeAutoReviewAvailable, dshPreset,
     sdkStatusLoading, currentSdkInstalled,
     sentAttachmentsRef, chatInputRef, messagesContainerRef,

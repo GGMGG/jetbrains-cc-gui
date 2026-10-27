@@ -6,6 +6,12 @@ import { sendBridgeEvent } from '../utils/bridge';
 
 vi.mock('../utils/bridge', () => ({ sendBridgeEvent: vi.fn() }));
 
+const latestSettingsRequest = () => {
+  const payload = vi.mocked(sendBridgeEvent).mock.calls.filter(call => call[0] === 'codex_update_settings').at(-1)?.[1];
+  if (!payload) throw new Error('No settings request was sent');
+  return JSON.parse(payload);
+};
+
 const options = { addToast: vi.fn(), t: ((key: string) => key) as TFunction };
 
 // Since the app-server migration (design D5) the Codex runtime is the CLI
@@ -92,12 +98,49 @@ describe('Codex native auto availability', () => {
     });
   });
 
+  it('ignores an older failure after selecting A, B, then A again', () => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => result.current.handleModeSelect('plan'));
+    const requestId = latestSettingsRequest().requestId;
+    act(() => result.current.handleModeSelect('default'));
+    act(() => result.current.handleModeSelect('plan'));
+    act(() => window.dispatchEvent(new CustomEvent('codex-interaction-response', { detail: {
+      requestType: 'codex_update_settings', requestId,
+      requestedSettings: { collaborationMode: 'plan' }, error: 'Old failure',
+    } })));
+    expect(result.current.codexSettingsPending).toBe(true);
+    expect(options.addToast).not.toHaveBeenCalled();
+  });
+
+  it('invalidates old requests on provider changes and reports each current failure once', () => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => result.current.handleModeSelect('plan'));
+    const oldRequestId = latestSettingsRequest().requestId;
+    act(() => result.current.handleProviderSelect('claude'));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => result.current.handleModeSelect('plan'));
+    const currentRequestId = latestSettingsRequest().requestId;
+    const emit = (requestId: string) => act(() => window.dispatchEvent(new CustomEvent('codex-interaction-response', { detail: {
+      requestType: 'codex_update_settings', requestId,
+      requestedSettings: { collaborationMode: 'plan' }, error: 'Unavailable',
+    } })));
+    emit(oldRequestId);
+    expect(result.current.codexSettingsPending).toBe(true);
+    expect(options.addToast).not.toHaveBeenCalled();
+    emit(currentRequestId);
+    emit(currentRequestId);
+    expect(result.current.codexSettingsPending).toBe(false);
+    expect(options.addToast).toHaveBeenCalledTimes(1);
+  });
+
   it.each([false, true])('clears a failed current settings update and reports its error (serialized: %s)', serialized => {
     const { result } = renderHook(() => useModelProviderState(options));
     act(() => result.current.handleProviderSelect('codex'));
     act(() => result.current.handleModeSelect('plan'));
     expect(result.current.codexSettingsPending).toBe(true);
-    const response = { requestType: 'codex_update_settings', requestedSettings: { collaborationMode: 'plan' }, error: 'Configuration unavailable' };
+    const response = { requestType: 'codex_update_settings', requestId: latestSettingsRequest().requestId, requestedSettings: { collaborationMode: 'plan' }, error: 'Configuration unavailable' };
     act(() => window.dispatchEvent(new CustomEvent('codex-interaction-response', { detail: serialized ? JSON.stringify(response) : response })));
     expect(result.current.codexSettingsPending).toBe(false);
     expect(result.current.codexEffectiveSettings).toBeNull();
@@ -135,9 +178,9 @@ describe('Codex native auto availability', () => {
 
     expect(result.current.codexSandboxSelection).toBe('danger-full-access');
     expect(result.current.codexApprovalPreset).toBe('full-access');
-    expect(sendBridgeEvent).toHaveBeenCalledWith('set_codex_sandbox_selection', JSON.stringify({
-      selection: 'danger-full-access', source: 'default',
-    }));
+    expect(latestSettingsRequest().settings).toMatchObject({
+      sandboxSelection: 'danger-full-access', sandboxSource: 'default', approvalPreset: 'full-access',
+    });
   });
 
   it.each([

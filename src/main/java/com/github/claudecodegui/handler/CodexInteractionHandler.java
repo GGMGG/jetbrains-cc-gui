@@ -218,6 +218,7 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         if (payload == null) {
             return;
         }
+        String requestId = stringValue(payload, "requestId");
         ClaudeSession session = this.context.getSession();
         String channelId = nonEmpty(stringValue(payload, "channelId"), session == null ? null : session.getChannelId());
         String cwd = nonEmpty(stringValue(payload, "cwd"), session == null ? null : session.getCwd());
@@ -227,9 +228,9 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         if (bridge != null) {
             java.util.concurrent.CompletableFuture
                     .supplyAsync(() -> bridge.updateCodexSettings(channelId, cwd, settings), CodexSDKBridge.codexControlExecutor())
-                    .whenComplete((result, failure) -> notifySettingsResult(result, failure, settings));
+                    .whenComplete((result, failure) -> notifySettingsResult(result, failure, settings, requestId));
         } else {
-            notifySettingsResult(errorResult("Codex bridge is unavailable"), null, settings);
+            notifySettingsResult(errorResult("Codex bridge is unavailable"), null, settings, requestId);
         }
     }
 
@@ -266,15 +267,15 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         }
         CodexSDKBridge bridge = this.context.getCodexSDKBridge();
         if (bridge == null) {
-            notifySettingsResult(errorResult("Codex bridge is unavailable"), null, settings);
+            notifySettingsResult(errorResult("Codex bridge is unavailable"), null, settings, null);
             return;
         }
         java.util.concurrent.CompletableFuture
                 .supplyAsync(() -> bridge.updateCodexSettings(channelId, cwd, settings), CodexSDKBridge.codexControlExecutor())
-                .whenComplete((result, failure) -> notifySettingsResult(result, failure, settings));
+                .whenComplete((result, failure) -> notifySettingsResult(result, failure, settings, null));
     }
 
-    private void notifySettingsResult(JsonObject result, Throwable failure, JsonObject settings) {
+    private void notifySettingsResult(JsonObject result, Throwable failure, JsonObject settings, String requestId) {
         if (failure != null) {
             LOG.warn("[Codex] Settings update failed", failure);
             result = errorResult("Codex settings update failed");
@@ -284,6 +285,9 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         result = result.deepCopy();
         result.addProperty("requestType", "codex_update_settings");
         result.add("requestedSettings", settings.deepCopy());
+        if (requestId != null) {
+            result.addProperty("requestId", requestId);
+        }
         notifyResult(result, null);
     }
 

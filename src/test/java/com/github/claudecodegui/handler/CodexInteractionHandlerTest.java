@@ -33,12 +33,16 @@ public class CodexInteractionHandlerTest {
             };
             RecordingJs callbacks = new RecordingJs();
             HandlerContext context = new HandlerContext(null, null, bridge, null, callbacks);
-            new CodexInteractionHandler(context).handle(type, "codex_update_settings".equals(type) ? "{}" : "request");
+            new CodexInteractionHandler(context).handle(type, "codex_update_settings".equals(type) ? "{\"requestId\":\"settings-1\",\"settings\":{\"approvalPreset\":\"request\"}}" : "request");
             JsonObject response = callbacks.results.poll(5, TimeUnit.SECONDS);
             assertNotNull(type, response);
             assertTrue(type, response.has("error"));
             assertEquals("codex_update_settings", response.get("requestType").getAsString());
             assertTrue(response.get("requestedSettings").isJsonObject());
+            if ("codex_update_settings".equals(type)) {
+                assertEquals("settings-1", response.get("requestId").getAsString());
+                assertFalse(response.getAsJsonObject("requestedSettings").has("requestId"));
+            }
         }
     }
 
