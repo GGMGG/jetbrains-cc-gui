@@ -83,7 +83,7 @@ class HistoryDeleteService {
                         LOG.info("[HistoryHandler] Delete completed - Main file: " + (result.mainDeleted ? "deleted" : "not found") + ", Agent files: " + result.agentFilesDeleted);
 
                         if (result.mainDeleted) {
-                            cleanupSessionMetadata(sessionId);
+                            cleanupSessionMetadata(List.of(sessionId));
                         }
                         cleanupCache(currentProvider);
 
@@ -118,12 +118,11 @@ class HistoryDeleteService {
                         int mainDeletedCount = 0;
                         int agentFilesDeletedCount = 0;
 
+                        List<String> deletedSessionIds = new ArrayList<>();
                         if ("codex".equals(currentProvider)) {
                             CodexBatchDeleteResult result = deleteCodexSessions(sessionIds);
                             mainDeletedCount = result.deletedSessionIds.size();
-                            for (String sessionId : result.deletedSessionIds) {
-                                cleanupSessionMetadata(sessionId);
-                            }
+                            deletedSessionIds.addAll(result.deletedSessionIds);
                             LOG.info("[HistoryHandler] Deleted Codex rollout files: " + result.deletedFileCount);
                         } else {
                             for (String sessionId : sessionIds) {
@@ -131,7 +130,7 @@ class HistoryDeleteService {
                                     DeleteResult result = deleteSessionFiles(sessionId, currentProvider);
                                     if (result.mainDeleted) {
                                         mainDeletedCount++;
-                                        cleanupSessionMetadata(sessionId);
+                                        deletedSessionIds.add(sessionId);
                                     }
                                     agentFilesDeletedCount += result.agentFilesDeleted;
                                 } catch (Exception e) {
@@ -139,6 +138,7 @@ class HistoryDeleteService {
                                 }
                             }
                         }
+                        cleanupSessionMetadata(deletedSessionIds);
 
                         cleanupCache(currentProvider);
 
@@ -632,21 +632,26 @@ class HistoryDeleteService {
     }
 
     /**
-     * Removes the deleted session's favorite and custom title.
+     * Removes the deleted sessions' favorites and custom titles, with one Node process per store
+     * however many sessions were deleted.
      *
-     * @return true if both were cleaned up
+     * @param sessionIds the sessions whose files were deleted
+     * @return true if both were cleaned up (or there was nothing to clean up)
      */
-    boolean cleanupSessionMetadata(String sessionId) {
-        // Independent steps: a failed favorite removal must not leave the custom title behind.
-        // Both services report a failed save as a false result while still exiting 0.
-        boolean favoriteRemoved = runMetadataCleanupStep("remove favorite",
-                () -> "true".equals(nodeJsServiceCaller.callNodeJsFavoritesService("removeFavorite", sessionId)));
-        boolean titleDeleted = runMetadataCleanupStep("delete custom title",
-                () -> isSuccessResult(nodeJsServiceCaller.callNodeJsDeleteTitle(sessionId)));
-        if (favoriteRemoved && titleDeleted) {
-            LOG.info("[HistoryHandler] Cleaned up session metadata");
+    boolean cleanupSessionMetadata(List<String> sessionIds) {
+        if (sessionIds.isEmpty()) {
+            return true;
         }
-        return favoriteRemoved && titleDeleted;
+        // Independent steps: a failed favorite removal must not leave the custom titles behind.
+        // Both services report a failed save as a false result while still exiting 0.
+        boolean favoritesRemoved = runMetadataCleanupStep("remove favorites",
+                () -> "true".equals(nodeJsServiceCaller.callNodeJsRemoveFavorites(sessionIds)));
+        boolean titlesDeleted = runMetadataCleanupStep("delete custom titles",
+                () -> isSuccessResult(nodeJsServiceCaller.callNodeJsDeleteTitles(sessionIds)));
+        if (favoritesRemoved && titlesDeleted) {
+            LOG.info("[HistoryHandler] Cleaned up metadata of " + sessionIds.size() + " session(s)");
+        }
+        return favoritesRemoved && titlesDeleted;
     }
 
     private static boolean runMetadataCleanupStep(String step, Callable<Boolean> action) {
