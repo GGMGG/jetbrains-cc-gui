@@ -48,6 +48,13 @@ public class DependencyManager {
     // Every chat window installs into the same dependencies directory, so installs of one SDK
     // (e.g. the chat's update button and the Dependencies page) run one after another.
     private static final Map<SdkDefinition, ReentrantLock> INSTALL_LOCKS = new ConcurrentHashMap<>();
+    /** Deadline for one npm install attempt; the process tree is killed when it passes. */
+    private static final long INSTALL_ATTEMPT_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(3);
+    /**
+     * Longer than the worst case of a running install (about 17 min: three 3-minute attempts plus
+     * bounded cache repair before and between them), so a waiter only gives up on a stuck one.
+     */
+    private static final long INSTALL_LOCK_WAIT_MILLIS = TimeUnit.MINUTES.toMillis(20);
 
     private final Gson gson;
     private final NodeDetector nodeDetector;
@@ -405,18 +412,29 @@ public class DependencyManager {
      * same SDK is running so two npm installs never write the same directory at once.
      */
     public InstallResult installSdkSync(String sdkId, String requestedVersion, Consumer<String> logCallback) {
+        return installSdkSync(sdkId, requestedVersion, logCallback, INSTALL_LOCK_WAIT_MILLIS);
+    }
+
+    /**
+     * @param lockWaitMillis how long to wait for a running install of the same SDK before giving up
+     */
+    InstallResult installSdkSync(String sdkId, String requestedVersion, Consumer<String> logCallback,
+                                 long lockWaitMillis) {
         SdkDefinition sdk = SdkDefinition.fromId(sdkId);
         if (sdk == null) {
             return InstallResult.failure(sdkId, "Unknown SDK: " + sdkId, "");
         }
 
-        ReentrantLock lock = INSTALL_LOCKS.computeIfAbsent(sdk, key -> new ReentrantLock());
+        ReentrantLock lock = installLock(sdk);
         if (!lock.tryLock()) {
             if (logCallback != null) {
                 logCallback.accept("Waiting for another installation of " + sdk.getDisplayName() + " to finish...");
             }
             try {
-                lock.lockInterruptibly();
+                if (!lock.tryLock(lockWaitMillis, TimeUnit.MILLISECONDS)) {
+                    return InstallResult.failure(sdkId, "Another installation of " + sdk.getDisplayName()
+                            + " is still running. Try again after it finishes.", "");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return InstallResult.failure(sdkId, "Installation interrupted", "");
@@ -427,6 +445,10 @@ public class DependencyManager {
         } finally {
             lock.unlock();
         }
+    }
+
+    static ReentrantLock installLock(SdkDefinition sdk) {
+        return INSTALL_LOCKS.computeIfAbsent(sdk, key -> new ReentrantLock());
     }
 
     private InstallResult installSdkLocked(SdkDefinition sdk, String sdkId, String requestedVersion,
@@ -526,28 +548,20 @@ public class DependencyManager {
                 pb.redirectErrorStream(true);
                 configureProcessEnvironment(pb);
 
-                Process process = pb.start();
-
-                // Read output in real time and collect logs
-                StringBuilder installLogs = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        log.accept(line);
-                        installLogs.append(line).append("\n");
-                    }
-                }
-
-                boolean finished = process.waitFor(3, TimeUnit.MINUTES);
-                if (!finished) {
-                    process.destroyForcibly();
+                // Streams the output into the log while enforcing the deadline.
+                NpmInstallRunner.Outcome outcome = NpmInstallRunner.run(pb, INSTALL_ATTEMPT_TIMEOUT_MILLIS, log);
+                if (outcome.timedOut()) {
                     lastResult = InstallResult.failure(sdkId,
                             "Installation timed out (3 minutes)", logs.toString());
+                    if (isWsl) {
+                        // Killing wsl.exe may leave npm running inside Linux; a retry would
+                        // race it in the same install folder.
+                        break;
+                    }
                     continue; // Retry
                 }
 
-                int exitCode = process.exitValue();
+                int exitCode = outcome.exitCode();
                 if (exitCode == 0) {
                     // Installation succeeded, proceed to next steps
                     installed = true;
