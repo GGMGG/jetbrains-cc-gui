@@ -1052,7 +1052,8 @@
     "allowWithRule": "Allow with this command rule",
     "allowWithNetworkRule": "Allow with this network rule",
     "codexDeliveryRetry": "Codex があなたの選択を受け取れませんでした（{{error}}）。もう一度選択してください。",
-    "codexDeliveryFailed": "Codex があなたの選択を受け取れませんでした（{{error}}）。会話が進まない場合は、停止してからもう一度送信してください。"
+    "codexDeliveryFailed": "Codex があなたの選択を受け取れませんでした（{{error}}）。会話が進まない場合は、停止してからもう一度送信してください。",
+    "codexDeliveryUnconfirmed": "Codex はまだあなたの選択の受け取りを確認していません（{{error}}）。選択はまだ反映される可能性があるため、もう一度回答しないでください。会話が進まない場合は、停止してからもう一度送信してください。"
   },
   "askUserQuestion": {
     "title": "Claudeからの質問があります",

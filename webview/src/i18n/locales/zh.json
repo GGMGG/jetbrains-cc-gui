@@ -1500,7 +1500,8 @@
     "allowWithRule": "允许并添加此命令规则",
     "allowWithNetworkRule": "允许并添加此网络规则",
     "codexDeliveryRetry": "Codex 没有收到你的选择（{{error}}），请重新选择。",
-    "codexDeliveryFailed": "Codex 没有收到你的选择（{{error}}）。如果对话没有继续，请点击停止后重新发送。"
+    "codexDeliveryFailed": "Codex 没有收到你的选择（{{error}}）。如果对话没有继续，请点击停止后重新发送。",
+    "codexDeliveryUnconfirmed": "Codex 还没有确认收到你的选择（{{error}}）。它可能仍会生效，请不要重复作答；如果对话没有继续，请点击停止后重新发送。"
   },
   "askUserQuestion": {
     "configWarning": "Codex 部分配置可能未生效，请查看兼容提示详情。",
