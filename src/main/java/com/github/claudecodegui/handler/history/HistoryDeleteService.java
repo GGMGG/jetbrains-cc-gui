@@ -411,11 +411,10 @@ class HistoryDeleteService {
 
     private boolean deleteCodexSession(String sessionId) throws java.io.IOException {
         CodexBatchDeleteResult result = deleteCodexSessions(Collections.singleton(sessionId));
-        for (String deleted : result.deletedSessionIds) {
-            if (!deleted.equals(sessionId)) {
-                cleanupSessionMetadata(deleted);
-            }
-        }
+        List<String> relatedSessionIds = result.deletedSessionIds.stream()
+                .filter(deleted -> !deleted.equals(sessionId))
+                .toList();
+        cleanupSessionMetadata(relatedSessionIds);
         return result.deletedSessionIds.contains(sessionId);
     }
 
