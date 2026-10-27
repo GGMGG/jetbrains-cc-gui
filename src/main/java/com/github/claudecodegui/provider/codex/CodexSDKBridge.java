@@ -19,6 +19,8 @@ import com.github.claudecodegui.storage.CodexStorageRuntimeLease;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.Map;
 import java.util.Set;
 import java.nio.file.Path;
@@ -1442,11 +1444,16 @@ public class CodexSDKBridge extends BaseSDKBridge {
      * Get persisted Codex session history messages.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
-        return this.getSessionMessages(sessionId, cwd, null);
+        return this.getSessionMessages(sessionId, cwd, null, () -> false);
     }
 
     /** Reads native history on the chat host, with an explicit offline-only legacy fallback. */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd, String channelId) {
+        return this.getSessionMessages(sessionId, cwd, channelId, () -> false);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd, String channelId, BooleanSupplier cancellation) {
+        checkHistoryCancellation(cancellation);
         if (this.nativeHistoryEnabled && this.isCodexRuntimeAccessAllowed()) {
             try {
                 CodexNativeHistoryReader reader = new CodexNativeHistoryReader(this, channelId, cwd, sessionId);
@@ -1454,7 +1461,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 java.util.Set<JsonElement> cursors = new java.util.HashSet<>();
                 JsonElement cursor = null;
                 do {
-                    CodexNativeHistoryReader.Page page = reader.readPage(cursor, 100);
+                    CodexNativeHistoryReader.Page page = reader.readPage(cursor, 100, cancellation);
                     pages.add(page.messages());
                     cursor = page.cursor();
                     if (cursor != null && !cursor.isJsonNull() && !cursors.add(cursor)) {
@@ -1465,6 +1472,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 java.util.Map<String, Integer> identityPositions = new java.util.HashMap<>();
                 for (int index = pages.size() - 1; index >= 0; index--) {
                     for (JsonObject message : pages.get(index)) {
+                        checkHistoryCancellation(cancellation);
                         String identity = com.github.claudecodegui.session.CodexHistoryMerger.identity(message.getAsJsonObject("raw"));
                         Integer existing = identity == null ? null : identityPositions.get(identity);
                         if (existing != null) {
@@ -1481,7 +1489,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     }
                 }
                 try {
-                    List<JsonObject> legacy = this.getLegacySessionMessages(sessionId, cwd);
+                    List<JsonObject> legacy = this.getLegacySessionMessages(sessionId, cwd, cancellation);
                     if (CodexNativeHistoryReader.countBlocks(messages, "tool_use") < CodexNativeHistoryReader.countBlocks(legacy, "tool_use")
                             || CodexNativeHistoryReader.countBlocks(messages, "thinking") < CodexNativeHistoryReader.countBlocks(legacy, "thinking")
                             || (!CodexNativeHistoryReader.hasUsage(messages) && CodexNativeHistoryReader.hasUsage(legacy))
@@ -1490,10 +1498,15 @@ public class CodexSDKBridge extends BaseSDKBridge {
                             || countHistoryUsers(legacy) > countHistoryUsers(messages)) {
                         return legacy;
                     }
+                } catch (CancellationException cancelled) {
+                    throw cancelled;
                 } catch (Exception unavailable) {
                     LOG.debug("Legacy transcript is unavailable; retaining the native history source");
                 }
+                checkHistoryCancellation(cancellation);
                 return messages;
+            } catch (CancellationException cancelled) {
+                throw cancelled;
             } catch (Exception error) {
                 if (!CodexNativeHistoryReader.permitsOfflineFallback(error.getMessage())) {
                     throw new IllegalStateException("Native Codex history failed", error);
@@ -1501,10 +1514,10 @@ public class CodexSDKBridge extends BaseSDKBridge {
             }
         }
         try {
-            return this.getLegacySessionMessages(sessionId, cwd);
+            return this.getLegacySessionMessages(sessionId, cwd, cancellation);
+        } catch (CancellationException cancelled) {
+            throw cancelled;
         } catch (SessionHistoryNotFoundException e) {
-            // A pruned rollout must reach the orchestrator's stale-session retire
-            // path instead of masquerading as an empty-but-valid transcript.
             throw e;
         } catch (Exception e) {
             LOG.warn("Failed to load Codex session history: " + e.getMessage(), e);
@@ -1512,13 +1525,21 @@ public class CodexSDKBridge extends BaseSDKBridge {
         }
     }
 
-    private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd) {
-        String messagesJson = this.historyReader.getSessionMessagesAsJson(sessionId);
-        if (messagesJson == null) {
+    private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
+        try {
+            JsonArray historyItems = new JsonArray();
+            historyReader.forEachSessionMessage(sessionId, cancellation, historyItems::add);
+            if (cancellation.getAsBoolean()) {
+                throw new CancellationException("History loading was cancelled");
+            }
+            return HistoryMessageInjector.convertCodexMessagesToFrontendBatch(historyItems);
+        } catch (CancellationException e) {
+            throw e;
+        } catch (java.nio.file.NoSuchFileException missing) {
             throw new SessionHistoryNotFoundException(sessionId, cwd);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load Codex session history", e);
         }
-        JsonArray items = this.gson.fromJson(messagesJson, JsonArray.class);
-        return items == null ? List.of() : HistoryMessageInjector.convertCodexMessagesToFrontendBatch(items);
     }
 
     private static boolean hasHistoryBlock(List<JsonObject> messages, String type) {
@@ -1546,6 +1567,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
             raw = raw.getAsJsonObject("message");
         }
         return raw.has("content") && raw.get("content").isJsonArray() ? raw.getAsJsonArray("content") : new JsonArray();
+    }
+
+    private static void checkHistoryCancellation(BooleanSupplier cancellation) {
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
+        }
     }
 
     /**
