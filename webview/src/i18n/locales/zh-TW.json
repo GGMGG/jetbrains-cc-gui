@@ -1088,7 +1088,8 @@
     "allowWithRule": "允許並加入此命令規則",
     "allowWithNetworkRule": "允許並加入此網路規則",
     "codexDeliveryRetry": "Codex 沒有收到你的選擇（{{error}}），請重新選擇。",
-    "codexDeliveryFailed": "Codex 沒有收到你的選擇（{{error}}）。如果對話沒有繼續，請點擊停止後重新傳送。"
+    "codexDeliveryFailed": "Codex 沒有收到你的選擇（{{error}}）。如果對話沒有繼續，請點擊停止後重新傳送。",
+    "codexDeliveryUnconfirmed": "Codex 尚未確認收到你的選擇（{{error}}）。它可能仍會生效，請不要重複作答；如果對話沒有繼續，請點擊停止後重新傳送。"
   },
   "askUserQuestion": {
     "title": "Claude 有一些問題想問你",
