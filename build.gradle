@@ -201,6 +201,10 @@ tasks.withType(JavaCompile).configureEach {
     options.release.set(17)
 }
 
+tasks.withType(Test).configureEach {
+    environment 'CODEX_HOME', ''
+}
+
 // Ensure plugin.xml is patched with the correct since/until build and change notes
 patchPluginXml {
     // plugin compatibility range
