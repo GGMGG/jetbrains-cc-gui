@@ -294,7 +294,7 @@ export function useSettingsBasicActions({
   const autoOpenFileEnabled = autoOpenFileEnabledProp ?? localAutoOpenFileEnabled;
 
   // Application-level startup history loading configuration.
-  const [loadHistoryOnStartup, setLoadHistoryOnStartup] = useState<boolean>(false);
+  const [loadHistoryOnStartup, setLoadHistoryOnStartup] = useState<boolean>(true);
   const [historyLoadTimeoutSeconds, setHistoryLoadTimeoutSeconds] = useState(
     DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS,
   );

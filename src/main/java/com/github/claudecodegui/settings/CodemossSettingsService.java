@@ -69,7 +69,7 @@ public class CodemossSettingsService {
     public static final String DEFAULT_GROK_AUTH_METHOD = GROK_AUTH_METHOD_OAUTH;
     public static final String LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY = "ccgui.loadHistoryOnStartup";
     public static final String HISTORY_LOAD_TIMEOUT_SECONDS_PROPERTY_KEY = "ccgui.historyLoadTimeoutSeconds";
-    public static final int DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS = 10;
+    public static final int DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS = 30;
     public static final int MIN_HISTORY_LOAD_TIMEOUT_SECONDS = 5;
     public static final int MAX_HISTORY_LOAD_TIMEOUT_SECONDS = 120;
 
@@ -78,7 +78,7 @@ public class CodemossSettingsService {
      * This is an application-level preference because all project windows share the same behavior.
      */
     public boolean isLoadHistoryOnStartup() {
-        return PropertiesComponent.getInstance().getBoolean(LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY, false);
+        return PropertiesComponent.getInstance().getBoolean(LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY, true);
     }
 
     /** Persist the application-level startup history loading preference. */

@@ -257,14 +257,23 @@ public class MiniMaxHistoryReader {
      * Loads one session's messages as Claude-shaped JSON objects.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) throws IOException {
-        return getSessionMessages(sessionId, cwd, () -> false);
+        return getSessionMessagesInternal(sessionId, cwd, () -> false, false);
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
                                                BooleanSupplier cancellation) throws IOException {
+        return getSessionMessagesInternal(sessionId, cwd, cancellation, true);
+    }
+
+    private List<JsonObject> getSessionMessagesInternal(String sessionId, String cwd,
+                                                         BooleanSupplier cancellation, boolean failMissing) throws IOException {
         HistoryCancellation.check(cancellation);
         Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
+            if (failMissing) {
+                throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
+            }
+
             return new ArrayList<>();
         }
 
@@ -276,8 +285,7 @@ public class MiniMaxHistoryReader {
                         .parseString(Files.readString(snapshotPath, StandardCharsets.UTF_8))
                         .getAsJsonObject();
                 if (snapshot.has("displayMessages")
-                        && snapshot.get("displayMessages").isJsonArray()
-                        && snapshot.getAsJsonArray("displayMessages").size() > 0) {
+                        && snapshot.get("displayMessages").isJsonArray()) {
                     return buildMessages(snapshot.getAsJsonArray("displayMessages"), cancellation);
                 }
             } catch (CancellationException e) {
@@ -292,6 +300,9 @@ public class MiniMaxHistoryReader {
         Path displayPath = sessionDir.resolve("display.jsonl");
         if (Files.isRegularFile(displayPath)) {
             return parseDisplayJsonl(displayPath, cancellation);
+        }
+        if (failMissing) {
+            throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
         }
         return new ArrayList<>();
     }

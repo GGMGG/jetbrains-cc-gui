@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { StartupHistoryLoadBanner } from './StartupHistoryLoadBanner';
 import type { StartupHistoryLoadState } from '../types/startupHistory';
 
@@ -40,5 +40,20 @@ describe('StartupHistoryLoadBanner', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'startupHistory.cancel' }));
     expect(window.sendToJava).toHaveBeenCalledWith('cancel_restored_history:request-7');
+  });
+
+  it('dismisses committed success and keeps a later retry visible', () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<StartupHistoryLoadBanner
+        state={{ ...baseState, status: 'loaded', generation: 1, retryable: false }} currentSessionId="session-1" />);
+      expect(screen.getByRole('status')).not.toBeNull();
+      act(() => vi.advanceTimersByTime(3000));
+      expect(screen.queryByRole('status')).toBeNull();
+      rerender(<StartupHistoryLoadBanner state={{ ...baseState, status: 'failed', generation: 2 }} currentSessionId="session-1" />);
+      expect(screen.getByRole('button', { name: 'startupHistory.retry' })).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

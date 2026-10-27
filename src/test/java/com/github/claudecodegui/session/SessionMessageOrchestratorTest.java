@@ -181,11 +181,84 @@ public class SessionMessageOrchestratorTest {
                 0,
                 0);
 
-        orchestrator.loadFromServer(() -> false).join();
+        try {
+            orchestrator.loadFromServer(() -> false).join();
+            fail("An overlapping restore must remain retryable instead of reporting success");
+        } catch (java.util.concurrent.CompletionException expected) {
+            assertTrue(expected.getCause() instanceof SessionMessageOrchestrator.HistoryLoadNotCommittedException);
+        }
 
         assertTrue(state.isLoading());
         assertTrue(state.ownsLoading(userLoadOwner));
         assertEquals(0, historyAccess.providerHistoryRequests.get());
+    }
+
+    @Test
+    public void liveSendDuringRestorePreservesMessagesAndReportsRetryableDiscard() throws Exception {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.setSessionId("restored-session");
+        state.setCwd("/workspace");
+        CountDownLatch readStarted = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        SessionMessageOrchestrator.SessionHistoryAccess access = new SessionMessageOrchestrator.SessionHistoryAccess() {
+            @Override
+            public List<JsonObject> getProviderSessionMessages(String provider, String sessionId, String cwd) {
+                readStarted.countDown();
+                try {
+                    assertTrue(releaseRead.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+                return List.of(createProviderMessage("user", "old history"));
+            }
+
+            @Override
+            public JsonObject getLatestClaudeUserMessage(String sessionId, String cwd) {
+                return null;
+            }
+        };
+        RecordingCallback callback = new RecordingCallback();
+        SessionCallbackFacade facade = new SessionCallbackFacade(null);
+        facade.setCallback(callback);
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), facade, access, (used, max) -> { }, 0, 0);
+        var restore = orchestrator.loadFromServer(() -> false);
+        try {
+            assertTrue(readStarted.await(5, TimeUnit.SECONDS));
+            state.addMessage(new MessageParser().parseServerMessage(createProviderMessage("user", "live send")));
+        } finally {
+            releaseRead.countDown();
+        }
+        try {
+            restore.join();
+            fail("A discarded restore must not be reported as loaded");
+        } catch (java.util.concurrent.CompletionException expected) {
+            assertTrue(expected.getCause() instanceof SessionMessageOrchestrator.HistoryLoadNotCommittedException);
+        }
+        assertEquals(List.of("live send"), state.getMessages().stream().map(message -> message.content).toList());
+        assertTrue(callback.messageUpdates.isEmpty());
+        assertEquals("restored-session", state.getSessionId());
+    }
+
+    @Test
+    public void missingStartupHistoryStaysRetryableWithoutRetiringSession() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("missing-restored-session");
+        state.setCwd("/workspace");
+        RecordingHistoryAccess access = new RecordingHistoryAccess();
+        access.providerHistoryFailure = new SessionHistoryNotFoundException("missing-restored-session", "/workspace");
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
+        try {
+            orchestrator.loadFromServer(() -> false).join();
+            fail("Missing restored history must not be loaded(0)");
+        } catch (java.util.concurrent.CompletionException expected) {
+            assertTrue(expected.getCause() instanceof SessionHistoryNotFoundException);
+        }
+        assertEquals("missing-restored-session", state.getSessionId());
     }
 
     @Test

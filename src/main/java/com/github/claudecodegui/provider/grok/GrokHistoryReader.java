@@ -268,19 +268,32 @@ public class GrokHistoryReader {
      * {@link com.github.claudecodegui.session.MessageParser}.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) throws IOException {
-        return getSessionMessages(sessionId, cwd, () -> false);
+        return getSessionMessagesInternal(sessionId, cwd, () -> false, false);
     }
 
     public List<JsonObject> getSessionMessages(String sessionId, String cwd,
                                                BooleanSupplier cancellation) throws IOException {
+        return getSessionMessagesInternal(sessionId, cwd, cancellation, true);
+    }
+
+    private List<JsonObject> getSessionMessagesInternal(String sessionId, String cwd,
+                                                         BooleanSupplier cancellation, boolean failMissing) throws IOException {
         HistoryCancellation.check(cancellation);
         Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
+            if (failMissing) {
+                throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
+            }
+
             LOG.warn("[GrokHistoryReader] Session dir not found for id=" + sessionId + " cwd=" + cwd);
             return List.of();
         }
         Path chatPath = sessionDir.resolve("chat_history.jsonl");
         if (!Files.isRegularFile(chatPath)) {
+            if (failMissing) {
+                throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
+            }
+
             return List.of();
         }
         return parseChatHistoryToMessages(chatPath, cancellation);

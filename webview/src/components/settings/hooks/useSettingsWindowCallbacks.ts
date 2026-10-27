@@ -297,7 +297,7 @@ export function useSettingsWindowCallbacks(deps: SettingsWindowCallbacksDeps) {
     window.updateLoadHistoryOnStartup = (jsonStr: string) => {
       try {
         const data = JSON.parse(jsonStr);
-        d().setLoadHistoryOnStartup?.(data.loadHistoryOnStartup ?? false);
+        d().setLoadHistoryOnStartup?.(data.loadHistoryOnStartup ?? true);
       } catch (error) {
         console.error('[SettingsView] Failed to parse load history on startup config:', error);
       }

@@ -71,7 +71,7 @@ const BehaviorTab = ({
   onStreamingEnabledChange = () => {},
   autoOpenFileEnabled = true,
   onAutoOpenFileEnabledChange = () => {},
-  loadHistoryOnStartup = false,
+  loadHistoryOnStartup = true,
   onLoadHistoryOnStartupChange = () => {},
   historyLoadTimeoutSeconds = DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS,
   onHistoryLoadTimeoutChange = () => {},

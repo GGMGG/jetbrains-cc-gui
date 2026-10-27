@@ -88,11 +88,19 @@ public class DshHistoryReader {
         JsonObject payload = runDshCommand("loadSession", stdin, cancellation);
         if (payload == null || !payload.has("success") || !payload.get("success").getAsBoolean()) {
             if (propagateFailure) {
+                if (payload != null && payload.has("errorCode")
+                        && "HISTORY_LOAD_PROVIDER_TIMEOUT".equals(payload.get("errorCode").getAsString())) {
+                    throw new IllegalStateException("DSH history request timed out",
+                            new java.util.concurrent.TimeoutException("DSH history request timed out"));
+                }
                 throw new IllegalStateException("DSH history request failed");
             }
             LOG.warn("[DSH] loadSession failed for " + sessionId + ": "
                     + (payload != null && payload.has("error") ? payload.get("error").getAsString() : "no payload"));
             return Collections.emptyList();
+        }
+        if (propagateFailure && (!payload.has("messages") || !payload.get("messages").isJsonArray())) {
+            throw new IllegalStateException("DSH history returned an invalid message response");
         }
         List<JsonObject> messages = new ArrayList<>();
         if (payload.has("messages") && payload.get("messages").isJsonArray()) {
@@ -135,7 +143,7 @@ public class DshHistoryReader {
         return runDshCommand(command, stdinPayload, () -> false);
     }
 
-    private JsonObject runDshCommand(String command, JsonObject stdinPayload,
+    JsonObject runDshCommand(String command, JsonObject stdinPayload,
                                      BooleanSupplier cancellation) {
         Process process = null;
         try {
@@ -202,7 +210,10 @@ public class DshHistoryReader {
                 checkCancellation(cancellation);
                 if (System.nanoTime() >= deadlineNanos) {
                     LOG.warn("[DSH] " + command + " timed out" + stderrSuffix(stderrTail));
-                    return null;
+                    JsonObject timeout = new JsonObject();
+                    timeout.addProperty("success", false);
+                    timeout.addProperty("errorCode", "HISTORY_LOAD_PROVIDER_TIMEOUT");
+                    return timeout;
                 }
             }
             readerThread.join(2000L);

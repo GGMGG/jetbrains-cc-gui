@@ -168,8 +168,7 @@ public class ClaudeChatWindow {
     private final AtomicLong restoredHistoryLoadGeneration = new AtomicLong();
     private final AtomicReference<RestoredHistoryLoadRequest> activeRestoredHistoryLoad =
             new AtomicReference<>();
-    private volatile ClaudeSession restoredHistorySession;
-    private volatile String restoredHistorySessionId;
+    private final RestoredHistorySession<ClaudeSession> restoredHistory = new RestoredHistorySession<>();
 
     // Shared serializer for structured bridges (Gson instances are thread-safe).
     private static final Gson GSON = new Gson();
@@ -1637,8 +1636,7 @@ public class ClaudeChatWindow {
                     + (project != null ? project.getBasePath() : null));
         }
         session.setSessionInfo(restoredSessionId, restoredCwd);
-        restoredHistorySession = restoredSessionId != null ? session : null;
-        restoredHistorySessionId = restoredSessionId;
+        restoredHistory.bind(session, restoredSessionId);
         persistTabSessionState();
 
         LOG.info("[TabRestore] Restored tab session state: provider=" + savedState.provider
@@ -1728,10 +1726,13 @@ public class ClaudeChatWindow {
         });
     }
 
-    private void completeRestoredHistoryLoad(RestoredHistoryLoadRequest request, ClaudeSession restoringSession,
+    private synchronized void completeRestoredHistoryLoad(RestoredHistoryLoadRequest request, ClaudeSession restoringSession,
                                              String restoringSessionId, Throwable error, long loadStartedNanos) {
         if (!activeRestoredHistoryLoad.compareAndSet(request, null)) {
             return;
+        }
+        if (request.wasCommitted()) {
+            restoredHistory.markCommitted(restoringSession, restoringSessionId);
         }
         long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - loadStartedNanos);
         ApplicationManager.getApplication().invokeLater(() -> onRestoredHistoryLoadFinished(
@@ -1744,32 +1745,33 @@ public class ClaudeChatWindow {
                 || restoredHistoryLoadGeneration.get() != request.generation()) {
             return;
         }
-        if ((error == null || request.wasCommitted()) && !isNonEmpty(restoringSession.getSessionId())) {
+        if (request.wasCommitted() && !isNonEmpty(restoringSession.getSessionId())) {
             sessionId = resolveExposedSessionId(null, permissionServiceKey);
             persistTabSessionState();
             callJavaScript("historyLoadComplete", "0");
             publishRestoredHistoryState("loaded", request, null, null, 0, false);
-            restoredHistorySession = null;
-            restoredHistorySessionId = null;
+            restoredHistory.complete(restoringSession, restoringSessionId);
             return;
         }
         if (!restoringSessionId.equals(restoringSession.getSessionId())) {
             return;
         }
-        if ((error == null && !request.wasCancelled()) || request.wasCommitted()) {
+        if (request.wasCommitted()) {
             int messageCount = restoringSession.getMessages().size();
             LOG.info("[TabRestore] Restored history load completed: provider="
                     + restoringSession.getProvider() + ", status=loaded, elapsedMs=" + elapsedMillis);
             callJavaScript("historyLoadComplete", String.valueOf(messageCount));
             publishRestoredHistoryState("loaded", request, null, null, messageCount, false);
+            restoredHistory.complete(restoringSession, restoringSessionId);
             return;
         }
         String errorCode = request.cancellationCode();
         if (errorCode == null) {
-            errorCode = historyLoadErrorCode(error);
+            errorCode = error == null ? "HISTORY_LOAD_SUPERSEDED" : historyLoadErrorCode(error);
         }
-        String message = error != null ? errorMessage(error) : "History loading was cancelled";
-        String status = RestoredHistoryLoadRequest.TIMEOUT.equals(errorCode) ? "timeout"
+        String message = error != null ? errorMessage(error) : "History was not committed; retry loading";
+        String status = (RestoredHistoryLoadRequest.TIMEOUT.equals(errorCode)
+                || "HISTORY_LOAD_PROVIDER_TIMEOUT".equals(errorCode)) ? "timeout"
                 : RestoredHistoryLoadRequest.CANCELLED.equals(errorCode) ? "cancelled" : "failed";
         LOG.warn("[TabRestore] Restored history load ended: provider="
                 + restoringSession.getProvider() + ", status=" + status
@@ -1787,8 +1789,7 @@ public class ClaudeChatWindow {
 
     private boolean isRestoredHistorySessionCurrent() {
         ClaudeSession current = session;
-        return current != null && current == restoredHistorySession && restoredHistorySessionId != null
-                && restoredHistorySessionId.equals(current.getSessionId());
+        return current != null && restoredHistory.isCurrent(current, current.getSessionId());
     }
 
     private void publishRestoredHistoryState(String status, RestoredHistoryLoadRequest request,
@@ -1796,7 +1797,7 @@ public class ClaudeChatWindow {
                                              boolean retryable) {
         JsonObject payload = new JsonObject();
         payload.addProperty("status", status);
-        payload.addProperty("sessionId", restoredHistorySessionId);
+        payload.addProperty("sessionId", restoredHistory.sessionId());
         payload.addProperty("requestId", request != null ? request.requestId() : "");
         payload.addProperty("generation", request != null ? request.generation() : restoredHistoryLoadGeneration.get());
         payload.addProperty("messageCount", messageCount);
@@ -1823,6 +1824,9 @@ public class ClaudeChatWindow {
     static String historyLoadErrorCode(Throwable error) {
         Throwable current = error;
         while (current != null) {
+            if (current instanceof com.github.claudecodegui.session.SessionMessageOrchestrator.HistoryLoadNotCommittedException) {
+                return "HISTORY_LOAD_SUPERSEDED";
+            }
             if (current instanceof java.util.concurrent.TimeoutException) {
                 return "HISTORY_LOAD_PROVIDER_TIMEOUT";
             }

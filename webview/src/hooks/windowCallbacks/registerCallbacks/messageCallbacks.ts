@@ -129,6 +129,10 @@ export function registerMessageCallbacks(
         if (previous?.sessionId === next.sessionId && previous.generation > next.generation) {
           return previous;
         }
+        if (previous?.sessionId === next.sessionId && previous.generation === next.generation
+          && previous.status === 'loaded') {
+          return previous;
+        }
         return next;
       });
     } catch {

@@ -106,10 +106,13 @@ public class ZcodeHistoryReader {
         stdin.addProperty("cwd", cwd != null ? cwd : "");
         JsonObject result = runCommand("getSessionMessages", stdin, cancellation);
         if (result == null) {
-            return messages;
+            throw new IllegalStateException("ZCode history returned no response");
         }
         if (result.has("success") && !result.get("success").getAsBoolean()) {
             throw new IllegalStateException("ZCode history request failed");
+        }
+        if (!result.has("messages") || !result.get("messages").isJsonArray()) {
+            throw new IllegalStateException("ZCode history returned an invalid message response");
         }
         if (result.has("messages") && result.get("messages").isJsonArray()) {
             JsonArray arr = result.getAsJsonArray("messages");
@@ -151,7 +154,7 @@ public class ZcodeHistoryReader {
         return runCommand(command, stdinPayload, () -> false);
     }
 
-    private JsonObject runCommand(String command, JsonObject stdinPayload,
+    JsonObject runCommand(String command, JsonObject stdinPayload,
                                   BooleanSupplier cancellation) throws Exception {
         checkCancellation(cancellation);
         String node = nodeDetector.findNodeExecutable();
@@ -221,7 +224,7 @@ public class ZcodeHistoryReader {
                 checkCancellation(cancellation);
                 if (System.nanoTime() >= deadlineNanos) {
                     LOG.warn("[ZcodeHistoryReader] Timed out running zcode " + command);
-                    return null;
+                    throw new java.util.concurrent.TimeoutException("ZCode history request timed out");
                 }
             }
         } finally {

@@ -11,7 +11,6 @@ import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.ide.util.PropertiesComponent;
-import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileChooser.FileChooser;
@@ -33,10 +32,16 @@ public class ProjectConfigHandler {
     private final HandlerContext context;
     private final CodemossSettingsService settingsService;
     private final Gson gson = new Gson();
+    private final java.util.function.Consumer<Runnable> uiDispatcher;
 
     public ProjectConfigHandler(HandlerContext context) {
+        this(context, callback -> ApplicationManager.getApplication().invokeLater(callback));
+    }
+
+    ProjectConfigHandler(HandlerContext context, java.util.function.Consumer<Runnable> uiDispatcher) {
         this.context = context;
         this.settingsService = context.getSettingsService();
+        this.uiDispatcher = uiDispatcher;
     }
 
     // ---- Internal helpers --------------------------------------------------
@@ -53,12 +58,7 @@ public class ProjectConfigHandler {
     private void pushJson(String jsCallback, JsonElement payload) {
         String json = gson.toJson(payload);
         Runnable callback = () -> context.callJavaScript(jsCallback, context.escapeJs(json));
-        Application application = ApplicationManager.getApplication();
-        if (application == null) {
-            callback.run();
-        } else {
-            application.invokeLater(callback);
-        }
+        uiDispatcher.accept(callback);
     }
 
     private void showError(String message) {
@@ -283,12 +283,12 @@ public class ProjectConfigHandler {
     public void handleGetLoadHistoryOnStartup() {
         respondWithJson("window.updateLoadHistoryOnStartup",
             () -> jsonOf("loadHistoryOnStartup", settingsService.isLoadHistoryOnStartup()),
-            jsonOf("loadHistoryOnStartup", false),
+            jsonOf("loadHistoryOnStartup", true),
             "Failed to get load history on startup");
     }
 
     public void handleSetLoadHistoryOnStartup(String content) {
-        handleBooleanToggle(content, "loadHistoryOnStartup", false, "load history on startup",
+        handleBooleanToggle(content, "loadHistoryOnStartup", true, "load history on startup",
             settingsService::setLoadHistoryOnStartup,
             "window.updateLoadHistoryOnStartup",
             "Failed to save load history on startup config");

@@ -34,7 +34,7 @@ public class ProjectConfigHandlerHistoryLoadTest {
                     public String escapeJs(String str) {
                         return str;
                     }
-                }));
+                }), Runnable::run);
 
         handler.handleSetHistoryLoadTimeout("{\"historyLoadTimeoutSeconds\":999}");
         awaitCallback(callbackLatch.get());
@@ -70,7 +70,7 @@ public class ProjectConfigHandlerHistoryLoadTest {
                     public String escapeJs(String str) {
                         return str;
                     }
-                }));
+                }), Runnable::run);
 
         handler.handleSetHistoryLoadTimeout("{}");
         awaitCallback(callbackLatch);

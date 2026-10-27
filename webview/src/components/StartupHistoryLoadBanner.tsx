@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { useEffect, useState } from 'react';
 import type { StartupHistoryLoadState } from '../types/startupHistory';
 import styles from './StartupHistoryLoadBanner.module.less';
 
@@ -18,7 +19,15 @@ const iconByStatus: Record<StartupHistoryLoadState['status'], string> = {
 
 export function StartupHistoryLoadBanner({ state, currentSessionId }: StartupHistoryLoadBannerProps) {
   const { t } = useTranslation();
-  if (!state || !currentSessionId || state.sessionId !== currentSessionId) return null;
+  const [dismissedGeneration, setDismissedGeneration] = useState<string | null>(null);
+  const generationKey = state ? `${state.sessionId}:${state.generation}` : '';
+  useEffect(() => {
+    if (state?.status !== 'loaded') return;
+    const timer = window.setTimeout(() => setDismissedGeneration(generationKey), 3000);
+    return () => window.clearTimeout(timer);
+  }, [generationKey, state?.status]);
+  if (!state || !currentSessionId || state.sessionId !== currentSessionId
+    || (state.status === 'loaded' && dismissedGeneration === generationKey)) return null;
 
   const load = () => window.sendToJava?.('load_restored_history:');
   const cancel = () => window.sendToJava?.(`cancel_restored_history:${state.requestId}`);

@@ -81,6 +81,19 @@ public class SessionMessageOrchestrator {
         }
     }
 
+    /** A restore result was deliberately discarded and must remain retryable. */
+    public static final class HistoryLoadNotCommittedException extends IllegalStateException {
+        public HistoryLoadNotCommittedException() {
+            super("History changed while loading; retry after current work completes");
+        }
+    }
+
+    private static void requireRestoreCommit(boolean updateSharedLoadingState) {
+        if (!updateSharedLoadingState) {
+            throw new HistoryLoadNotCommittedException();
+        }
+    }
+
     @FunctionalInterface
     public interface UsageDisplay {
         void show(int usedTokens, int maxTokens);
@@ -238,7 +251,7 @@ public class SessionMessageOrchestrator {
         List<ClaudeSession.Message> messagesBeforeLoad;
         synchronized (state.getMessageStateLock()) {
             if (!updateSharedLoadingState && state.isLoading()) {
-                return CompletableFuture.completedFuture(null);
+                return CompletableFuture.failedFuture(new HistoryLoadNotCommittedException());
             }
             messagesBeforeLoad = state.getMessages();
             if (updateSharedLoadingState) {
@@ -290,6 +303,7 @@ public class SessionMessageOrchestrator {
                     if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
                             updateSharedLoadingState)) {
                         LOG.info("Ignoring history result for a session that changed while loading");
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // Safety checks must see buffered stream deltas before replacement materializes them.
@@ -297,6 +311,7 @@ public class SessionMessageOrchestrator {
                     // A new row added during this read belongs to newer live work.
                     // Metadata patches keep the same row identities and remain valid.
                     if (!currentMessages.equals(messagesBeforeLoad)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // The anchor walk backs every Claude guard below; run it once per commit.
@@ -306,6 +321,7 @@ public class SessionMessageOrchestrator {
                     if ("claude".equals(requestedProvider)
                             && !historyKeepsLiveNarrative(loadedMessages, currentMessages, alignedAnchorIndex)) {
                         LOG.warn("Ignoring history result that has not persisted the live narrative");
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // A page load only carries the newest turns, so a transcript that
@@ -321,7 +337,8 @@ public class SessionMessageOrchestrator {
                         if (!"codex".equals(requestedProvider) && !MessageStructure.structuralBlockKeys(mergedMessages)
                                 .containsAll(MessageStructure.structuralBlockKeys(currentMessages))) {
                             LOG.warn("Ignoring history page that would remove live structural blocks");
-                            return;
+                            requireRestoreCommit(updateSharedLoadingState);
+                        return;
                         }
                         keptOlderLivePrefix = pagedClaudeLoad && alignedAnchorIndex > 0;
                         loadedMessages = mergedMessages;
@@ -330,11 +347,13 @@ public class SessionMessageOrchestrator {
                         if (liveHistoryBacked > 0 && loadedMessages.size() < liveHistoryBacked) {
                             LOG.warn("Ignoring stale shorter history result: loaded="
                                     + loadedMessages.size() + ", live=" + liveHistoryBacked);
-                            return;
+                            requireRestoreCommit(updateSharedLoadingState);
+                        return;
                         }
                         if (!historyPreservesCurrentStructure(loadedStructure, currentMessages)) {
                             LOG.warn("Ignoring history result that would remove live structural blocks");
-                            return;
+                            requireRestoreCommit(updateSharedLoadingState);
+                        return;
                         }
                     }
 
@@ -374,11 +393,15 @@ public class SessionMessageOrchestrator {
                 }
             } catch (SessionHistoryNotFoundException e) {
                 checkHistoryLoadCancellation(cancellation);
+                if (!updateSharedLoadingState) {
+                    throw new CompletionException(e);
+                }
                 // A missing history file is an explicit stale-session signal, so unlike
                 // the stale-result guards above it clears the live transcript.
                 synchronized (state.getMessageStateLock()) {
                     if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
                             updateSharedLoadingState)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     boolean committed = cancellation.commitIfActive(this::retireMissingHistory);
@@ -389,9 +412,13 @@ public class SessionMessageOrchestrator {
                 LOG.warn("Session history is unavailable; cleared stale session ID: " + e.getMessage());
             } catch (SessionHistoryIncompleteException e) {
                 checkHistoryLoadCancellation(cancellation);
+                if (!updateSharedLoadingState) {
+                    throw new CompletionException(e);
+                }
                 synchronized (state.getMessageStateLock()) {
                     if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
                             updateSharedLoadingState)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // An initial history open has no live transcript to keep. Let
@@ -402,12 +429,15 @@ public class SessionMessageOrchestrator {
                 }
                 LOG.info("Session history is still being written; keeping the live transcript: "
                         + e.getMessage());
+            } catch (HistoryLoadNotCommittedException e) {
+                throw new CompletionException(e);
             } catch (CancellationException e) {
                 throw new CompletionException(e);
             } catch (Exception e) {
                 synchronized (state.getMessageStateLock()) {
                     if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
                             updateSharedLoadingState)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     if (updateSharedLoadingState) {

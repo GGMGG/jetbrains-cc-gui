@@ -107,6 +107,16 @@ describe('claudeHistoryPageInfo', () => {
     expect(update(null)).toEqual(pending);
   });
 
+  it.each(['unloaded', 'loading', 'failed'] as const)('keeps committed history when a same-generation %s arrives', status => {
+    const harness = createHarness('s1');
+    const committed: StartupHistoryLoadState = {
+      status: 'loaded', sessionId: 's1', requestId: 'completed', generation: 2, messageCount: 5, retryable: false,
+    };
+    window.updateStartupHistoryLoadState?.(JSON.stringify({ ...committed, status, retryable: true }));
+    const update = harness.startupHistoryUpdates[0] as (previous: StartupHistoryLoadState | null) => StartupHistoryLoadState | null;
+    expect(update(committed)).toBe(committed);
+  });
+
   it('stores the CLI title even when the session id is not synced yet', () => {
     const harness = createHarness(null);
     harness.dispatch(pageInfo());
