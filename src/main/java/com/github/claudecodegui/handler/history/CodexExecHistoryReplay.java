@@ -44,14 +44,6 @@ final class CodexExecHistoryReplay {
             + "|\"is_error\"\\s*:\\s*true|\\bscript (?:error|failed)\\b"
             + "|\\bpermission denied\\b"
     );
-    private static final Pattern SHELL_WRAPPER_PATTERN = Pattern.compile(
-        "^/bin/(?:zsh|bash)\\s+(?:-lc|-c)\\s+['\"](.+)['\"]$",
-        Pattern.DOTALL
-    );
-    private static final Pattern CD_PREFIX_PATTERN = Pattern.compile(
-        "^cd\\s+\\S+\\s+&&\\s+(.+)$",
-        Pattern.DOTALL
-    );
 
     private CodexExecHistoryReplay() {
     }
@@ -458,12 +450,9 @@ final class CodexExecHistoryReplay {
             Command command = commands.get(i);
             JsonObject input = new JsonObject();
             input.addProperty("command", command.command);
-            input.addProperty(
-                "description",
-                command.description != null && !command.description.isBlank()
-                    ? command.description
-                    : smartCommandDescription(command.command)
-            );
+            if (command.description != null && !command.description.isBlank()) {
+                input.addProperty("description", command.description);
+            }
             if (command.workdir != null && !command.workdir.isBlank()) {
                 input.addProperty("workdir", command.workdir);
             }
@@ -477,7 +466,7 @@ final class CodexExecHistoryReplay {
             JsonObject toolUse = new JsonObject();
             toolUse.addProperty("type", "tool_use");
             toolUse.addProperty("id", shellToolUseId(callId, i));
-            toolUse.addProperty("name", smartShellToolName(command.command));
+            toolUse.addProperty("name", "bash");
             toolUse.add("input", input);
             content.add(toolUse);
         }
@@ -1335,115 +1324,6 @@ final class CodexExecHistoryReplay {
     private static String planToolUseId(String callId) {
         String stableCallId = callId == null || callId.isBlank() ? "unknown" : callId;
         return "codex_plan_" + stableCallId;
-    }
-
-    private static String smartShellToolName(String command) {
-        String actualCommand = extractActualCommand(command);
-        if (actualCommand.matches("^(ls|find|tree)\\b.*")) {
-            return "glob";
-        }
-        if (actualCommand.matches("^(pwd|cat|head|tail|file|stat)\\b.*")
-                || actualCommand.matches("^sed\\s+-n\\s+.*")) {
-            return "read";
-        }
-        if (actualCommand.matches("^(grep|rg|ack|ag)\\b.*")) {
-            return "glob";
-        }
-        return "bash";
-    }
-
-    static String smartCommandDescription(String command) {
-        if (command == null || command.isBlank()) {
-            return "Execute command";
-        }
-        String actualCommand = extractActualCommand(command);
-        String[] words = actualCommand.split("\\s+");
-        String firstWord = words.length > 0 ? words[0] : actualCommand;
-
-        if (actualCommand.matches("^ls\\b.*")) {
-            return "List directory contents";
-        }
-        if (actualCommand.matches("^pwd\\b.*")) {
-            return "Show current directory";
-        }
-        if (actualCommand.matches("^cat\\b.*")) {
-            return "Read file contents";
-        }
-        if (actualCommand.matches("^head\\b.*")) {
-            return "Read first lines";
-        }
-        if (actualCommand.matches("^tail\\b.*")) {
-            return "Read last lines";
-        }
-        if (actualCommand.matches("^find\\b.*")) {
-            return "Find files";
-        }
-        if (actualCommand.matches("^tree\\b.*")) {
-            return "Show directory tree";
-        }
-        if (actualCommand.matches("^sed\\s+-n\\s+.*")) {
-            return "Read file lines";
-        }
-        if (actualCommand.matches("^(grep|rg|ack|ag)\\b.*")) {
-            return "Search in files";
-        }
-        if (actualCommand.matches("^git\\s+status\\b.*")) {
-            return "Check git status";
-        }
-        if (actualCommand.matches("^git\\s+diff\\b.*")) {
-            return "Show git diff";
-        }
-        if (actualCommand.matches("^git\\s+log\\b.*")) {
-            return "Show git log";
-        }
-        if (actualCommand.matches("^git\\s+add\\b.*")) {
-            return "Stage changes";
-        }
-        if (actualCommand.matches("^git\\s+commit\\b.*")) {
-            return "Commit changes";
-        }
-        if (actualCommand.matches("^git\\s+push\\b.*")) {
-            return "Push to remote";
-        }
-        if (actualCommand.matches("^git\\s+pull\\b.*")) {
-            return "Pull from remote";
-        }
-        if (actualCommand.matches("^git\\s+.*") && words.length > 1) {
-            return "Run git " + words[1];
-        }
-        if (actualCommand.matches("^npm\\s+install\\b.*")) {
-            return "Install npm packages";
-        }
-        if (actualCommand.matches("^npm\\s+run\\b.*")) {
-            return "Run npm script";
-        }
-        if (actualCommand.matches("^npm\\s+.*") && words.length > 1) {
-            return "Run npm " + words[1];
-        }
-        if (actualCommand.matches("^(yarn|pnpm)\\s+.*")) {
-            return "Run " + firstWord + " command";
-        }
-        if (actualCommand.matches("^(gradle|mvn|make)\\b.*")) {
-            return "Run " + firstWord + " build";
-        }
-        return actualCommand.length() <= 30 ? actualCommand : "Run " + firstWord;
-    }
-
-    private static String extractActualCommand(String command) {
-        if (command == null) {
-            return "";
-        }
-        String actualCommand = command.trim();
-        Matcher shellWrapper = SHELL_WRAPPER_PATTERN.matcher(actualCommand);
-        if (shellWrapper.matches()) {
-            actualCommand = shellWrapper.group(1);
-        }
-        Matcher cdPrefix = CD_PREFIX_PATTERN.matcher(actualCommand);
-        if (cdPrefix.matches()) {
-            actualCommand = cdPrefix.group(1);
-        }
-        // PowerShell's call operator is an invocation marker, not the executable name.
-        return actualCommand.trim().replaceFirst("^&\\s+", "");
     }
 
     private static String getStringProperty(JsonObject object, String propertyName) {

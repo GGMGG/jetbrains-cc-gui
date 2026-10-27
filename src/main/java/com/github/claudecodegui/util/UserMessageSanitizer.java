@@ -46,7 +46,7 @@ public final class UserMessageSanitizer {
         }
 
         String normalized = text.replace("\r\n", "\n").replace("\r", "\n");
-        String strippedTags = stripSystemTags(normalized);
+        String strippedTags = stripSystemTags(stripCodexIdeEnvelope(normalized));
         String strippedImages = stripCodexImagePlaceholders(strippedTags);
         String strippedContext = stripAppendedContext(stripDesktopAttachmentEnvelope(strippedImages));
         return strippedContext.trim();
@@ -79,6 +79,18 @@ public final class UserMessageSanitizer {
         }
         String request = text.substring(envelope.end()).stripLeading();
         return references.isEmpty() ? request : String.join("\n", references) + "\n\n" + request;
+    }
+
+    private static String stripCodexIdeEnvelope(String text) {
+        String marker = "\n## My request for Codex:\n";
+        if (text.startsWith("# Context from my IDE setup:\n")) {
+            int request = text.indexOf(marker);
+            if (request >= 0) {
+                // Preserve delimiters quoted inside the actual request instead of discarding user prose.
+                return text.substring(request + marker.length());
+            }
+        }
+        return text;
     }
 
     private static String stripSystemTags(String text) {

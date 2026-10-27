@@ -1,16 +1,12 @@
 package com.github.claudecodegui.handler;
 
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.bridge.NodeProcessRunner;
 import com.github.claudecodegui.bridge.ProcessManager;
 import com.github.claudecodegui.handler.core.HandlerContext;
-import com.github.claudecodegui.util.PlatformUtils;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Handles Node.js subprocess calls for favorites and session titles services.
@@ -23,17 +19,29 @@ public class NodeJsServiceCaller {
     private static final int PROCESS_TIMEOUT_SECONDS = 30;
 
     private static final Set<String> ALLOWED_FAVORITES_FUNCTIONS = Set.of(
-        "loadFavorites", "toggleFavorite"
+        "loadFavorites", "toggleFavorite", "removeFavorite"
     );
 
     private static final Set<String> ALLOWED_TITLES_FUNCTIONS = Set.of(
         "loadTitles", "updateTitle", "deleteTitle"
     );
 
+    // Every write rewrites the whole favorites.json / session-titles.json, so
+    // overlapping calls (e.g. deleting one session while renaming another) lose
+    // updates. JVM-wide: each chat window has its own caller, the files are shared.
+    private static final Object FAVORITES_FILE_LOCK = new Object();
+    private static final Object TITLES_FILE_LOCK = new Object();
+
     private final HandlerContext context;
+    private final int processTimeoutSeconds;
 
     public NodeJsServiceCaller(HandlerContext context) {
+        this(context, PROCESS_TIMEOUT_SECONDS);
+    }
+
+    NodeJsServiceCaller(HandlerContext context, int processTimeoutSeconds) {
         this.context = context;
+        this.processTimeoutSeconds = processTimeoutSeconds;
     }
 
     /**
@@ -58,7 +66,7 @@ public class NodeJsServiceCaller {
         pb.redirectErrorStream(true);
         pb.environment().put("SESSION_ID", sessionId);
 
-        return executeNodeScript(pb);
+        return executeLocked(FAVORITES_FILE_LOCK, pb);
     }
 
     /**
@@ -82,7 +90,7 @@ public class NodeJsServiceCaller {
         ProcessBuilder pb = buildNodeProcessBuilder(nodePath, nodeScript, servicePath);
         pb.redirectErrorStream(true);
 
-        return executeNodeScript(pb);
+        return executeLocked(TITLES_FILE_LOCK, pb);
     }
 
     /**
@@ -108,7 +116,7 @@ public class NodeJsServiceCaller {
         pb.environment().put("SESSION_ID", sessionId);
         pb.environment().put("CUSTOM_TITLE", customTitle);
 
-        return executeNodeScript(pb);
+        return executeLocked(TITLES_FILE_LOCK, pb);
     }
 
     /**
@@ -128,7 +136,7 @@ public class NodeJsServiceCaller {
         pb.redirectErrorStream(true);
         pb.environment().put("SESSION_ID", sessionId);
 
-        return executeNodeScript(pb);
+        return executeLocked(TITLES_FILE_LOCK, pb);
     }
 
     /**
@@ -139,6 +147,12 @@ public class NodeJsServiceCaller {
         List<String> command = NodeDetector.buildNodeInlineCommand(nodePath, nodeScript);
         command.add(servicePath);
         return new ProcessBuilder(command);
+    }
+
+    private String executeLocked(Object fileLock, ProcessBuilder pb) throws Exception {
+        synchronized (fileLock) {
+            return executeNodeScript(pb);
+        }
     }
 
     static String resolveServicePath(String nodePath, String bridgePath, String serviceFileName) {
@@ -158,47 +172,18 @@ public class NodeJsServiceCaller {
     }
 
     /**
-     * Execute a Node.js script via ProcessBuilder, read its output, enforce a timeout,
-     * and return the last line of stdout (expected to be JSON).
+     * Execute a Node.js script under a hard timeout and return the last line of
+     * stdout (expected to be JSON). See {@link NodeProcessRunner} for how the
+     * deadline is enforced.
      */
-    private String executeNodeScript(ProcessBuilder pb) throws Exception {
+    String executeNodeScript(ProcessBuilder pb) throws Exception {
         // L8 fix: register with ProcessManager so cleanupAllProcesses sees this child.
         ProcessManager processManager = context.getClaudeSDKBridge().getProcessManager();
-        String channelId = ProcessManager.newChannelId("node-service");
-        Process process = null;
-        try {
-            process = pb.start();
-            processManager.registerProcess(channelId, process);
-
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-
-            boolean finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!finished) {
-                PlatformUtils.terminateProcess(process);
-                throw new Exception("Node.js process timed out after " + PROCESS_TIMEOUT_SECONDS + " seconds");
-            }
-
-            int exitCode = process.exitValue();
-            if (exitCode != 0) {
-                throw new Exception("Node.js process exited with code " + exitCode + ": " + output);
-            }
-
-            String[] lines = output.toString().split("\n");
-            return lines.length > 0 ? lines[lines.length - 1] : "{}";
-        } finally {
-            if (process != null) {
-                if (process.isAlive()) {
-                    PlatformUtils.terminateProcess(process);
-                }
-                processManager.unregisterProcess(channelId, process);
-            }
+        NodeProcessRunner.Result result =
+                NodeProcessRunner.run(pb, processManager, "node-service", null, processTimeoutSeconds);
+        if (result.exitCode() != 0) {
+            throw new Exception("Node.js process exited with code " + result.exitCode() + ": " + result.output());
         }
+        return result.lastLine();
     }
 }

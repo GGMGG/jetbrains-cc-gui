@@ -57,8 +57,8 @@ public class ClaudeHistoryProcessBoundaryTest {
         service = new ClaudeSessionQueryService(Logger.getInstance(getClass()), new Gson(), node,
                 () -> home.toFile(), manager, new EnvironmentConfigurator(), new ClaudeJsonOutputExtractor()) {
             @Override
-            Process startProcess(ProcessBuilder ignored) throws IOException {
-                return manager.startFixtureProcess();
+            ProcessBuilder prepareProcessBuilder(ProcessBuilder ignored) {
+                return manager.fixtureProcessBuilder();
             }
         };
     }
@@ -176,7 +176,7 @@ public class ClaudeHistoryProcessBoundaryTest {
         private boolean available = true;
         private boolean blocked;
 
-        private Process startFixtureProcess() throws IOException {
+        private ProcessBuilder fixtureProcessBuilder() {
             ProcessBuilder fixture;
             if (!available) {
                 fixture = new ProcessBuilder(home.resolve("missing-history-reader.exe").toString());
@@ -187,7 +187,7 @@ public class ClaudeHistoryProcessBoundaryTest {
                     fixture.command().add(home.resolve("reader.ready").toString());
                 }
             }
-            return fixture.redirectErrorStream(true).start();
+            return fixture.redirectErrorStream(true);
         }
     }
 }

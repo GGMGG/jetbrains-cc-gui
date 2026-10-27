@@ -29,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -592,13 +593,44 @@ class HistoryDeleteService {
         return new int[]{mainDeleted ? 1 : 0, agentFilesDeleted};
     }
 
-    private void cleanupSessionMetadata(String sessionId) {
-        try {
-            nodeJsServiceCaller.callNodeJsFavoritesService("removeFavorite", sessionId);
-            nodeJsServiceCaller.callNodeJsDeleteTitle(sessionId);
+    /**
+     * Removes the deleted session's favorite and custom title.
+     *
+     * @return true if both were cleaned up
+     */
+    boolean cleanupSessionMetadata(String sessionId) {
+        // Independent steps: a failed favorite removal must not leave the custom title behind.
+        // Both services report a failed save as a false result while still exiting 0.
+        boolean favoriteRemoved = runMetadataCleanupStep("remove favorite",
+                () -> "true".equals(nodeJsServiceCaller.callNodeJsFavoritesService("removeFavorite", sessionId)));
+        boolean titleDeleted = runMetadataCleanupStep("delete custom title",
+                () -> isSuccessResult(nodeJsServiceCaller.callNodeJsDeleteTitle(sessionId)));
+        if (favoriteRemoved && titleDeleted) {
             LOG.info("[HistoryHandler] Cleaned up session metadata");
+        }
+        return favoriteRemoved && titleDeleted;
+    }
+
+    private static boolean runMetadataCleanupStep(String step, Callable<Boolean> action) {
+        try {
+            if (action.call()) {
+                return true;
+            }
+            LOG.warn("[HistoryHandler] Failed to " + step + " (does not affect deletion): service reported failure");
         } catch (Exception e) {
-            LOG.warn("[HistoryHandler] Failed to clean up metadata (does not affect deletion): " + e.getMessage());
+            LOG.warn("[HistoryHandler] Failed to " + step + " (does not affect deletion): " + e.getMessage());
+        }
+        return false;
+    }
+
+    private static boolean isSuccessResult(String json) {
+        try {
+            JsonElement result = JsonParser.parseString(json);
+            return result.isJsonObject()
+                    && result.getAsJsonObject().has("success")
+                    && result.getAsJsonObject().get("success").getAsBoolean();
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 

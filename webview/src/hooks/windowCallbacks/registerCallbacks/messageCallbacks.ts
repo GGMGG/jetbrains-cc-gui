@@ -562,6 +562,13 @@ export function registerMessageCallbacks(
     }
   };
 
+  const flushPendingUpdateMessages = () => {
+    const json = pendingUpdateJson;
+    const sequence = pendingUpdateSequence;
+    cancelPendingUpdateMessages();
+    if (json) processUpdateMessages(json, sequence);
+  };
+
   const processMessageTail = (
     json: string,
     baseIndexArg: string | number,
@@ -569,6 +576,8 @@ export function registerMessageCallbacks(
   ) => {
     if (window.__sessionTransitioning) return;
     const sequence = parseSequence(sequenceArg);
+    // A tail extends the backend's last delivered baseline, which may still be waiting on our timer.
+    flushPendingUpdateMessages();
     const minAcceptedSequence = window.__minAcceptedUpdateSequence ?? 0;
     if (sequence != null && sequence < minAcceptedSequence) return;
 
@@ -656,12 +665,7 @@ export function registerMessageCallbacks(
     }
   };
 
-  window.__flushPendingUpdateMessages = () => {
-    const json = pendingUpdateJson;
-    const sequence = pendingUpdateSequence;
-    cancelPendingUpdateMessages();
-    if (json) processUpdateMessages(json, sequence);
-  };
+  window.__flushPendingUpdateMessages = flushPendingUpdateMessages;
 
   window.updateMessages = (json, sequenceArg) => {
     const sequence = parseSequence(sequenceArg);

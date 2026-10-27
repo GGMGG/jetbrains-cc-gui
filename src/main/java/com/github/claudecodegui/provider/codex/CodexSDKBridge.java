@@ -530,7 +530,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
      * @param serviceTier selected service tier
      * @param callback streaming callback
      * @param clientMessageId stable optimistic-message identity
-     * @param nativeSettings filtered native collaboration/policy settings
+     * @param nativeSettings filtered native collaboration/policy settings with per-turn editor context
      * @return future completed at the native turn terminal
      */
     public CompletableFuture<SDKResult> sendMessage(
@@ -710,7 +710,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
         CodexInteractionRegistry.Entry entry = this.interactionRegistry.get(interactionKey);
         if (entry == null || !sameChannel(channelId, entry.channelId())
                 || !this.interactionRegistry.matchesPageToken(interactionKey, pageToken)) {
-            return interactionError("Unknown or stale Codex interaction");
+            return staleInteractionError();
         }
         JsonObject acknowledgement = sendCodexControl(
                 "codex.respondInteraction",
@@ -750,7 +750,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
         CodexInteractionRegistry.Entry entry = this.interactionRegistry.get(interactionKey);
         if (entry == null || !sameChannel(channelId, entry.channelId())
                 || !this.interactionRegistry.matchesPageToken(interactionKey, pageToken)) {
-            return interactionError("Unknown or stale Codex interaction");
+            return staleInteractionError();
         }
         JsonObject acknowledgement = sendCodexControl(
                 "codex.respondInteractionError",
@@ -774,6 +774,14 @@ public class CodexSDKBridge extends BaseSDKBridge {
     private static JsonObject interactionError(String message) {
         JsonObject error = new JsonObject();
         error.addProperty("error", message);
+        return error;
+    }
+
+    private static JsonObject staleInteractionError() {
+        JsonObject error = interactionError("Unknown or stale Codex interaction");
+        // Java no longer holds this request, so answering it again cannot
+        // succeed; the page should explain instead of reopening the dialog.
+        error.addProperty("retryable", false);
         return error;
     }
 

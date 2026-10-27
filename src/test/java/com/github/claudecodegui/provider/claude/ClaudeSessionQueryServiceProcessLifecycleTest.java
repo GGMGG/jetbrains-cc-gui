@@ -9,12 +9,8 @@ import com.intellij.openapi.diagnostic.Logger;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.util.concurrent.CompletableFuture;
@@ -105,20 +101,14 @@ public class ClaudeSessionQueryServiceProcessLifecycleTest {
     @Test
     public void cancelledSessionQueryTerminatesProcessWhileStdoutIsOpen() throws Exception {
         TrackingProcessManager blockingManager = new TrackingProcessManager();
+        Files.writeString(new File(workDir, "channel-manager.js").toPath(), "setInterval(() => {}, 60000);\n");
+        Field cache = NodeDetector.class.getDeclaredField("cachedNodeExecutable");
+        cache.setAccessible(true);
+        cache.set(node, "node");
         ClaudeSessionQueryService service = new ClaudeSessionQueryService(
                 Logger.getInstance(ClaudeSessionQueryServiceProcessLifecycleTest.class),
-                new Gson(),
-                node,
-                () -> workDir,
-                blockingManager,
-                new EnvironmentConfigurator(),
-                new ClaudeJsonOutputExtractor()
-        ) {
-            @Override
-            Process startProcess(ProcessBuilder processBuilder) {
-                return new BlockingProcess();
-            }
-        };
+                new Gson(), node, () -> workDir, blockingManager,
+                new EnvironmentConfigurator(), new ClaudeJsonOutputExtractor());
         AtomicBoolean cancelled = new AtomicBoolean();
 
         CompletableFuture<Void> query = CompletableFuture.runAsync(() -> {
@@ -146,92 +136,4 @@ public class ClaudeSessionQueryServiceProcessLifecycleTest {
         assertEquals(1, blockingManager.unregisterCalls.get());
     }
 
-    private static final class BlockingProcess extends Process {
-        private final InputStream inputStream = new InputStream() {
-            @Override
-            public int read() throws IOException {
-                synchronized (BlockingProcess.this) {
-                    while (alive) {
-                        try {
-                            BlockingProcess.this.wait();
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new IOException("reader interrupted", e);
-                        }
-                    }
-                    return -1;
-                }
-            }
-
-            @Override
-            public int read(byte[] bytes, int offset, int length) throws IOException {
-                return read();
-            }
-        };
-        private final OutputStream outputStream = new ByteArrayOutputStream();
-        private final InputStream errorStream = new ByteArrayInputStream(new byte[0]);
-        private volatile boolean alive = true;
-
-        @Override
-        public OutputStream getOutputStream() {
-            return outputStream;
-        }
-
-        @Override
-        public InputStream getInputStream() {
-            return inputStream;
-        }
-
-        @Override
-        public InputStream getErrorStream() {
-            return errorStream;
-        }
-
-        @Override
-        public int waitFor() throws InterruptedException {
-            synchronized (this) {
-                while (alive) {
-                    wait();
-                }
-            }
-            return 1;
-        }
-
-        @Override
-        public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException {
-            synchronized (this) {
-                if (alive) {
-                    unit.timedWait(this, timeout);
-                }
-                return !alive;
-            }
-        }
-
-        @Override
-        public int exitValue() {
-            if (alive) {
-                throw new IllegalThreadStateException("process is still alive");
-            }
-            return 1;
-        }
-
-        @Override
-        public void destroy() {
-            synchronized (this) {
-                alive = false;
-                notifyAll();
-            }
-        }
-
-        @Override
-        public Process destroyForcibly() {
-            destroy();
-            return this;
-        }
-
-        @Override
-        public boolean isAlive() {
-            return alive;
-        }
-    }
 }

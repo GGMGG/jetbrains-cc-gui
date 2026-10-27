@@ -18,6 +18,202 @@ import static org.junit.Assert.assertTrue;
 public class CodexKnownExecReplayTest {
     private static final String PATCH = "*** Begin Patch\n*** Add File: a.ts\n+created\n*** End Patch";
 
+    /** History commands retain native actions so the shared renderer can match live row labels. */
+    @Test
+    public void preservesNativeCommandActionsAcrossWrappersAndDetachedReceipts() {
+        List<String> commands = List.of("tail -n 20 /tmp/build.log", "ls -la src", "node scripts/verify-command-output.mjs");
+        List<String> types = List.of("read", "list_files", "unknown");
+        for (boolean wrapped : List.of(false, true)) {
+            JsonArray records = new JsonArray();
+            if (wrapped) {
+                records.add(call("command-labels", String.join("", commands.stream()
+                        .map(command -> "text(await tools.exec_command({cmd:" + new Gson().toJson(command) + "}));").toList())));
+            }
+            for (int index = 0; index < commands.size(); index++) {
+                JsonObject receipt = nativeCommand("command-" + index, "completed", 0);
+                JsonObject item = receipt.getAsJsonObject("payload").getAsJsonObject("item");
+                item.addProperty("command", commands.get(index));
+                JsonObject action = new JsonObject();
+                action.addProperty("type", types.get(index));
+                action.addProperty("cmd", commands.get(index));
+                if (index < 2) {
+                    action.addProperty("path", index == 0 ? "/tmp/build.log" : "src");
+                }
+                JsonArray actions = new JsonArray();
+                actions.add(action);
+                item.add("parsed_cmd", actions);
+                if (index == 2) {
+                    item.addProperty("summary", "Verify command output");
+                    item.addProperty("approvalReason", "Inspect generated output");
+                }
+                records.add(receipt);
+            }
+            if (wrapped) {
+                records.add(output("command-labels", "{\"exit_code\":0}", "{\"exit_code\":0}", "{\"exit_code\":0}"));
+            }
+
+            List<JsonObject> tools = blocks(records).stream().filter(block -> "tool_use".equals(string(block, "type"))).toList();
+            assertEquals(3, tools.size());
+            for (int index = 0; index < tools.size(); index++) {
+                JsonObject input = tools.get(index).getAsJsonObject("input");
+                if (index == 2) {
+                    assertEquals("Verify command output", string(input, "description"));
+                    assertEquals("Inspect generated output", string(input, "approvalReason"));
+                } else {
+                    assertFalse("only recorded summaries belong in descriptions", input.has("description"));
+                }
+                assertEquals(commands.get(index), string(input, "command"));
+                assertEquals(types.get(index), string(input.getAsJsonArray("commandActions").get(0).getAsJsonObject(), "type"));
+            }
+            assertEquals("/tmp/build.log", string(tools.get(0).getAsJsonObject("input").getAsJsonArray("commandActions").get(0).getAsJsonObject(), "path"));
+        }
+    }
+
+    /** Explicit directories disambiguate same-text commands whose completed results omit session ids. */
+    @Test
+    public void restoresFourCommandBatchWithSameCommandInDifferentDirectories() {
+        JsonArray records = new JsonArray();
+        records.add(call("project-checks", "const results = await Promise.allSettled(["
+                + "tools.exec_command({cmd:'rg --files src docs',max_output_tokens:6500}),"
+                + "tools.exec_command({cmd:'git status --short',workdir:'/project/webapp',max_output_tokens:1200}),"
+                + "tools.exec_command({cmd:'git status --short',workdir:'/project/vue',max_output_tokens:1200}),"
+                + "tools.exec_command({cmd:'rg -n annual src/router',workdir:'/project/vue',max_output_tokens:6500})]);"
+                + "for (let i=0;i<results.length;i++) text({index:i,...results[i]});"));
+        for (int index : List.of(2, 0, 3, 1)) {
+            JsonObject receipt = nativeCommand("native-" + index, index == 3 ? "failed" : "completed", index == 3 ? 2 : 0);
+            JsonObject item = receipt.getAsJsonObject("payload").getAsJsonObject("item");
+            item.addProperty("command", index == 0 ? "rg --files src docs" : index == 3 ? "rg -n annual src/router" : "git status --short");
+            item.addProperty("process_id", String.valueOf(100 + index));
+            item.addProperty("cwd", "file:///project/" + (index == 1 ? "webapp" : index == 0 ? "" : "vue"));
+            records.add(receipt);
+        }
+        records.add(output("project-checks", "Script completed\nOutput:\n",
+                "{\"index\":0,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"output\":\"files\"}}",
+                "{\"index\":1,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"output\":\"webapp status\"}}",
+                "{\"index\":2,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"output\":\"vue status\"}}",
+                "{\"index\":3,\"status\":\"fulfilled\",\"value\":{\"exit_code\":2,\"output\":\"missing router\"}}"));
+
+        List<JsonObject> projected = blocks(records);
+        List<JsonObject> tools = projected.stream().filter(block -> "tool_use".equals(string(block, "type"))).toList();
+        assertEquals(List.of("bash", "bash", "bash", "bash"), toolNames(projected));
+        assertEquals(List.of("native-0", "native-1", "native-2", "native-3"), tools.stream().map(tool -> string(tool, "id")).toList());
+        assertEquals("/project/webapp", string(tools.get(1).getAsJsonObject("input"), "workdir"));
+        assertEquals("/project/vue", string(tools.get(2).getAsJsonObject("input"), "workdir"));
+        assertEquals(List.of("native-0 output", "native-1 output", "native-2 output", "native-3 output"), results(projected));
+    }
+
+    /** Directory evidence must preserve an edit between two otherwise identical commands. */
+    @Test
+    public void keepsPatchAndDirectoryOwnedCommandsAsMixedToolCards() {
+        JsonArray records = new JsonArray();
+        records.add(call("mixed-directories", "const results=await Promise.allSettled(["
+                + "tools.exec_command({cmd:'npm test',workdir:'/project/webapp'}),"
+                + "tools.apply_patch(" + new Gson().toJson(PATCH) + "),"
+                + "tools.exec_command({cmd:'npm test',workdir:'/project/vue'})]);"
+                + "for(let i=0;i<results.length;i++)text({index:i,...results[i]});"));
+        records.add(nativePatch());
+        for (int index : List.of(2, 0)) {
+            JsonObject receipt = nativeCommand("command-" + index, "completed", 0);
+            JsonObject payload = receipt.getAsJsonObject("payload");
+            payload.addProperty("turn_id", "turn");
+            payload.getAsJsonObject("item").addProperty("cwd", "/project/" + (index == 0 ? "webapp" : "vue"));
+            records.add(receipt);
+        }
+        records.add(output("mixed-directories", indexed(0, "{\"exit_code\":0,\"output\":\"webapp\"}"),
+                indexed(1, "{}"), indexed(2, "{\"exit_code\":0,\"output\":\"vue\"}")));
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "file_change", "bash"), toolNames(projected));
+        assertEquals(List.of("command-0 output", "saved", "command-2 output"), results(projected));
+    }
+
+    /** POSIX backslashes remain filename characters when directory evidence owns a command receipt. */
+    @Test
+    public void distinguishesPosixBackslashesFromDirectorySeparators() {
+        JsonArray records = new JsonArray();
+        records.add(call("posix-directories", "const results=await Promise.allSettled(["
+                + "tools.exec_command({cmd:'npm test',workdir:" + new Gson().toJson("/project/a\\b") + "}),"
+                + "tools.exec_command({cmd:'npm test',workdir:'/project/a/b'})]);"
+                + "results.forEach((r,i)=>text({index:i,...r}));"));
+        JsonObject second = nativeCommand("nested-directory", "failed", 2);
+        second.getAsJsonObject("payload").getAsJsonObject("item").addProperty("cwd", "file:///project/a/b");
+        records.add(second);
+        JsonObject first = nativeCommand("literal-backslash", "completed", 0);
+        first.getAsJsonObject("payload").getAsJsonObject("item").addProperty("cwd", "file:///project/a%5Cb");
+        records.add(first);
+        records.add(output("posix-directories", indexed(0, "{\"exit_code\":0,\"output\":\"first passed\"}"),
+                indexed(1, "{\"exit_code\":2,\"output\":\"second failed\"}")));
+
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "bash"), toolNames(projected));
+        assertEquals(List.of("literal-backslash", "nested-directory"), projected.stream()
+                .filter(block -> "tool_use".equals(string(block, "type"))).map(block -> string(block, "id")).toList());
+        assertEquals(List.of("literal-backslash output", "nested-directory output"), results(projected));
+    }
+
+    /** Windows separators and URI-encoded spaces identify the same recorded working directory. */
+    @Test
+    public void pairsWindowsDirectoriesWithTheirFileUris() {
+        JsonArray records = new JsonArray();
+        records.add(call("windows-directories", "const results=await Promise.allSettled(["
+                + "tools.exec_command({cmd:'npm test',workdir:" + new Gson().toJson("C:\\Project One\\webapp\\") + "}),"
+                + "tools.exec_command({cmd:'npm test',workdir:'C:/Project One/vue'})]);"
+                + "results.forEach((r,i)=>text({index:i,...r}));"));
+        for (String directory : List.of("vue", "webapp")) {
+            JsonObject receipt = nativeCommand(directory, "completed", 0);
+            receipt.getAsJsonObject("payload").getAsJsonObject("item").addProperty("cwd", "file:///C:/Project%20One/" + directory);
+            records.add(receipt);
+        }
+        records.add(output("windows-directories", indexed(0, "{\"exit_code\":0}"), indexed(1, "{\"exit_code\":0}")));
+
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "bash"), toolNames(projected));
+        assertEquals(List.of("webapp output", "vue output"), results(projected));
+    }
+
+    /** Completion-order output cannot lend a sibling's process id to a different source slot. */
+    @Test
+    public void pairsUnindexedBatchCommandsByIndependentDirectoryReceipts() {
+        JsonArray records = new JsonArray();
+        records.add(call("completion-order", "await Promise.allSettled(["
+                + "tools.exec_command({cmd:'npm test',workdir:'/first'}).then(text),"
+                + "tools.exec_command({cmd:'npm test',workdir:'/second'}).then(text)]);"));
+        for (String directory : List.of("second", "first")) {
+            JsonObject receipt = nativeCommand(directory, "completed", 0);
+            JsonObject item = receipt.getAsJsonObject("payload").getAsJsonObject("item");
+            item.addProperty("cwd", "/" + directory);
+            item.addProperty("process_id", directory.equals("first") ? "11" : "22");
+            records.add(receipt);
+        }
+        records.add(output("completion-order", "{\"session_id\":22,\"output\":\"second running\"}",
+                "{\"session_id\":11,\"output\":\"first running\"}"));
+
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "bash"), toolNames(projected));
+        assertEquals(List.of("first", "second"), projected.stream()
+                .filter(block -> "tool_use".equals(string(block, "type"))).map(block -> string(block, "id")).toList());
+        assertEquals(List.of("first output", "second output"), results(projected));
+    }
+
+    /** A matching receipt directory is insufficient when another call may share that directory. */
+    @Test
+    public void keepsSharedOrUnknownDirectoryOwnersOpaque() {
+        for (String siblingDirectory : List.of("/first", "", "../second")) {
+            CodexKnownExecReplay replay = CodexKnownExecReplay.begin(call("uncertain-directories", "const results=await Promise.allSettled(["
+                    + "tools.exec_command({cmd:'npm test',workdir:'/first'}),"
+                    + "tools.exec_command({cmd:'npm test',workdir:" + new Gson().toJson(siblingDirectory) + "})]);"
+                    + "results.forEach((r,i)=>text({index:i,...r}));"), null);
+            for (String directory : List.of("first", "second")) {
+                JsonObject receipt = nativeCommand(directory, "completed", 0);
+                receipt.getAsJsonObject("payload").getAsJsonObject("item").addProperty("cwd", "/" + directory);
+                replay.rememberNative(receipt);
+            }
+
+            assertNull(siblingDirectory, replay.project(output("uncertain-directories", indexed(0, "{\"exit_code\":0}"),
+                    indexed(1, "{\"exit_code\":0}")), new java.util.LinkedHashMap<>()));
+            assertTrue(siblingDirectory, replay.keepsOriginalWrapper());
+        }
+    }
+
     /** Identical commands in separate directories keep their process-owned results despite receipt reordering. */
     @Test
     public void pairsIdenticalBatchCommandsByTheirReturnedProcessIds() {
@@ -640,6 +836,97 @@ public class CodexKnownExecReplayTest {
         assertTrue(projected.stream().anyMatch(block -> "previous:command:0".equals(string(block, "tool_use_id"))));
     }
 
+    /** Loop labels keep polling attached to its original command in either Promise array position. */
+    @Test
+    public void restoresLoopLabeledCommandAndPollReceiptsInEitherOrder() {
+        for (boolean pollFirst : List.of(false, true)) {
+            for (boolean terminal : List.of(false, true)) {
+                JsonArray records = new JsonArray();
+                records.add(call("previous", "text(await tools.exec_command({cmd:'gradle test'}));"));
+                records.add(output("previous", "{\"session_id\":21009,\"output\":\"building\"}"));
+                String poll = "tools.write_stdin({session_id:21009,chars:\"\",max_output_tokens:1000,yield_time_ms:1000})";
+                String command = "tools.exec_command({cmd:\"git diff HEAD --check && rg -n 'reject\\\\(' src\","
+                        + "workdir:'/project/webapp',max_output_tokens:4500})";
+                records.add(call("loop-labeled", "const results=await Promise.allSettled(["
+                        + (pollFirst ? poll + "," + command : command + "," + poll)
+                        + "]);for(let i=0;i<results.length;i++){text(\"Result \"+i);const r=results[i];"
+                        + "text(r.status===\"fulfilled\"?r.value:r.reason);}"));
+                String pollResult = terminal ? "{\"exit_code\":0,\"output\":\"build passed\"}"
+                        : "{\"session_id\":21009,\"output\":\"still building\"}";
+                String commandResult = "{\"exit_code\":2,\"output\":\"check failed\"}";
+                records.add(output("loop-labeled", "Script completed\nOutput:\n", "Result 0", pollFirst ? pollResult : commandResult,
+                        "Result 1", pollFirst ? commandResult : pollResult));
+                List<JsonObject> projected = blocks(records);
+                assertEquals(List.of("bash", "bash"), toolNames(projected));
+                assertEquals(pollFirst && terminal ? List.of("build passed", "check failed")
+                        : terminal ? List.of("check failed", "build passed") : List.of("check failed"), results(projected));
+                assertEquals(terminal ? 1 : 0, projected.stream()
+                        .filter(block -> "previous:command:0".equals(string(block, "tool_use_id")) && !block.get("is_error").getAsBoolean()).count());
+                if (!terminal) {
+                    records.add(call("finish", "text(await tools.write_stdin({session_id:21009,chars:''}));"));
+                    records.add(output("finish", "{\"exit_code\":0,\"output\":\"build passed\"}"));
+                    projected = blocks(records);
+                    assertEquals(List.of("bash", "bash"), toolNames(projected));
+                    assertEquals(List.of("check failed", "build passed"), results(projected));
+                }
+                assertEquals(1, projected.stream().filter(block -> block.has("is_error") && block.get("is_error").getAsBoolean()).count());
+            }
+        }
+    }
+
+    /** Explicit loop labels preserve command slots even without native receipts or distinct command text. */
+    @Test
+    public void restoresLoopLabeledCommandsAcrossSupportedLabelSyntax() {
+        for (String label : List.of("'Result '+slot", "\"Result \"+slot", "`Result ${slot}`")) {
+            JsonArray records = new JsonArray();
+            records.add(call("loop-slots", "let batch = await Promise.allSettled(["
+                    + "tools.exec_command({cmd:'git status --short',workdir:'/project/webapp'}),"
+                    + "tools.exec_command({cmd:'git status --short',workdir:'/project/vue'})]);"
+                    + "for (let slot = 0; slot < batch.length; ++slot) { text(" + label + ");"
+                    + "const receipt = batch[slot]; text(receipt.status === 'fulfilled' ? receipt.value : receipt.reason); }"));
+            records.add(output("loop-slots", "Result 1", "{\"exit_code\":1,\"output\":\"vue failed\"}",
+                    "Result 0", "{\"exit_code\":0,\"output\":\"webapp clean\"}"));
+            List<JsonObject> projected = blocks(records);
+            assertEquals(List.of("bash", "bash"), toolNames(projected));
+            assertEquals(List.of("webapp clean", "vue failed"), results(projected));
+            assertEquals(List.of(false, true), projected.stream().filter(block -> block.has("is_error"))
+                    .map(block -> block.get("is_error").getAsBoolean()).toList());
+        }
+    }
+
+    /** Whole settled receipts printed by a loop keep rejection independent from sibling command success. */
+    @Test
+    public void restoresLoopLabeledWholeSettledReceipts() {
+        JsonArray records = new JsonArray();
+        records.add(call("whole-loop", "const results=await Promise.allSettled([tools.exec_command({cmd:'npm test'}),"
+                + "tools.exec_command({cmd:'git status'})]);"
+                + "for(let i=0;i<results.length;i++){text('Result '+i);const r=results[i];text(r);}"));
+        records.add(output("whole-loop", "Result 0", "{\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"output\":\"passed\"}}",
+                "Result 1", "{\"status\":\"rejected\",\"reason\":\"command unavailable\"}"));
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "bash"), toolNames(projected));
+        assertEquals(List.of("passed", "command unavailable"), results(projected));
+        assertFalse(projected.get(1).get("is_error").getAsBoolean());
+        assertTrue(projected.get(3).get("is_error").getAsBoolean());
+    }
+
+    /** A label cannot lend its index to an unrelated result variable or a different array slot. */
+    @Test
+    public void keepsUnprovenLoopResultOwnershipInTheWrapper() {
+        for (String printer : List.of(
+                "for(let i=0;i<results.length;i++){text('Result '+i);const r=results[0];text(r.value);}",
+                "for(let i=0;i<results.length;i++){text('Result '+i);const r=other[i];text(r.value);}",
+                "for(let i=0;i<results.length;i++){text('Result '+i);const r=results[i];text(other.value);}",
+                "for(let i=0;i<results.length;i++){const note=\"text('Result '+i);const r=results[i];text(r.value);\";text(other.value);}")) {
+            JsonArray records = new JsonArray();
+            records.add(call("unproven-loop", "const results=await Promise.allSettled(["
+                    + "tools.write_stdin({session_id:21009,chars:''}),tools.exec_command({cmd:'npm test'})]);" + printer));
+            records.add(output("unproven-loop", "Result 0", "{\"exit_code\":0,\"output\":\"poll passed\"}",
+                    "Result 1", "{\"exit_code\":0,\"output\":\"tests passed\"}"));
+            assertTrue(toolNames(blocks(records)).contains("exec"));
+        }
+    }
+
     /** Whole settled receipts keep fulfilled output and rejected work in their own labeled slots. */
     @Test
     public void restoresLabeledWholeSettledReceiptsWithIndependentRejection() {
@@ -675,7 +962,7 @@ public class CodexKnownExecReplayTest {
         assertTrue(toolNames(blocks(quoted)).contains("exec"));
     }
 
-    /** Image receipts and unindexed text results can share an allSettled wrapper. */
+    /** Detached native commands retain arguments and both output streams without a generated summary. */
     @Test
     public void detachedNativeCommandsKeepBothStreamsAndTheActualExecutable() {
         JsonArray records = new JsonArray();
@@ -688,7 +975,7 @@ public class CodexKnownExecReplayTest {
         records.add(nativeRecord);
         List<JsonObject> projected = blocks(records);
         assertEquals(List.of("bash"), toolNames(projected));
-        assertEquals("Run node", string(projected.get(0).getAsJsonObject("input"), "description"));
+        assertFalse(projected.get(0).getAsJsonObject("input").has("description"));
         assertTrue(string(projected.get(0).getAsJsonObject("input"), "command").startsWith("& node "));
         assertEquals(List.of("testing\nfailed to load test"), results(projected));
         assertTrue(projected.get(1).get("is_error").getAsBoolean());
@@ -1136,7 +1423,7 @@ public class CodexKnownExecReplayTest {
         assertEquals(List.of("bash"), toolNames(blocks(records)));
         assertEquals(List.of("correct slot"), results(blocks(records)));
         for (String script : List.of(
-                "await Promise.allSettled([Promise.resolve('other work'),tools.exec_command({cmd:'npm test'})]);",
+                "await Promise.allSettled([computedEntry,tools.exec_command({cmd:'npm test'})]);",
                 "await Promise.allSettled([tools.exec_command({cmd:'npm test'}),...extra]);",
                 "await tools.exec_command({cmd:true});await tools.write_stdin({session_id:1,chars:''});",
                 "await tools.exec_command({cmd:'npm test'});await tools.future_tool({});")) {
@@ -1144,6 +1431,227 @@ public class CodexKnownExecReplayTest {
             unknown.add(call("unknown", script));
             unknown.add(output("unknown", indexed(0, "{\"exit_code\":0}"), indexed(1, "{\"exit_code\":0}")));
             assertTrue(script, toolNames(blocks(unknown)).contains("exec"));
+        }
+    }
+
+    /** A local Promise result keeps its own slot without hiding the command beside it. */
+    @Test
+    public void replaysCommandsBesideLocalPromiseResultsInEitherOrder() {
+        String expression = "Promise.resolve(ALL_TOOLS.filter(x => /jetbrains/i.test(x.name+\" \"+x.description))"
+                + ".map(x=>({name:x.name, description:x.description.slice(0,240)})))";
+        String command = "tools.exec_command({cmd:\"pwd && rg --files -g 'AGENTS.md' -g 'CLAUDE.md' -g '!node_modules'\","
+                + "workdir:'/project',max_output_tokens:7000})";
+        for (boolean localFirst : List.of(false, true)) {
+            for (boolean nativeReceipt : List.of(false, true)) {
+                JsonArray records = new JsonArray();
+                records.add(call("local-and-command", "const results=await Promise.allSettled(["
+                        + (localFirst ? expression + "," + command : command + "," + expression)
+                        + "]);results.forEach((r,i)=>text({i,...r}));"));
+                List<JsonObject> preview = blocks(records);
+                assertEquals(localFirst ? List.of("Promise.resolve", "bash") : List.of("bash", "Promise.resolve"), toolNames(preview));
+                String localId = string(preview.get(localFirst ? 0 : 1), "id");
+                if (nativeReceipt) {
+                    JsonObject nativeRecord = nativeCommand("native-command", "completed", 0);
+                    nativeRecord.getAsJsonObject("payload").getAsJsonObject("item")
+                            .addProperty("command", "pwd && rg --files -g 'AGENTS.md' -g 'CLAUDE.md' -g '!node_modules'");
+                    records.add(nativeRecord);
+                }
+                records.add(output("local-and-command", "Script completed\nOutput:\n", indexed(localFirst ? 0 : 1, "[]"),
+                        indexed(localFirst ? 1 : 0, "{\"exit_code\":0,\"output\":\"project\\nAGENTS.md\"}")));
+                List<JsonObject> projected = blocks(records);
+                assertEquals(toolNames(preview), toolNames(projected));
+                String commandOutput = nativeReceipt ? "native-command output" : "project\nAGENTS.md";
+                assertEquals(localFirst ? List.of("[]", commandOutput) : List.of(commandOutput, "[]"), results(projected));
+                JsonObject local = projected.get(localFirst ? 0 : 2);
+                assertEquals(localId, string(local, "id"));
+                assertEquals(expression, string(local.getAsJsonObject("input"), "code"));
+                assertFalse(projected.stream().anyMatch(block -> block.has("is_error") && block.get("is_error").getAsBoolean()));
+                JsonArray conversation = new JsonArray();
+                conversation.add(JsonParser.parseString("""
+                        {"type":"response_item","payload":{"type":"message","role":"user",
+                        "content":[{"type":"input_text","text":"Find project instructions and IDE tools."}]}}
+                        """));
+                records.forEach(conversation::add);
+                assertEquals(HistoryMessageInjector.convertCodexMessagesToFrontendBatch(conversation),
+                        HistoryMessageInjector.paginateCodexMessages(conversation, null, 30).messages);
+            }
+        }
+    }
+
+    /** Local values remain data even when their fields resemble a failed command result. */
+    @Test
+    public void keepsLocalPromiseValuesSeparateFromCommandStatus() {
+        for (List<String> value : List.of(List.of("null", "null"), List.of("false", "false"), List.of("42", "42"),
+                List.of("\"failed is only text\"", "failed is only text"),
+                List.of("{\"exit_code\":9,\"output\":\"local data\"}", "{\"exit_code\":9,\"output\":\"local data\"}"))) {
+            JsonArray records = new JsonArray();
+            records.add(call("local-data", "await Promise.allSettled([tools.exec_command({cmd:'npm test'}),Promise.resolve(value)]);"));
+            records.add(output("local-data", indexed(0, "{\"exit_code\":0,\"output\":\"passed\"}"), indexed(1, value.get(0))));
+            List<JsonObject> projected = blocks(records);
+            assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+            assertEquals(List.of("passed", value.get(1)), results(projected));
+            assertFalse(projected.stream().anyMatch(block -> block.has("is_error") && block.get("is_error").getAsBoolean()));
+        }
+    }
+
+    /** Promise.all returns plain values, so a local status field cannot become a settled receipt. */
+    @Test
+    public void keepsPromiseAllLocalStatusObjectsAsData() {
+        for (String value : List.of("{\"status\":\"fulfilled\",\"value\":[\"inspect\"]}",
+                "{\"status\":\"rejected\",\"reason\":\"local status\"}")) {
+            JsonArray records = new JsonArray();
+            records.add(call("plain-status", "const results=await Promise.all([tools.exec_command({cmd:'npm test'}),"
+                    + "Promise.resolve(" + value + ")]);results.forEach((result,i)=>text({i,result}));"));
+            records.add(output("plain-status", "{\"i\":0,\"result\":{\"exit_code\":0,\"output\":\"passed\"}}",
+                    "{\"i\":1,\"result\":" + value + "}"));
+
+            List<JsonObject> projected = blocks(records);
+            assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+            assertEquals(List.of("passed", value), results(projected));
+            assertFalse(projected.get(3).get("is_error").getAsBoolean());
+        }
+    }
+
+    /** Flattened Promise.all values cannot prove which fields belong to an outcome envelope. */
+    @Test
+    public void keepsFlattenedLocalPromiseAllValuesReviewable() {
+        for (String fields : List.of("\"status\":\"fulfilled\",\"value\":[\"inspect\"]",
+                "\"status\":\"rejected\",\"reason\":\"local status\"", "\"error\":\"local data\",\"details\":[1,2]")) {
+            JsonArray records = new JsonArray();
+            records.add(call("flat-local", "const results=await Promise.all([tools.exec_command({cmd:'npm test'}),"
+                    + "Promise.resolve({" + fields + "})]);results.forEach((r,i)=>{"
+                    + "if(i===0){text({i,result:r});}else{text({i,...r});}});"));
+            String localOutput = "{\"i\":1," + fields + "}";
+            records.add(output("flat-local", "{\"i\":0,\"result\":{\"exit_code\":0,\"output\":\"passed\"}}", localOutput));
+
+            List<JsonObject> projected = blocks(records);
+            assertTrue("unproven local fields must stay in the original wrapper", toolNames(projected).contains("exec"));
+            assertTrue(results(projected).stream().anyMatch(result -> result.contains(localOutput)));
+        }
+    }
+
+    /** Condensed allSettled output has already unwrapped the promise, so local status fields remain data. */
+    @Test
+    public void keepsCondensedSettledLocalStatusObjectsAsData() {
+        for (String value : List.of("{\"status\":\"fulfilled\",\"value\":[\"inspect\"]}",
+                "{\"status\":\"rejected\",\"reason\":\"local status\"}")) {
+            JsonArray records = new JsonArray();
+            records.add(call("condensed-status", "const results=await Promise.allSettled([tools.exec_command({cmd:'npm test'}),"
+                    + "Promise.resolve(" + value + ")]);results.forEach((r,i)=>text({i,result:r.value}));"));
+            records.add(output("condensed-status", "{\"i\":0,\"result\":{\"exit_code\":0,\"output\":\"passed\"}}",
+                    "{\"i\":1,\"result\":" + value + "}"));
+
+            List<JsonObject> projected = blocks(records);
+            assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+            assertEquals(List.of("passed", value), results(projected));
+            assertFalse(projected.get(3).get("is_error").getAsBoolean());
+        }
+    }
+
+    /** Whole settled receipts still carry explicit local failures without unwrapping a fulfilled value twice. */
+    @Test
+    public void restoresWholeNestedLocalReceiptsAcrossBatchPrinters() {
+        String value = "{\"status\":\"rejected\",\"reason\":\"local status\"}";
+        for (String printer : List.of("results.forEach((r,i)=>text({i,result:r}));",
+                "results.forEach((r,i)=>{text({i,result:r});});",
+                "results.forEach((result,index)=>text({result,index}));",
+                "for(let i=0;i<results.length;i++){const r=results[i];text({i,result:r});}")) {
+            for (boolean rejected : List.of(false, true)) {
+                JsonArray records = new JsonArray();
+                String expression = rejected ? "Promise.reject('local computation failed')" : value;
+                records.add(call("whole-local", "const results=await Promise.allSettled([tools.exec_command({cmd:'npm test'}),"
+                        + "Promise.resolve(" + expression + ")]);" + printer));
+                String key = printer.contains("result,index") ? "index" : "i";
+                String outcome = rejected ? "{\"status\":\"rejected\",\"reason\":\"local computation failed\"}"
+                        : "{\"status\":\"fulfilled\",\"value\":" + value + "}";
+                records.add(output("whole-local", "{\"" + key + "\":0,\"result\":{\"status\":\"fulfilled\","
+                        + "\"value\":{\"exit_code\":0,\"output\":\"passed\"}}}", "{\"" + key + "\":1,\"result\":" + outcome + "}"));
+
+                List<JsonObject> projected = blocks(records);
+                assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+                assertEquals(List.of("passed", rejected ? "local computation failed" : value), results(projected));
+                assertEquals(rejected, projected.get(3).get("is_error").getAsBoolean());
+            }
+        }
+    }
+
+    /** A whole receipt printed for one slot cannot change the meaning of a sibling's plain local value. */
+    @Test
+    public void keepsBranchSpecificLocalValuesSeparateFromWholeReceipts() {
+        String value = "{\"status\":\"rejected\",\"reason\":\"local status\"}";
+        JsonArray records = new JsonArray();
+        records.add(call("mixed-printers", "const results=await Promise.allSettled([tools.exec_command({cmd:'npm test'}),"
+                + "Promise.resolve(" + value + ")]);results.forEach((r,i)=>{"
+                + "if(i===0){text({i,result:r});}else{text({i,result:r.value});}});"));
+        records.add(output("mixed-printers", "{\"i\":0,\"result\":{\"status\":\"fulfilled\","
+                + "\"value\":{\"exit_code\":0,\"output\":\"passed\"}}}", "{\"i\":1,\"result\":" + value + "}"));
+
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+        assertEquals(List.of("passed", value), results(projected));
+        assertFalse(projected.get(3).get("is_error").getAsBoolean());
+    }
+
+    /** Local values keep their fields even when they resemble replay outcome metadata. */
+    @Test
+    public void keepsRejectionLikeLocalFieldsInsideTheirValue() {
+        String value = "{\"codexExecRejected\":true,\"is_error\":true,\"output\":\"local data\"}";
+        JsonArray records = new JsonArray();
+        records.add(call("local-fields", "const results=await Promise.allSettled([tools.exec_command({cmd:'npm test'}),"
+                + "Promise.resolve(" + value + ")]);results.forEach((r,i)=>text({i,...r}));"));
+        records.add(output("local-fields", indexed(0, "{\"exit_code\":0,\"output\":\"passed\"}"), indexed(1, value)));
+
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+        assertEquals(List.of("passed", value), results(projected));
+        assertFalse(projected.get(3).get("is_error").getAsBoolean());
+    }
+
+    /** Printed index labels own local arrays and primitive values just as they own command receipts. */
+    @Test
+    public void restoresLabeledLocalValuesAlongsideCommands() {
+        for (String printer : List.of(
+                "results.forEach((r,i)=>{text('Result '+i);text(r.value);});",
+                "for(let i=0;i<results.length;i++){text('Result '+i);const r=results[i];text(r.status==='fulfilled'?r.value:r.reason);}")) {
+            for (String value : List.of("[]", "[{\"name\":\"inspect\",\"description\":\"IDE navigation\"}]", "null", "false", "42", "tool descriptions", "  inspect  ", "Result 0", "")) {
+                JsonArray records = new JsonArray();
+                records.add(call("labeled-local", "const results=await Promise.allSettled([tools.exec_command({cmd:'npm test'}),"
+                        + "Promise.resolve(value)]);" + printer));
+                records.add(output("labeled-local", "Result 0", "{\"exit_code\":0,\"output\":\"passed\"}", "Result 1", value));
+
+                List<JsonObject> projected = blocks(records);
+                assertEquals(value, List.of("bash", "Promise.resolve"), toolNames(projected));
+                assertEquals(List.of("passed", value), results(projected));
+                assertFalse(projected.get(3).get("is_error").getAsBoolean());
+            }
+        }
+    }
+
+    /** Settled local rejections do not fail a command whose independent receipt succeeded. */
+    @Test
+    public void preservesLocalPromiseRejectionWithoutFailingItsSiblingCommand() {
+        JsonArray records = new JsonArray();
+        records.add(call("local-rejection", "await Promise.allSettled([tools.exec_command({cmd:'npm test'}),Promise.resolve(value)]);"));
+        records.add(output("local-rejection", indexed(0, "{\"exit_code\":0,\"output\":\"passed\"}"),
+                "{\"i\":1,\"status\":\"rejected\",\"reason\":\"local computation failed\"}"));
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("bash", "Promise.resolve"), toolNames(projected));
+        assertEquals(List.of("passed", "local computation failed"), results(projected));
+        assertFalse(projected.get(1).get("is_error").getAsBoolean());
+        assertTrue(projected.get(3).get("is_error").getAsBoolean());
+    }
+
+    /** A missing or unindexed local receipt keeps the wrapper inspectable instead of discarding that work. */
+    @Test
+    public void keepsUnpairedLocalPromiseOutputInTheWrapper() {
+        for (boolean indexed : List.of(false, true)) {
+            JsonArray records = new JsonArray();
+            records.add(call("missing-local", "await Promise.allSettled([tools.exec_command({cmd:'npm test'}),Promise.resolve(value)]);"));
+            records.add(output("missing-local", indexed ? indexed(0, "{\"exit_code\":0,\"output\":\"passed\"}")
+                    : "{\"exit_code\":0,\"output\":\"passed\"}", "local output without an index"));
+            List<JsonObject> projected = blocks(records);
+            assertTrue(toolNames(projected).contains("exec"));
+            assertTrue(results(projected).get(0).contains("local output without an index"));
         }
     }
 

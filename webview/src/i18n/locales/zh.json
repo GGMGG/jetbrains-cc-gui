@@ -843,7 +843,11 @@
       "installedVersion": "当前版本 {{version}}",
       "latestStableVersion": "最新稳定版 {{version}}",
       "targetVersionValue": "目标版本 {{version}}",
-      "versionSourceFallback": "远程版本列表获取失败，当前展示内置推荐版本。你仍然可以手动输入版本号。",
+      "versionSourceFallback": "远程版本列表获取失败，当前展示内置推荐版本。",
+      "versionCacheAccessError": "npm 文件访问被拒绝，独立缓存重试也未成功。请检查缓存目录权限或安全软件拦截。",
+      "versionQueryTimeout": "npm 版本查询超时，请检查网络或代理后重试。",
+      "versionQueryNetworkError": "无法连接 npm 仓库，请检查网络、代理或仓库地址后重试。",
+      "versionQueryFailed": "npm 版本查询未成功，请检查 Node.js 和 npm 配置后重试。",
       "rollbackWarning": "这是回退操作，建议在切换后重新验证相关 AI 功能是否正常。",
       "nodeNotConfigured": "Node.js 未配置，请先在基础配置中设置 Node.js 路径。",
       "installSuccess": "{{name}} 安装成功",
@@ -1511,7 +1515,9 @@
     "previewUnavailable": "原生文件预览不可用。你可以拒绝或取消该请求。",
     "requestedPermissions": "请求的原生权限",
     "allowWithRule": "允许并添加此命令规则",
-    "allowWithNetworkRule": "允许并添加此网络规则"
+    "allowWithNetworkRule": "允许并添加此网络规则",
+    "codexDeliveryRetry": "Codex 没有收到你的选择（{{error}}），请重新选择。",
+    "codexDeliveryFailed": "Codex 没有收到你的选择（{{error}}）。如果对话没有继续，请点击停止后重新发送。"
   },
   "askUserQuestion": {
     "title": "Claude 有一些问题想问你",
@@ -2612,6 +2618,14 @@
     "copied": "已复制",
     "openDependencySettings": "打开依赖管理",
     "recommended": "推荐",
+    "updateClaudeSdk": "更新 SDK",
+    "updatingClaudeSdk": "更新中...",
+    "updateClaudeSdkSuccess": "已更新到 {{version}}，请重新发送消息。",
+    "updateClaudeSdkFailed": "更新失败：{{error}}",
+    "updateClaudeSdkFailedUnknown": "更新失败。请打开依赖管理查看详情。",
+    "updateClaudeSdkTimedOut": "15 分钟内没有收到结果。请到依赖管理查看更新状态。",
+    "updateClaudeSdkCustomCli": "SDK 已更新到 {{version}}，但插件运行的是自定义的 Claude CLI（{{path}}）。请按方案二更新它。",
+    "updateClaudeSdkAlreadyLatest": "{{version}} 已是本插件支持的最新 SDK，而此模型需要更新的 Claude Code。请在插件发布新版本后更新插件，或换用其他模型。",
     "codexWriterConflict": {
       "title": "Codex 线程被占用",
       "intro": "该会话正由另一个 Codex 回合或客户端写入，本次发送未能启动。",
@@ -2636,6 +2650,21 @@
         "downgrade": {
           "title": "方案二：版本回退",
           "step0": "在「依赖管理」中将 SDK 版本切换到 v0.2.112 或更早版本，切换后需要重启 IDEA。"
+        }
+      }
+    },
+    "claudeCodeVersionTooOld": {
+      "title": "Claude Code SDK 版本过低，无法使用此模型",
+      "intro": "插件运行的是自身 SDK 内置的 Claude Code，而不是终端里的 claude 命令。该内置版本低于此模型要求的版本。",
+      "reason": "SDK 与插件分开安装，因此更新插件或终端里的 claude 命令都不会更新 SDK。",
+      "solutions": {
+        "updateSdk": {
+          "title": "方案一：更新 Claude Code SDK",
+          "step0": "安装支持范围内的最新 SDK。之后插件会重启 Claude 进程，可以直接重新发送消息。"
+        },
+        "updateCustomCli": {
+          "title": "方案二：更新自定义的 Claude CLI",
+          "step0": "如果设置了「Claude CLI 路径（覆盖）」，插件会运行该程序而不是 SDK。请在终端中更新："
         }
       }
     },

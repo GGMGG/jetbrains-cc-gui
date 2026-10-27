@@ -1072,7 +1072,9 @@
     "previewUnavailable": "Native file preview is unavailable. You can deny or cancel this request.",
     "requestedPermissions": "Requested native permissions",
     "allowWithRule": "Allow with this command rule",
-    "allowWithNetworkRule": "Allow with this network rule"
+    "allowWithNetworkRule": "Allow with this network rule",
+    "codexDeliveryRetry": "Codex не получил ваш выбор ({{error}}). Выберите ещё раз.",
+    "codexDeliveryFailed": "Codex не получил ваш выбор ({{error}}). Если диалог не продолжается, нажмите «Стоп» и отправьте сообщение снова."
   },
   "askUserQuestion": {
     "title": "У Claude есть вопросы к вам",
@@ -2034,6 +2036,14 @@
     "copied": "Скопировано",
     "openDependencySettings": "Открыть управление зависимостями",
     "recommended": "Рекомендуется",
+    "updateClaudeSdk": "Обновить SDK",
+    "updatingClaudeSdk": "Обновление...",
+    "updateClaudeSdkSuccess": "Обновлено до {{version}}. Отправьте сообщение ещё раз.",
+    "updateClaudeSdkFailed": "Не удалось обновить: {{error}}",
+    "updateClaudeSdkFailedUnknown": "Не удалось обновить. Подробности — в управлении зависимостями.",
+    "updateClaudeSdkTimedOut": "За 15 минут результата нет. Проверьте состояние обновления в управлении зависимостями.",
+    "updateClaudeSdkCustomCli": "SDK обновлён до {{version}}, но плагин запускает ваш Claude CLI ({{path}}). Обновите его по варианту 2.",
+    "updateClaudeSdkAlreadyLatest": "{{version}} — уже самый новый SDK, который поддерживает плагин, а этой модели нужен более новый Claude Code. Обновите плагин, когда выйдет новая версия, или выберите другую модель.",
     "codexWriterConflict": {
       "title": "Поток Codex занят",
       "intro": "Другой ход или клиент Codex записывает данные в эту беседу. Не удалось начать отправку.",
@@ -2058,6 +2068,21 @@
         "downgrade": {
           "title": "Вариант 2: откатить на более раннюю версию",
           "step0": "В управлении зависимостями переключите версию SDK на v0.2.112 или более раннюю. После переключения перезапустите IDEA."
+        }
+      }
+    },
+    "claudeCodeVersionTooOld": {
+      "title": "Claude Code SDK слишком старый для этой модели",
+      "intro": "Плагин запускает Claude Code из собственного SDK, а не команду claude из вашего терминала. Эта встроенная версия старше той, что требуется для этой модели.",
+      "reason": "SDK устанавливается отдельно от плагина, поэтому обновление плагина или команды claude в терминале его не обновляет.",
+      "solutions": {
+        "updateSdk": {
+          "title": "Вариант 1: обновить Claude Code SDK",
+          "step0": "Устанавливает последнюю поддерживаемую версию SDK. Затем плагин перезапускает процесс Claude, поэтому сообщение можно сразу отправить снова."
+        },
+        "updateCustomCli": {
+          "title": "Вариант 2: обновить свой Claude CLI",
+          "step0": "Если вы указали «Путь к Claude CLI (переопределение)», плагин запускает этот файл вместо SDK. Обновите его в терминале:"
         }
       }
     },

@@ -1005,11 +1005,43 @@ for (const fixtureName of ['codex-reloaded-tool-batch', 'codex-interrupted-comma
       expectedToolCount: number;
       expectedFailedCount?: number;
       finalText?: string;
-      messages: Array<{ type: string; content: string; raw: { codexThreadId: string } }>;
+      messages: Array<{
+        type: string;
+        content: string;
+        raw: {
+          codexThreadId: string;
+          content?: Array<{ type: string; name?: string; input?: { command?: string; cmd?: string; code?: string } }>;
+        };
+      }>;
     };
     const { messages, expectedToolCount } = fixture;
+    const localId = 'local-tool-discovery';
+    const localMessages = [
+      { ...messages[1], raw: { ...messages[1].raw, uuid: localId, codexItemId: localId,
+        content: [{ type: 'tool_use', id: localId, name: 'Promise.resolve',
+          input: { code: 'Promise.resolve(ALL_TOOLS.filter(tool => /jetbrains/i.test(tool.name)))' } }] } },
+      { ...messages[2], raw: { ...messages[2].raw, uuid: `${localId}:result`, codexItemId: `${localId}:result`,
+        content: [{ type: 'tool_result', tool_use_id: localId, content: '[]', is_error: false }] } },
+    ];
+    messages.splice(3, 0, ...localMessages);
     const sessionId = messages[0].raw.codexThreadId;
+    const commands = messages.flatMap(message => message.raw.content ?? [])
+      .filter(block => block.type === 'tool_use' && block.name === 'bash')
+      .map(block => block.input?.command ?? block.input?.cmd ?? '');
     await switchToCodex(page);
+    const liveMessages = commands.flatMap((command, index) => projectCodexItemMessages({
+      id: `live-command-${index}`, type: 'commandExecution', command, status: 'completed', exitCode: 0,
+    }, { threadId: sessionId, turnId: 'live-command-labels' }).map(raw => ({ type: raw.type, content: '', raw })));
+    await page.evaluate(({ sessionId, liveMessages }) => {
+      window.setSessionId?.(sessionId);
+      window.onStreamStart?.();
+      window.updateMessages?.(JSON.stringify(liveMessages));
+    }, { sessionId, liveMessages });
+    await expect(page.locator('.bash-timeline-description')).toHaveText(commands);
+    await page.evaluate(() => {
+      window.onStreamEnd?.();
+      window.clearMessages?.();
+    });
     await page.evaluate(({ sessionId, messages }) => {
       window.setSessionId?.(sessionId);
       window.updateMessages?.(JSON.stringify(messages));
@@ -1019,9 +1051,12 @@ for (const fixtureName of ['codex-reloaded-tool-batch', 'codex-interrupted-comma
       await expect(page.locator('.thinking-block')).toHaveCount(0);
       await expect(page.getByText(`Batch Run Commands (${expectedToolCount})`, { exact: true })).toBeVisible();
       await expect(page.locator('.bash-timeline-item')).toHaveCount(expectedToolCount);
+      await expect(page.locator('.bash-timeline-description')).toHaveText(commands);
       await expect(page.locator('.tool-status-indicator.pending')).toHaveCount(0);
       await expect(page.locator('.tool-status-indicator.error')).toHaveCount(fixture.expectedFailedCount ?? 0);
       await expect(page.getByText('exec', { exact: true })).toHaveCount(0);
+      await expect(page.locator('.messages-container')).not.toContainText('Promise.resolve');
+      await expect(page.locator('.messages-container')).not.toContainText('ALL_TOOLS');
       await expect(page.getByText(fixture.finalText ?? 'Verified history grouping.', { exact: true })).toBeVisible();
     };
     await assertContinuousBatch();

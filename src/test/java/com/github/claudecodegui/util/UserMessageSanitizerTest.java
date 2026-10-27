@@ -13,6 +13,18 @@ import static org.junit.Assert.assertTrue;
  * the next real user message.
  */
 public class UserMessageSanitizerTest {
+    /** Hides only the transport envelope while preserving markers quoted in the request. */
+    @Test
+    public void restoresCodexIdeRequestWithoutEditorMetadata() {
+        String request = "请检查这里\n\n## My request for Codex:\n这是用户引用的格式";
+        String envelope = "# Context from my IDE setup:\n\n## Active file: src/App.java\n\n## My request for Codex:\n";
+        assertEquals(request, UserMessageSanitizer.sanitizeUserFacingText(envelope + request));
+        assertEquals(request, UserMessageSanitizer.sanitizeUserFacingText(request));
+        assertEquals("", UserMessageSanitizer.sanitizeUserFacingText(envelope));
+        String incomplete = "# Context from my IDE setup:\n\n## Active file: src/App.java";
+        assertEquals(incomplete, UserMessageSanitizer.sanitizeUserFacingText(incomplete));
+    }
+
     /** Keeps the request and real file references outside the desktop transport envelope. */
     @Test
     public void restoresDesktopRequestAndOrdinaryFileReferences() {

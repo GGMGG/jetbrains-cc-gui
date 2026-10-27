@@ -30,6 +30,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { dressContextForTurn } from './codex-ide-context.js';
 import { projectCodexItemMessages } from './codex-item-projection.js';
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { buildProjectDocFallbackConfig } from './codex-native-runtime-config.js';
@@ -675,7 +676,9 @@ export class CodexAppServerService extends EventEmitter {
         return existing;
       }
     }
-    const operation = this.#createOperation({ kind, threadId, clientMessageId, markerPayload });
+    // Snapshot the payload at enqueue time so later caller mutations cannot
+    // leak into a queued turn (additionalContext holds changing editor state).
+    const operation = this.#createOperation({ kind, threadId, clientMessageId, markerPayload: structuredClone(markerPayload) });
     // Freeze the latest desired settings revision at enqueue time (D8).
     operation.frozenSettings = settings !== undefined
       ? structuredClone({ ...(this.desiredSettings || {}), ...settings })
@@ -730,15 +733,19 @@ export class CodexAppServerService extends EventEmitter {
   async #dispatchOperation(operation) {
     try {
       await this.ensureRuntime();
-      if (operation.settled) {
-        return;
-      }
+      if (operation.settled) return;
       // Stop may have requested cancellation while the runtime was starting.
       if (operation.cancelRequested && operation.dispatchPhase === 'notWritten') {
         this.#settleOperation(operation, { outcome: 'cancelled', error: 'cancelled before dispatch' });
         return;
       }
-
+      if (operation.kind === 'send' && Object.keys(operation.markerPayload?.additionalContext ?? {}).length > 0) {
+        const client = this.client;
+        const supported = await client.supportsAdditionalContext();
+        if (operation.settled) return;
+        if (this.client !== client || !client.alive) throw new ClassifiedError('RUNTIME_RESET', 'Codex runtime changed during context discovery');
+        operation.turnInput = dressContextForTurn(operation.markerPayload.input ?? [], operation.markerPayload.additionalContext, supported);
+      }
       // Thread bootstrap: start or resume BEFORE the operation RPC.
       this.bootstrapInFlight = true;
       let threadId = operation.threadId || this.rootThreadId || this.desiredThreadId;
@@ -843,7 +850,7 @@ export class CodexAppServerService extends EventEmitter {
     if (operation.kind === 'send') {
       const params = {
         threadId,
-        input: operation.markerPayload?.input ?? [],
+        ...(operation.turnInput ?? { input: operation.markerPayload?.input ?? [] }),
         ...(operation.clientMessageId ? { clientUserMessageId: operation.clientMessageId } : {}),
         ...this.#turnSettingsParams(operation.frozenSettings),
       };
@@ -2098,16 +2105,17 @@ export class CodexAppServerService extends EventEmitter {
   }
 
   /**
-   * Send a user message. `input` uses native UserInput items; settings are
-   * frozen at enqueue time (D8). Resolves at the native terminal exactly once.
+   * Send a user message. `input` uses native UserInput items; settings and
+   * `additionalContext` are frozen at enqueue time (D8). Resolves at the
+   * native terminal exactly once.
    */
-  async send({ threadId = null, input = [], clientMessageId = null, settings = undefined }) {
+  async send({ threadId = null, input = [], additionalContext = undefined, clientMessageId = null, settings = undefined }) {
     const operation = this.enqueueOperation({
       kind: 'send',
       threadId,
       clientMessageId,
       settings,
-      markerPayload: { input },
+      markerPayload: { input, additionalContext },
     });
     return await operation.promise;
   }

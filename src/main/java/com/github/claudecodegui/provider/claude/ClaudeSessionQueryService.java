@@ -2,10 +2,10 @@ package com.github.claudecodegui.provider.claude;
 
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.bridge.NodeProcessRunner;
 import com.github.claudecodegui.bridge.ProcessManager;
 import com.github.claudecodegui.provider.common.SessionHistoryIncompleteException;
 import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
-import com.github.claudecodegui.util.PlatformUtils;
 import com.github.claudecodegui.util.UserMessageSanitizer;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -13,19 +13,13 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CountDownLatch;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -50,6 +44,7 @@ class ClaudeSessionQueryService {
     private final ProcessManager processManager;
     private final EnvironmentConfigurator envConfigurator;
     private final ClaudeJsonOutputExtractor outputExtractor;
+    private final int processTimeoutSeconds;
 
     ClaudeSessionQueryService(
             Logger log,
@@ -60,6 +55,20 @@ class ClaudeSessionQueryService {
             EnvironmentConfigurator envConfigurator,
             ClaudeJsonOutputExtractor outputExtractor
     ) {
+        this(log, gson, nodeDetector, sdkDirSupplier, processManager, envConfigurator, outputExtractor,
+                PROCESS_TIMEOUT_SECONDS);
+    }
+
+    ClaudeSessionQueryService(
+            Logger log,
+            Gson gson,
+            NodeDetector nodeDetector,
+            Supplier<File> sdkDirSupplier,
+            ProcessManager processManager,
+            EnvironmentConfigurator envConfigurator,
+            ClaudeJsonOutputExtractor outputExtractor,
+            int processTimeoutSeconds
+    ) {
         this.log = log;
         this.gson = gson;
         this.nodeDetector = nodeDetector;
@@ -67,6 +76,7 @@ class ClaudeSessionQueryService {
         this.processManager = processManager;
         this.envConfigurator = envConfigurator;
         this.outputExtractor = outputExtractor;
+        this.processTimeoutSeconds = processTimeoutSeconds;
     }
 
     List<JsonObject> getSessionMessages(String sessionId, String cwd) {
@@ -248,54 +258,10 @@ class ClaudeSessionQueryService {
         envConfigurator.updateProcessEnvironment(pb, node);
 
         // L5 fix: register with ProcessManager so cleanupAllProcesses sees this child.
-        String channelId = ProcessManager.newChannelId("claude-session-query");
-        Process process = null;
-        StringBuilder output = new StringBuilder();
-        CountDownLatch outputReaderDone = new CountDownLatch(1);
-        Thread outputReader = null;
-        try {
-            process = startProcess(pb);
-            processManager.registerProcess(channelId, process);
-            checkCancellation(cancellation);
+        NodeProcessRunner.Result result = NodeProcessRunner.run(
+                prepareProcessBuilder(pb), processManager, "claude-session-query", null, processTimeoutSeconds, cancellation);
 
-            String readerThreadName = "claude-session-query-output-" + channelId;
-            Process runningProcess = process;
-            outputReader = new Thread(() -> drainOutput(runningProcess, output, outputReaderDone), readerThreadName);
-            outputReader.setDaemon(true);
-            outputReader.start();
-
-            long deadlineNanos = System.nanoTime()
-                    + TimeUnit.SECONDS.toNanos(PROCESS_TIMEOUT_SECONDS);
-            while (process.isAlive()) {
-                checkCancellation(cancellation);
-                long remainingNanos = deadlineNanos - System.nanoTime();
-                if (remainingNanos <= 0L) {
-                    terminateProcess(process);
-                    throw new RuntimeException(
-                            "Node.js process timed out after " + PROCESS_TIMEOUT_SECONDS + " seconds");
-                }
-                process.waitFor(Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(100L)),
-                        TimeUnit.NANOSECONDS);
-            }
-
-            awaitOutputReader(outputReaderDone, outputReader);
-            checkCancellation(cancellation);
-        } finally {
-            if (process != null) {
-                if (process.isAlive()) {
-                    terminateProcess(process);
-                }
-                if (outputReader != null && outputReader.isAlive()) {
-                    outputReader.interrupt();
-                }
-                processManager.unregisterProcess(channelId, process);
-            }
-        }
-
-        String outputStr;
-        synchronized (output) {
-            outputStr = output.toString().trim();
-        }
+        String outputStr = result.output().trim();
         log.debug("[" + logPrefix + "] Raw output length: " + outputStr.length());
         if (log.isDebugEnabled()) {
             log.debug("[" + logPrefix + "] Raw output (first 300 chars): "
@@ -329,55 +295,13 @@ class ClaudeSessionQueryService {
         return jsonResult;
     }
 
-    Process startProcess(ProcessBuilder processBuilder) throws IOException {
-        return processBuilder.start();
-    }
-
-    private void drainOutput(Process process, StringBuilder output, CountDownLatch outputReaderDone) {
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                synchronized (output) {
-                    output.append(line).append("\n");
-                }
-            }
-        } catch (Exception e) {
-            log.debug("[getSessionMessages] Output reader stopped: " + e.getMessage());
-        } finally {
-            outputReaderDone.countDown();
-        }
-    }
-
-    private void awaitOutputReader(CountDownLatch outputReaderDone, Thread outputReader) {
-        try {
-            if (!outputReaderDone.await(2L, TimeUnit.SECONDS) && outputReader != null) {
-                outputReader.interrupt();
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            if (outputReader != null) {
-                outputReader.interrupt();
-            }
-        }
+    ProcessBuilder prepareProcessBuilder(ProcessBuilder configured) {
+        return configured;
     }
 
     private void checkCancellation(BooleanSupplier cancellation) {
         if (cancellation != null && cancellation.getAsBoolean()) {
             throw new CancellationException("Claude session query was cancelled");
-        }
-    }
-
-    private void terminateProcess(Process process) {
-        PlatformUtils.terminateProcess(process);
-        try {
-            if (process.isAlive() && !process.waitFor(3L, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                process.waitFor(2L, TimeUnit.SECONDS);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
         }
     }
 
