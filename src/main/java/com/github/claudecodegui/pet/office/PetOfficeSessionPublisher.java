@@ -1,6 +1,7 @@
 package com.github.claudecodegui.pet.office;
 
 import com.github.claudecodegui.session.SessionState;
+import com.github.claudecodegui.pet.CodexPetFloatingService;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationInfo;
 import com.intellij.openapi.application.ApplicationManager;
@@ -49,6 +50,19 @@ public final class PetOfficeSessionPublisher implements Disposable {
 
     public PetOfficeTabNavigator navigator() {
         return navigator;
+    }
+
+    public CodexPetFloatingService.VisualConfiguration visualConfiguration(String projectId) {
+        Project owner = null;
+        synchronized (this) {
+            for (Map.Entry<Project, String> entry : projectIds.entrySet()) {
+                if (entry.getValue().equals(projectId)) {
+                    owner = entry.getKey();
+                    break;
+                }
+            }
+        }
+        return owner == null || owner.isDisposed() ? null : CodexPetFloatingService.getInstance(owner).visualConfiguration();
     }
 
     @Override

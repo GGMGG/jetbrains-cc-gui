@@ -34,6 +34,7 @@ public final class PetOfficeRuntimeService implements Disposable {
     private volatile PetOfficeIpcClient client;
     private volatile PetOfficeSessionPublisher publisher;
     private PetOfficeEndpoint joined;
+    private PetOfficeAssetChannel assetChannel;
     private long retryAt;
     private long backoffMillis = 250;
     private String lastError = "";
@@ -90,6 +91,7 @@ public final class PetOfficeRuntimeService implements Disposable {
                 client = new PetOfficeIpcClient(server.endpoint(), instanceId);
                 joined = server.endpoint();
                 client.publish(publisher.sample());
+                client.assetEndpoint(assetChannel().endpoint());
                 synchronized (lease) {
                     if (cancelled.get() || disposed.get() || !lease.isValid()) {
                         throw new IOException("OFFICE_LEADER_LOST");
@@ -194,6 +196,34 @@ public final class PetOfficeRuntimeService implements Disposable {
     boolean owns(PetOfficeRuntimeLease lease) {
         PetOfficeCoordinator current = owner.get();
         return !disposed.get() && current != null && current.lease() == lease && lease.isValid() && current.server().isRunning();
+    }
+
+    java.util.Map<String, PetOfficeAppearanceService.Appearance> appearances(PetOfficeSessionRegistry.CompleteSnapshot snapshot) throws IOException {
+        PetOfficeCoordinator current = owner.get();
+        if (current == null || !owns(current.lease())) {
+            throw new IOException("OFFICE_LEADER_LOST");
+        }
+        return current.appearances().view(snapshot);
+    }
+
+    byte[] assetBytes(String key, PetOfficeAppearanceService.Appearance appearance, BooleanSupplier pageValid) throws IOException {
+        PetOfficeCoordinator current = owner.get();
+        if (current == null || !owns(current.lease())) {
+            throw new IOException("OFFICE_LEADER_LOST");
+        }
+        return current.appearances().bytes(key, appearance, () -> owns(current.lease()) && pageValid.getAsBoolean());
+    }
+
+    private PetOfficeAssetChannel assetChannel() throws IOException {
+        if (assetChannel == null) {
+            PetOfficeSessionPublisher publisher = publisher();
+            var assets = new PetOfficeAppearanceService(
+                    () -> PetOfficeAssetRoot.resolvePets(Path.of(com.github.claudecodegui.util.PlatformUtils.getHomeDirectory())),
+                    () -> com.github.claudecodegui.bridge.AiDataProcessGate.getInstance().tryAcquireReadPermit());
+            assetChannel = new PetOfficeAssetChannel(publisher.snapshot().instanceId(),
+                    new PetOfficeAppearancePublisher(publisher::snapshot, publisher::visualConfiguration, assets));
+        }
+        return assetChannel;
     }
 
     void navigate(String page, PetOfficeTabNavigator.Request request, BooleanSupplier pageValid,
@@ -363,6 +393,7 @@ public final class PetOfficeRuntimeService implements Disposable {
             PetOfficeSessionPublisher publisher = publisher();
             client = new PetOfficeIpcClient(endpoint, publisher.snapshot().instanceId());
             joined = endpoint;
+            client.assetEndpoint(assetChannel().endpoint());
             lastPublication = 0;
         }
         return true;
@@ -391,6 +422,10 @@ public final class PetOfficeRuntimeService implements Disposable {
             client.close();
             client = null;
         }
+        if (assetChannel != null) {
+            assetChannel.close();
+            assetChannel = null;
+        }
         joined = null;
         nextEndpointCheck = 0;
     }
@@ -416,6 +451,7 @@ public final class PetOfficeRuntimeService implements Disposable {
             PetOfficeCoordinator current = owner.get();
             if (current != null) {
                 current.server().close();
+                current.appearances().close();
             }
             // Close the current socket immediately to interrupt blocked reads before queued cleanup.
             PetOfficeIpcClient connected = client;
