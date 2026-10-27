@@ -20,6 +20,8 @@ interface DeliveryAcknowledgement {
   interactionKey: string;
   error: string | null;
   retryable: boolean;
+  /** Java gave up waiting for the daemon; the answer may still take effect. */
+  unconfirmed: boolean;
 }
 
 function readAcknowledgement(detail: unknown): DeliveryAcknowledgement | null {
@@ -30,6 +32,7 @@ function readAcknowledgement(detail: unknown): DeliveryAcknowledgement | null {
       interactionKey: ack.interactionKey,
       error: typeof ack.error === 'string' && ack.error ? ack.error : null,
       retryable: ack.retryable !== false,
+      unconfirmed: ack.deliveryUnconfirmed === true,
     };
   } catch {
     return null;
@@ -47,6 +50,9 @@ function readAcknowledgement(detail: unknown): DeliveryAcknowledgement | null {
  * user can answer again. A second failure, a failure Java marks as not
  * retryable, or a deadline that has already passed only explains what
  * happened: reopening then would just fail again or auto-deny on the spot.
+ * An answer Java merely stopped waiting for (`deliveryUnconfirmed`) is never
+ * reopened either: a slow daemon usually delivers it late, and a second,
+ * different answer would be rejected while the first one takes effect.
  * Answers whose dialog the runtime closed in the meantime are forgotten, so a
  * late failure never resurrects a request that already ended.
  *
@@ -73,9 +79,10 @@ export function useCodexDeliveryRecovery({ t, addToast, reopen }: UseCodexDelive
       const expired = typeof deadlineMs === 'number' && deadlineMs > 0 && deadlineMs <= Date.now();
       const canRetry = ack.retryable && !expired && !reopenedRef.current.has(ack.interactionKey);
       const { t: translate, addToast: notify, reopen: reopenDialog } = optionsRef.current;
-      notify?.(translate(canRetry ? 'permission.codexDeliveryRetry' : 'permission.codexDeliveryFailed', {
-        error: ack.error,
-      }), 'error');
+      const messageKey = canRetry ? 'permission.codexDeliveryRetry'
+        : ack.unconfirmed ? 'permission.codexDeliveryUnconfirmed'
+          : 'permission.codexDeliveryFailed';
+      notify?.(translate(messageKey, { error: ack.error }), 'error');
       if (!canRetry) return;
       reopenedRef.current.add(ack.interactionKey);
       reopenDialog(submitted);
