@@ -109,6 +109,21 @@ describe('Codex answers that never reach the runtime', () => {
       'permission.codexDeliveryFailed|Unknown or stale Codex interaction', 'error');
   });
 
+  it('does not ask again for an answer whose delivery is only unconfirmed', () => {
+    const { result, addToast } = renderDialogs();
+    act(() => { result.current.openPermissionDialog(permission()); });
+    act(() => { result.current.handlePermissionApprove('C'); });
+
+    acknowledge('key-1', 'codex.respondInteraction timed out after 10000 ms',
+      { retryable: false, deliveryUnconfirmed: true });
+
+    // A slow daemon usually delivers the first answer late; a second one would contradict it.
+    expect(result.current.currentPermissionRequest).toBeNull();
+    expect(result.current.permissionDialogOpen).toBe(false);
+    expect(addToast).toHaveBeenCalledWith(
+      'permission.codexDeliveryUnconfirmed|codex.respondInteraction timed out after 10000 ms', 'error');
+  });
+
   it('does not bring back a dialog the runtime already closed', () => {
     const { result, addToast } = renderDialogs();
     act(() => { result.current.openPermissionDialog(permission()); });
