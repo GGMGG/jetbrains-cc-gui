@@ -151,7 +151,7 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         }
 
         java.util.concurrent.CompletableFuture
-                .supplyAsync(() -> {
+                .supplyAsync(() -> this.context.respondToCodexInteraction(session, () -> {
                     JsonObject acknowledgement;
                     if (errorResponse) {
                         acknowledgement = bridge.rejectCodexInteraction(
@@ -163,7 +163,7 @@ public class CodexInteractionHandler extends BaseMessageHandler {
                         acknowledgement = bridge.respondCodexInteraction(channelId, cwd, interactionKey, dialogToken, result);
                     }
                     return acknowledgement;
-                }, CodexSDKBridge.codexControlExecutor())
+                }), CodexSDKBridge.codexControlExecutor())
                 .thenAccept(acknowledgement -> {
                     // The page reopens the dialog on failure; the log is what
                     // explains a stalled turn when users report it afterwards.

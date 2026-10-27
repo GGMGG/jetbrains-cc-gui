@@ -15,6 +15,7 @@ import OtherSettingsSection from './OtherSettingsSection';
 import PetSettingsSection from './PetSettingsSection';
 import AiDataStorageSection from './AiDataStorageSection';
 import { SkillsSettingsSection } from '../skills/SkillsSettingsSection';
+import ClawBotSection from './ClawBotSection';
 import type {
   UseSettingsThemeSyncReturn,
   UseSettingsBasicActionsReturn,
@@ -70,6 +71,7 @@ export const DependenciesPanel = ({ addToast }: SettingsTabPanelProps) => (
 );
 
 export const UsagePanel = () => <UsageSection />;
+export const ClawBotPanel = () => <ClawBotSection />;
 
 export const McpPanel = ({ currentProvider }: SettingsTabPanelProps) => (
   <PlaceholderSection type="mcp" currentProvider={currentProvider} />
