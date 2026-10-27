@@ -1048,7 +1048,8 @@
     "allowWithRule": "Allow with this command rule",
     "allowWithNetworkRule": "Allow with this network rule",
     "codexDeliveryRetry": "Codex n'a pas reçu votre choix ({{error}}). Veuillez choisir à nouveau.",
-    "codexDeliveryFailed": "Codex n'a pas reçu votre choix ({{error}}). Si la conversation ne reprend pas, cliquez sur Arrêter puis renvoyez votre message."
+    "codexDeliveryFailed": "Codex n'a pas reçu votre choix ({{error}}). Si la conversation ne reprend pas, cliquez sur Arrêter puis renvoyez votre message.",
+    "codexDeliveryUnconfirmed": "Codex n'a pas encore confirmé votre choix ({{error}}). Il peut encore être appliqué, ne répondez donc pas une seconde fois ; si la conversation ne reprend pas, cliquez sur Arrêter puis renvoyez votre message."
   },
   "askUserQuestion": {
     "title": "Claude a quelques questions pour vous",
