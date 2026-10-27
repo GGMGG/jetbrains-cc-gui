@@ -724,7 +724,9 @@ export async function codexReadThreadPersistent(stdinData) {
 export function projectThreadFileChanges(thread) {
   return (thread?.turns ?? []).flatMap(turn => (turn.items ?? [])
     .filter(item => item.type === 'fileChange' || item.type === 'file_change')
-    .flatMap(item => projectCodexItemMessages(item, { threadId: thread.id, turnId: turn.id, authoritative: true })));
+    .flatMap(item => projectCodexItemMessages(item, { threadId: thread.id, turnId: turn.id, authoritative: true }))
+    // This endpoint is a snapshot ledger, while chat/history also need the paired tool receipts.
+    .filter(message => message.type === 'assistant'));
 }
 
 export async function codexListModelsPersistent(stdinData) {
