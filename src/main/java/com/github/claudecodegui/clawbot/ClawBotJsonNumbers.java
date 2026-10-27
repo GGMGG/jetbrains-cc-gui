@@ -8,17 +8,18 @@ final class ClawBotJsonNumbers {
 
     static long nonNegativeLong(JsonObject object, String name) {
         try {
-            var value = object.get(name);
-            if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
-                throw new IllegalArgumentException();
-            }
-            long result = value.getAsBigDecimal().longValueExact();
-            if (result < 0) {
-                throw new IllegalArgumentException();
-            }
-            return result;
+            return nonNegativeLong(object.get(name));
         } catch (RuntimeException invalid) {
             throw new IllegalArgumentException("Invalid numeric field " + name);
         }
+    }
+
+    static long nonNegativeLong(com.google.gson.JsonElement value) {
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException("Invalid numeric value");
+        }
+        long result = value.getAsBigDecimal().longValueExact();
+        if (result < 0) { throw new IllegalArgumentException("Invalid numeric value"); }
+        return result;
     }
 }

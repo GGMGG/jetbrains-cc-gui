@@ -46,7 +46,9 @@ final class ClawBotRuntimeFiles {
     }
 
     Path path(String name) throws IOException {
-        if (!Set.of("gateway.auth", "leader.json", "gateway.lock").contains(name)) {
+        if (!Set.of("gateway.auth", "leader.json", "gateway.lock", "progress-settings.json", "execution-journal.json",
+                "ide-execution-journal.json", "ide-execution-journal.json.lock", "transport-state.json", "pending-deliveries.enc",
+                "reply-recovery.enc", "reply-capabilities.enc", "outbound-protection.json", "outbound-receipts.json").contains(name)) {
             throw new IOException("CLAWBOT_RUNTIME_FILE_INVALID");
         }
         return root.resolve(name);
@@ -105,6 +107,15 @@ final class ClawBotRuntimeFiles {
         var attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (!attributes.isDirectory() || attributes.isSymbolicLink() || attributes.isOther()) {
             throw new IOException("CLAWBOT_RUNTIME_UNAVAILABLE");
+        }
+    }
+
+    void remove(String name) throws IOException {
+        validateRoot();
+        Path target = path(name);
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            validateFile(target);
+            Files.delete(target);
         }
     }
 
