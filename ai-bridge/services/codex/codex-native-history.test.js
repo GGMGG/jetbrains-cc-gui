@@ -31,6 +31,26 @@ test('native display page loads items, preserves identities and never resumes a 
   assert.deepEqual(calls.map((call) => call.method), ['thread/read', 'thread/turns/list', 'thread/items/list']);
 });
 
+test('MCP tool errors keep their identity and failure receipt in paginated and full history', async () => {
+  for (const readMode of ['paged', 'full']) {
+    for (const isError of [true, false]) {
+      const turn = { id: 'turn', status: 'completed', items: [
+        { id: 'mcp', type: 'mcpToolCall', tool: 'inspect', server: 'fixture', status: 'completed',
+          arguments: { target: 'owned-fixture' }, result: { isError, content: [{ type: 'text', text: 'Tool response' }] } },
+      ] };
+      const page = await readNativeHistoryPage(async method => method === 'thread/read'
+        ? { thread: { id: 'thread', turns: [turn] } } : { data: [turn], nextCursor: null }, { threadId: 'thread', readMode });
+      assert.equal(page.messages.length, 2);
+      assert.deepEqual(page.messages[0].raw.message.content[0], { type: 'tool_use', id: 'mcp', name: 'inspect',
+        input: { server: 'fixture', arguments: { target: 'owned-fixture' } } });
+      assert.deepEqual(page.messages[1].raw.message.content[0], { type: 'tool_result', tool_use_id: 'mcp',
+        is_error: isError, content: [{ type: 'text', text: 'Tool response' }] });
+      assert.equal(page.messages[1].raw.codexThreadId, 'thread');
+      assert.equal(page.messages[1].raw.codexTurnId, 'turn');
+    }
+  }
+});
+
 test('only explicit pagination capability errors select a fixed full native read', async () => {
   const calls = [];
   const read = async (method, params) => {
