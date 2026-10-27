@@ -9,7 +9,7 @@
   code, pre { overflow-wrap: anywhere; white-space: pre-wrap; }
   button, input, select {
     padding: 6px 8px;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-primary);
     border-radius: 4px;
     color: inherit;
     background: var(--bg-secondary);
@@ -24,11 +24,37 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  li { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-color); }
+  li { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-primary); }
 }
 .identity { display: grid; gap: 4px; min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; }
-.details, .content { padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; }
+.details, .content { padding: 12px; border: 1px solid var(--border-primary); border-radius: 6px; }
 .details { summary { cursor: pointer; } dl > div { display: flex; justify-content: space-between; gap: 12px; } }
 .record { margin-top: 8px; summary { display: flex; gap: 8px; cursor: pointer; } pre { max-height: 480px; overflow: auto; } }
 .excerpt { flex: 1; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .warning { color: var(--warning-color, #b7791f); }
+
+.relations { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; }
+.relationBadges { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.relationBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  color: var(--accent-primary);
+  line-height: 1.5;
+}
+.childCount { color: var(--text-secondary); }
+.parentSession {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  code { flex-shrink: 0; font-size: 10px; }
+}
+.parentLabel { flex-shrink: 0; }
+.parentTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.parentMissing { color: var(--text-tertiary); font-size: 10px; }

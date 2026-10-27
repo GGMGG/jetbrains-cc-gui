@@ -1,3 +1,4 @@
+import CodexStorageSessionRelations from './CodexStorageSessionRelations';
 import { useDeferredValue, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import CodexStorageContentRecord from './CodexStorageContentRecord';
@@ -148,7 +149,7 @@ export default function CodexStoragePanel() {
       <h4>{t(page.complete ? 'settings.codexStorage.allSessions' : 'settings.codexStorage.partialSessions', { count: page.total })}</h4>
       {page.sessions.length === 0 ? <p>{t('settings.codexStorage.empty')}</p> : <ul className={styles.sessions}>
         {page.sessions.map(session => <li key={session.sessionId}>
-          <div className={styles.identity}><strong>{session.title}</strong><code>{session.cwd}</code><small>{session.sessionId}</small></div>
+          <div className={styles.identity}><strong>{session.title}</strong><code>{session.cwd}</code><small>{session.sessionId}</small><CodexStorageSessionRelations session={session} /></div>
           <span>{bytes(session.fileSize)}</span>
           <div className={styles.actions}>
             <button type="button" onClick={() => openContent(session)} disabled={!session.readable}>{t('settings.codexStorage.view')}</button>
@@ -170,6 +171,7 @@ export default function CodexStoragePanel() {
       <ul>{errors.slice(0, 20).map((error, index) => <li key={index}>{error}</li>)}</ul>
     </details>}
     {selected && <section className={styles.content} aria-label={t('settings.codexStorage.sessionContent')}>
+      <CodexStorageSessionRelations session={selected} />
       <div className={styles.toolbar}><h4>{selected.title}</h4><button type="button" onClick={() => setSelected(null)}>{t('settings.codexStorage.close')}</button></div>
       {contentLoading && <p role="status">{t('common.loading')}</p>}
       {contentError && <p role="alert">{contentError}</p>}
