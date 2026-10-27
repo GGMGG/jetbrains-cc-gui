@@ -46,7 +46,68 @@ export interface CodexStorageContent {
   nextCursor?: string;
 }
 
+export interface CodexDatabaseStatus {
+  databaseId: string;
+  name: string;
+  sizes: Record<string, number>;
+  supported: boolean;
+  unavailableReason?: string;
+  maintenancePending: boolean;
+  engineVersion?: string;
+  freelistCount?: number;
+  pageSize?: number;
+}
+
+export interface CodexStorageMutationStatus {
+  available: boolean;
+  unavailableReason?: string;
+  deletionAvailable: boolean;
+  deletionUnavailableReason?: string;
+  runningSessionIds: string[];
+  writerSessionIds: string[];
+}
+
+export interface CodexMaintenanceOperation {
+  operationId: string;
+  kind: 'DELETE_SESSIONS' | 'COMPACT_DATABASE' | 'CLEAN_ORPHANED_HISTORY';
+  state: string;
+  targets: string[];
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
+  result?: {
+    deletedSessionIds?: string[];
+    rolloutBytesRemoved?: number;
+    logicalRowsRemovedThisAttempt?: number;
+    cleanedSessionCount?: number;
+    releasedBytes?: number;
+    warning?: string;
+    metadataStatus?: 'PENDING' | 'COMPLETE' | 'FAILED';
+    before?: Record<string, number>;
+    after?: Record<string, number>;
+  };
+}
+
+export interface CodexOrphanPreview {
+  databaseId: string;
+  previewToken: string;
+  candidateCount: number;
+  rowCount: number;
+  estimatedBytes: number;
+  retainedFileSessions: number;
+  skippedBusyCount: number;
+  skippedExistingCount: number;
+  candidates: Array<{ sessionId: string; title: string; estimatedBytes: number }>;
+}
+
 interface StorageData {
+  get_ai_storage_database_status: CodexDatabaseStatus;
+  get_ai_storage_mutation_status: CodexStorageMutationStatus;
+  compact_ai_storage_database: CodexMaintenanceOperation;
+  preview_ai_storage_orphans: CodexOrphanPreview;
+  clean_ai_storage_orphans: CodexMaintenanceOperation;
+  get_ai_storage_maintenance_operation: CodexMaintenanceOperation;
+  list_ai_storage_maintenance_operations: CodexMaintenanceOperation[];
   get_ai_storage_usage: CodexStorageUsage;
   list_ai_storage_sessions: CodexStoragePage;
   get_ai_storage_session: CodexStorageContent;
@@ -69,13 +130,51 @@ function strings(value: unknown): value is string[] {
 function numberMap(value: unknown): value is Record<string, number> {
   return object(value) && Object.values(value).every(item => typeof item === 'number' && Number.isFinite(item));
 }
+function operation(value: unknown): value is CodexMaintenanceOperation {
+  return object(value) && typeof value.operationId === 'string' && typeof value.state === 'string'
+    && ['DELETE_SESSIONS', 'COMPACT_DATABASE', 'CLEAN_ORPHANED_HISTORY'].includes(String(value.kind)) && strings(value.targets)
+    && typeof value.createdAt === 'string' && typeof value.updatedAt === 'string'
+    && (value.error === undefined || typeof value.error === 'string')
+    && (value.result === undefined || (object(value.result)
+      && (value.result.deletedSessionIds === undefined || strings(value.result.deletedSessionIds))
+      && (value.result.releasedBytes === undefined || typeof value.result.releasedBytes === 'number')
+      && (value.result.rolloutBytesRemoved === undefined || typeof value.result.rolloutBytesRemoved === 'number')
+      && (value.result.logicalRowsRemovedThisAttempt === undefined || typeof value.result.logicalRowsRemovedThisAttempt === 'number')
+      && (value.result.cleanedSessionCount === undefined || typeof value.result.cleanedSessionCount === 'number')
+      && (value.result.metadataStatus === undefined || ['PENDING', 'COMPLETE', 'FAILED'].includes(String(value.result.metadataStatus)))
+      && (value.result.warning === undefined || typeof value.result.warning === 'string')
+      && (value.result.before === undefined || numberMap(value.result.before))
+      && (value.result.after === undefined || numberMap(value.result.after))));
+}
 function validData(action: keyof StorageData, value: unknown): boolean {
+  if (action === 'list_ai_storage_maintenance_operations') return Array.isArray(value) && value.every(operation);
+  if (action === 'compact_ai_storage_database' || action === 'clean_ai_storage_orphans'
+    || action === 'get_ai_storage_maintenance_operation') return operation(value);
   if (!object(value)) return false;
   switch (action) {
     case 'reveal_ai_storage_session': return typeof value.sessionId === 'string' && value.sessionId.length > 0;
+    case 'get_ai_storage_mutation_status':
+      return typeof value.available === 'boolean'
+        && (value.available ? value.unavailableReason === undefined : typeof value.unavailableReason === 'string' && value.unavailableReason.length > 0)
+        && typeof value.deletionAvailable === 'boolean'
+        && (value.deletionAvailable ? value.deletionUnavailableReason === undefined
+          : typeof value.deletionUnavailableReason === 'string' && value.deletionUnavailableReason.length > 0)
+        && strings(value.runningSessionIds) && strings(value.writerSessionIds);
+    case 'preview_ai_storage_orphans':
+      return typeof value.databaseId === 'string' && typeof value.previewToken === 'string' && /^[a-f0-9]{64}$/.test(value.previewToken)
+        && ['candidateCount', 'rowCount', 'estimatedBytes', 'retainedFileSessions', 'skippedBusyCount', 'skippedExistingCount']
+          .every(key => { const count = value[key]; return typeof count === 'number' && Number.isFinite(count) && count >= 0; })
+        && Array.isArray(value.candidates) && value.candidates.every(item => object(item) && typeof item.sessionId === 'string'
+          && typeof item.title === 'string' && typeof item.estimatedBytes === 'number' && Number.isFinite(item.estimatedBytes));
     case 'get_ai_storage_usage':
       return typeof value.canonicalRoot === 'string' && typeof value.physicalRoot === 'string' && typeof value.scannedAt === 'string'
         && typeof value.logicalBytes === 'number' && numberMap(value.categories) && strings(value.skippedLinks) && strings(value.errors) && typeof value.complete === 'boolean';
+    case 'get_ai_storage_database_status':
+      return typeof value.databaseId === 'string' && typeof value.name === 'string' && typeof value.supported === 'boolean'
+        && typeof value.maintenancePending === 'boolean' && numberMap(value.sizes)
+        && (value.unavailableReason === undefined || typeof value.unavailableReason === 'string')
+        && (value.freelistCount === undefined || typeof value.freelistCount === 'number')
+        && (value.pageSize === undefined || typeof value.pageSize === 'number');
     case 'list_ai_storage_sessions':
       return Array.isArray(value.sessions) && value.sessions.every(item => object(item) && typeof item.sessionId === 'string'
         && typeof item.title === 'string' && typeof item.cwd === 'string' && typeof item.storageMode === 'string'
