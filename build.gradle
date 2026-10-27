@@ -34,6 +34,11 @@ checkstyle {
     sourceSets = [project.sourceSets.main]
 }
 
+// Keep the expanded storage analysis within the analyzer's own heap budget.
+tasks.withType(Checkstyle).configureEach {
+    maxHeapSize = '1g'
+}
+
 // sourceSets above unhooks checkstyleTest from the check lifecycle; disabling the
 // task as well makes an explicit `gradlew checkstyleTest` a SKIPPED no-op instead
 // of a failure.
