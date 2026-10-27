@@ -86,6 +86,143 @@ function eventsOf(events, kind) {
   return events.filter((event) => event.kind === kind);
 }
 
+async function asyncQuestionFixture() {
+  const fixture = makeService({ scenario: 'never-respond' });
+  const operation = fixture.service.enqueueOperation({ kind: 'send',
+    markerPayload: { input: [{ type: 'text', text: 'Ask A, B or C' }] } });
+  await waitFor(() => operation.nativeTurnId, 1000, 'async question turn');
+  const peer = fixture.getPeer();
+  for (const id of peer.pendingAcks.keys()) peer.ackPending(id, { turn: { id: operation.nativeTurnId } });
+  const params = { threadId: operation.threadId, turnId: operation.nativeTurnId,
+    item: { type: 'agentMessage', id: 'async-question-item', text: 'Choose an answer', delivery: 'async',
+      questions: [{ title: 'Choose A, B or C', options: ['A', 'B', 'C'] }, { title: 'Any comment?', options: null }] } };
+  const publish = () => peer.notify({ method: 'item/completed', params });
+  publish();
+  await waitFor(() => eventsOf(fixture.events, 'interactionRequested').length, 1000, 'async dialog');
+  return { ...fixture, operation, peer, params, publish,
+    request: eventsOf(fixture.events, 'interactionRequested')[0],
+    result: { answers: { 'question-1': { answers: ['B'] }, 'question-2': { answers: ['Test comment'] } } } };
+}
+
+test('Codex 0.163 async agent messages open one nonblocking choice/free-text dialog and steer only their turn', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    const { service, peer, request, result, operation } = fixture;
+    const replies = [];
+    const originalDispatch = peer.dispatch.bind(peer);
+    peer.dispatch = (method, params, id) => {
+      if (method === 'turn/steer') { replies.push(params); peer.reply(id, { turnId: params.expectedTurnId }); return; }
+      return originalDispatch(method, params, id);
+    };
+    assert.equal(request.payload.params.isBlocking, false);
+    assert.deepEqual(request.payload.params.questions[0].options.map(option => option.label), ['A', 'B', 'C']);
+    assert.deepEqual(request.payload.params.questions[1].options, []);
+    fixture.publish();
+    assert.equal(eventsOf(fixture.events, 'interactionRequested').length, 1);
+    assert.equal(await service.respondInteraction(request.payload.rpcId, { answers: { unknown: { answers: ['A'] } } }), false);
+    assert.equal(service.pendingInteractions.size, 1);
+    assert.deepEqual(await service.respondInteraction(request.payload.rpcId, result), { replied: true });
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].expectedTurnId, operation.nativeTurnId);
+    assert.ok(replies[0].input[0].text.startsWith('Answers to your questions (request: async-question-item):\n\n'));
+    assert.match(replies[0].input[0].text, /Choose A, B or C\nB/);
+    assert.match(replies[0].input[0].text, /Any comment\?\nTest comment/);
+    assert.equal(service.respondInteraction(request.payload.rpcId, result), false);
+    fixture.publish();
+    assert.equal(eventsOf(fixture.events, 'interactionRequested').length, 1);
+    assert.equal(eventsOf(fixture.events, 'interactionResolved').length, 1);
+    assert.equal(service.busy, true);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('async answers after a terminal use a tracked follow-up instead of an unowned native turn', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    const { service, peer, operation, request, result } = fixture;
+    peer.notify({ method: 'turn/completed', params: { threadId: operation.threadId,
+      turn: { id: operation.nativeTurnId, status: 'completed' } } });
+    await operation.promise;
+    const response = await service.respondInteraction(request.payload.rpcId, result);
+    assert.equal(response.replied, true);
+    assert.equal(response.followUp.threadId, operation.threadId);
+    assert.match(response.followUp.text, /\nB\n/);
+    assert.equal(fixture.dispatchCounts.get('turn/start'), 1);
+    assert.equal(fixture.dispatchCounts.get('turn/steer') ?? 0, 0);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('async cancellation interrupts its waiting turn without manufacturing a JSON-RPC response or user answer', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    const client = fixture.getClient();
+    client.replyServerRequest = () => { throw new Error('async questions are not reverse RPCs'); };
+    assert.deepEqual(await fixture.service.respondInteraction(fixture.request.payload.rpcId, { answers: {} }), { replied: true });
+    assert.equal(fixture.service.pendingInteractions.size, 0);
+    assert.equal(fixture.dispatchCounts.get('turn/steer') ?? 0, 0);
+    await waitFor(() => fixture.dispatchCounts.get('turn/interrupt') === 1, 1000, 'cancelled question interrupt');
+    const interrupt = fixture.dispatched.find(value => value.method === 'turn/interrupt');
+    assert.deepEqual(interrupt.params, { threadId: fixture.operation.threadId, turnId: fixture.operation.nativeTurnId });
+    assert.equal((await fixture.operation.promise).outcome, 'interrupted');
+    assert.equal(fixture.service.busy, false);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('typed async question cancellation releases its waiting operation', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    assert.equal(fixture.service.respondInteractionError(fixture.request.payload.rpcId, -32800, 'Question expired'), true);
+    await waitFor(() => fixture.dispatchCounts.get('turn/interrupt') === 1, 1000, 'expired question interrupt');
+    assert.equal((await fixture.operation.promise).outcome, 'interrupted');
+    assert.equal(fixture.service.pendingInteractions.size, 0);
+    assert.equal(fixture.dispatchCounts.get('turn/steer') ?? 0, 0);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('cancelling a question from a completed turn never interrupts the subsequent turn', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    fixture.peer.notify({ method: 'turn/completed', params: { threadId: fixture.operation.threadId,
+      turn: { id: fixture.operation.nativeTurnId, status: 'completed' } } });
+    await fixture.operation.promise;
+    const next = fixture.service.enqueueOperation({ kind: 'send', markerPayload: { input: [{ type: 'text', text: 'Next turn' }] } });
+    await waitFor(() => next.nativeTurnId, 1000, 'subsequent turn');
+    assert.deepEqual(await fixture.service.respondInteraction(fixture.request.payload.rpcId, { answers: {} }), { replied: true });
+    assert.equal(fixture.dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    assert.equal(next.cancelRequested, false);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('stopping or resetting an async question cannot leave an answerable stale dialog', async () => {
+  for (const reset of [false, true]) {
+    const fixture = await asyncQuestionFixture();
+    try {
+      if (reset) await fixture.service.resetRuntime();
+      else {
+        fixture.peer.notify({ method: 'turn/completed', params: { threadId: fixture.operation.threadId,
+          turn: { id: fixture.operation.nativeTurnId, status: 'interrupted' } } });
+        await fixture.operation.promise;
+      }
+      assert.equal(fixture.service.pendingInteractions.size, 0);
+      assert.equal(fixture.service.respondInteraction(fixture.request.payload.rpcId, fixture.result), false);
+    } finally { await fixture.service.resetRuntime(); }
+  }
+});
+
+test('history, foreign-thread and unstructured text items cannot become actionable async dialogs', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    fixture.peer.notify({ method: 'item/completed', params: { ...fixture.params, threadId: 'foreign-thread' } });
+    fixture.peer.notify({ method: 'item/completed', params: { ...fixture.params,
+      item: { type: 'agentMessage', id: 'plain-text', text: 'A B C' } } });
+    fixture.peer.notify({ method: 'turn/completed', params: { threadId: fixture.operation.threadId,
+      turn: { id: fixture.operation.nativeTurnId, status: 'completed' } } });
+    await fixture.operation.promise;
+    fixture.peer.notify({ method: 'item/completed', params: { ...fixture.params,
+      item: { ...fixture.params.item, id: 'historical-question' } } });
+    assert.equal(eventsOf(fixture.events, 'interactionRequested').length, 1);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
 test('editor context stays operation-scoped and separate from native user input', async () => {
   let probes = 0;
   const { service, dispatched } = makeService({ clientOpts: { contextSupportProbe: async () => { probes += 1; return true; } } });

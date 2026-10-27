@@ -18,6 +18,20 @@ test('file changes emit their own terminal receipt so stream cleanup cannot mark
   }
 });
 
+test('async native questions retain structured options in both live and reloaded history', () => {
+  const item = { type: 'agentMessage', id: 'question', delivery: 'async', text: 'Pick one.\n\n- A\n- B\n- C',
+    questions: [{ title: 'Pick one.', options: ['A', 'B', 'C'] }, { title: 'Any comment?', options: null }] };
+  for (const authoritative of [false, true]) {
+    const [raw] = projectCodexItemMessages(item, { threadId: 'thread', turnId: 'turn', authoritative });
+    const [block] = raw.message.content;
+    assert.equal(block.name, 'codex_user_input');
+    assert.equal(block.id, 'question');
+    assert.deepEqual(block.input.questions[0].options.map(option => option.label), ['A', 'B', 'C']);
+    assert.deepEqual(block.input.questions[1].options, []);
+    assert.equal(raw.codexItemId, 'question');
+  }
+});
+
 test('native clock waits never manufacture a tool receipt; actual dynamic errors stay errors', () => {
   for (const item of [{ type: 'sleep', id: 'wait', durationMs: 60000 },
     { type: 'Extension', kind: 'clock.sleep', id: 'wait', durationMs: 60000 }]) {

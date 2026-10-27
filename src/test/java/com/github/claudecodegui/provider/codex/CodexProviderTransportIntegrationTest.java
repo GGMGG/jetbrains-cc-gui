@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -71,6 +72,75 @@ public class CodexProviderTransportIntegrationTest {
             JsonObject result = fixture.bridge.updateCodexSettings("fixture", fixture.cwd.toString(), new JsonObject());
             assertTrue(result.toString(), result.has("error"));
             assertEquals("model = [\n", Files.readString(config));
+        }
+    }
+
+    @Test
+    public void concurrentPageAnswersDispatchOnlyOneNativeDecision() throws Exception {
+        try (Fixture fixture = fixture("async-question")) {
+            CompletableFuture<SDKResult> send = fixture.send();
+            JsonObject question = fixture.awaitEvent("interactionRequested");
+            JsonObject answer = JsonParser.parseString("{\"answers\":{\"question-1\":{\"answers\":[\"A\"]}}}").getAsJsonObject();
+            CountDownLatch start = new CountDownLatch(1);
+            CompletableFuture<JsonObject> ide = CompletableFuture.supplyAsync(() -> {
+                await(start);
+                return fixture.bridge.respondCodexInteraction("fixture", fixture.cwd.toString(),
+                        string(question, "interactionKey"), string(question, "dialogToken"), answer);
+            });
+            CompletableFuture<JsonObject> duplicate = CompletableFuture.supplyAsync(() -> {
+                await(start);
+                return fixture.bridge.respondCodexInteraction("fixture", fixture.cwd.toString(),
+                        string(question, "interactionKey"), string(question, "dialogToken"), answer);
+            });
+            start.countDown();
+            assertFalse(ide.get(15, TimeUnit.SECONDS).has("error") == duplicate.get(15, TimeUnit.SECONDS).has("error"));
+            assertTrue(send.get(15, TimeUnit.SECONDS).success);
+            assertEquals(1, fixture.trace().stream().filter(event -> "turn/steer".equals(string(event, "method"))).count());
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) throw new AssertionError("Native response fixture did not start");
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(error);
+        }
+    }
+
+
+
+
+    /** Async question identities and typed replies survive the real Java/daemon transport. */
+    @Test
+    public void asyncQuestionDialogsCanAnswerDuringAndAfterTheOriginalNativeTurn() throws Exception {
+        for (boolean completed : new boolean[]{false, true}) {
+            try (Fixture fixture = this.fixture(completed ? "async-question-completed" : "async-question")) {
+                CompletableFuture<SDKResult> send = fixture.send();
+                JsonObject question = fixture.awaitEvent("interactionRequested");
+                assertTrue(question.has("interactionKey"));
+                assertTrue(question.has("dialogToken"));
+                assertFalse(question.getAsJsonObject("payload").getAsJsonObject("params").get("isBlocking").getAsBoolean());
+                if (completed) {
+                    assertTrue(send.get(15, TimeUnit.SECONDS).success);
+                }
+                JsonObject answers = JsonParser.parseString("{\"answers\":{\"question-1\":{\"answers\":[\"B\"]}}}").getAsJsonObject();
+                JsonObject reply = fixture.bridge.respondCodexInteraction("fixture", fixture.cwd.toString(),
+                        string(question, "interactionKey"), string(question, "dialogToken"), answers);
+                assertFalse(reply.toString(), reply.has("error"));
+                assertTrue(reply.toString(), reply.get("replied").getAsBoolean());
+                if (completed) {
+                    JsonObject followUp = reply.getAsJsonObject("followUp");
+                    assertEquals("th-test-root-0001", string(followUp, "threadId"));
+                    assertTrue(string(followUp, "text").endsWith("\nB"));
+                } else {
+                    assertFalse(reply.has("followUp"));
+                    assertTrue(send.get(15, TimeUnit.SECONDS).success);
+                    assertTrue(fixture.callback.messages.stream().anyMatch(message -> message.contains("Choose A, B or C\\nB")));
+                }
+                assertTrue(fixture.bridge.respondCodexInteraction("fixture", fixture.cwd.toString(),
+                        string(question, "interactionKey"), string(question, "dialogToken"), answers).has("error"));
+            }
         }
     }
 
@@ -373,7 +443,7 @@ public class CodexProviderTransportIntegrationTest {
     }
 
     private Fixture fixture(String scenario) throws Exception {
-        Path root = Files.createTempDirectory(this.folder.getRoot().toPath(), scenario + "-");
+        Path root = this.folder.newFolder(scenario).toPath();
         Path cwd = Files.createDirectory(root.resolve("workspace"));
         Path trace = root.resolve("trace.ndjson");
         AtomicReference<Process> process = new AtomicReference<>();
