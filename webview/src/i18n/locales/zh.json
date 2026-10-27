@@ -1724,7 +1724,9 @@
     "timeoutWarning": "请尽快回答，对话框将在 {{seconds}} 秒后自动关闭",
     "expand": "展开",
     "collapse": "收起",
-    "clickToAnswer": "点击回答"
+    "clickToAnswer": "点击回答",
+    "recordTitle": "Codex 提问",
+    "recordAnswer": "你的回答"
   },
   "planApproval": {
     "title": "计划已准备就绪",

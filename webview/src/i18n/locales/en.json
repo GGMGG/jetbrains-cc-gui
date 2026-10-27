@@ -1719,7 +1719,9 @@
     "timeoutWarning": "Please answer soon, dialog will close in {{seconds}} seconds",
     "expand": "Expand",
     "collapse": "Collapse",
-    "clickToAnswer": "Click to answer"
+    "clickToAnswer": "Click to answer",
+    "recordTitle": "Codex questions",
+    "recordAnswer": "Your answer"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
