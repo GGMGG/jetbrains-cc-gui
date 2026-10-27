@@ -32,6 +32,7 @@
 import { EventEmitter } from 'node:events';
 import { dressContextForTurn } from './codex-ide-context.js';
 import { projectCodexItemMessages } from './codex-item-projection.js';
+import { ASYNC_QUESTION_METHOD, normalizeAsyncQuestions, asyncQuestionAnswer } from './codex-async-questions.js';
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { buildProjectDocFallbackConfig } from './codex-native-runtime-config.js';
 
@@ -141,6 +142,7 @@ export class CodexAppServerService extends EventEmitter {
     // Keeping the method beside the opaque RPC id allows response validation
     // without trusting a browser supplied method name.
     this.pendingInteractions = new Map();
+    this.seenAsyncQuestions = new Set();
     // Session FIFO: at most one active send/compact/review operation.
     this.queue = [];
     this.activeOperationId = null;
@@ -1023,6 +1025,7 @@ export class CodexAppServerService extends EventEmitter {
       }
     }
     operation.settled = true;
+    if (outcome !== 'completed') this.#closeAsyncQuestions(operation.threadId, operation.nativeTurnId);
     operation.outcome = outcome;
     operation.dispatchPhase = 'terminal';
     for (const [key, item] of this.itemSnapshots) {
@@ -1237,6 +1240,11 @@ export class CodexAppServerService extends EventEmitter {
     // Native started is the explicit boundary for a new turn. Test peers may
     // recycle ids; a terminal alone can never establish that boundary.
     this.completedTurns.delete(`${threadId}:${turnId}`);
+    // A new user turn supersedes unanswered questions from the preceding turn.
+    for (const [id, interaction] of this.pendingInteractions) {
+      if (interaction.method === ASYNC_QUESTION_METHOD && interaction.threadId === threadId
+          && interaction.turnId !== turnId) this.#resolveAsyncQuestion(id, interaction);
+    }
     for (const [key, item] of this.planItems) {
       if (item.threadId === threadId && item.turnId !== turnId) this.planItems.delete(key);
     }
@@ -1369,6 +1377,10 @@ export class CodexAppServerService extends EventEmitter {
       ? this.#bindOperationByTurn(threadId, turnId)
       : [...this.operations.values()].find((candidate) =>
         !candidate.settled && candidate.threadId === threadId);
+    if (operation && !operation.settled && !operation.cancelRequested
+        && ['item/completed', 'item/updated'].includes(method)) {
+      this.#publishAsyncQuestions(threadId, turnId, safeItem);
+    }
     if (operation && (method === 'item/completed' || method === 'item/updated'
         || method === 'item/started' && ['reasoning', 'commandExecution', 'mcpToolCall', 'fileChange', 'contextCompaction',
           'dynamicToolCall', 'collabAgentToolCall', 'imageView', 'imageGeneration', 'webSearch'].includes(itemType))) {
@@ -2013,6 +2025,7 @@ export class CodexAppServerService extends EventEmitter {
   respondInteraction(rpcId, result) {
     const interaction = this.pendingInteractions.get(rpcId);
     if (!interaction || !this.client?.alive) return false;
+    if (interaction.method === ASYNC_QUESTION_METHOD) return this.#answerAsyncQuestion(rpcId, interaction, result);
     const validation = validateInteractionResult(interaction?.method, result);
     if (!validation.valid) {
       // Local validation leaves the native request pending for one corrected answer.
@@ -2026,9 +2039,93 @@ export class CodexAppServerService extends EventEmitter {
   /** Typed error reply for a verified interaction. */
   respondInteractionError(rpcId, code, message) {
     if (!this.pendingInteractions.has(rpcId) || !this.client?.alive) return false;
+    const interaction = this.pendingInteractions.get(rpcId);
+    if (interaction.method === ASYNC_QUESTION_METHOD) {
+      this.#cancelAsyncQuestion(rpcId, interaction);
+      return true;
+    }
     this.client?.replyServerError(rpcId, code, message);
     this.pendingInteractions.delete(rpcId);
     return true;
+  }
+
+  #publishAsyncQuestions(threadId, turnId, item) {
+    const questions = normalizeAsyncQuestions(item);
+    if (!item?.id || questions.length === 0) return;
+    const id = `async-question:${this.runtimeGeneration}:${threadId}:${turnId}:${item.id}`;
+    if (this.seenAsyncQuestions.has(id)) return;
+    this.seenAsyncQuestions.add(id);
+    if (this.seenAsyncQuestions.size > 512) this.seenAsyncQuestions.delete(this.seenAsyncQuestions.values().next().value);
+    // Keep unanswered question state bounded independently of transcript size.
+    const pending = [...this.pendingInteractions].filter(([, value]) => value.method === ASYNC_QUESTION_METHOD);
+    if (pending.length >= 32) this.#resolveAsyncQuestion(...pending[0]);
+    const operation = [...this.operations.values()].find(candidate => !candidate.settled
+      && candidate.threadId === threadId && candidate.nativeTurnId === turnId);
+    this.pendingInteractions.set(id, { method: ASYNC_QUESTION_METHOD, threadId, turnId, itemId: item.id,
+      questions, generation: this.runtimeGeneration, clientOperationId: operation?.clientOperationId ?? null });
+    this.emit('codex_event', this.#envelope({ kind: 'interactionRequested', threadId, turnId, itemId: item.id,
+      payload: { rpcId: id, method: ASYNC_QUESTION_METHOD,
+        params: { threadId, turnId, itemId: item.id, questions, isBlocking: false } } }));
+  }
+
+  #resolveAsyncQuestion(id, interaction) {
+    if (this.pendingInteractions.get(id) !== interaction) return;
+    this.pendingInteractions.delete(id);
+    this.emit('codex_event', this.#envelope({ kind: 'interactionResolved', threadId: interaction.threadId,
+      turnId: interaction.turnId, itemId: interaction.itemId, payload: { rpcId: id, method: interaction.method } }));
+  }
+
+  #cancelAsyncQuestion(id, interaction) {
+    if (this.pendingInteractions.get(id) !== interaction) return;
+    this.#resolveAsyncQuestion(id, interaction);
+    // Closing the dialog alone leaves an agent waiting in its original turn.
+    // Cancel only that tracked turn; an older completed question must never stop a newer send.
+    const operation = this.operations.get(interaction.clientOperationId);
+    if (operation && !operation.settled && !operation.cancelRequested
+        && operation.threadId === interaction.threadId && operation.nativeTurnId === interaction.turnId) {
+      this.stopOperation(operation.clientOperationId);
+    }
+  }
+
+  #closeAsyncQuestions(threadId, turnId) {
+    for (const [id, interaction] of this.pendingInteractions) {
+      if (interaction.method === ASYNC_QUESTION_METHOD && interaction.threadId === threadId
+          && interaction.turnId === turnId) this.#resolveAsyncQuestion(id, interaction);
+    }
+  }
+
+  async #answerAsyncQuestion(id, interaction, result) {
+    const text = asyncQuestionAnswer(interaction.questions, result, interaction.itemId);
+    if (text === null || interaction.answering) return false;
+    if (!text) {
+      this.#cancelAsyncQuestion(id, interaction);
+      return { replied: true };
+    }
+    interaction.answering = true;
+    try {
+      const current = () => this.pendingInteractions.get(id) === interaction
+        && this.runtimeGeneration === interaction.generation && this.client?.alive;
+      const active = [...this.operations.values()].find(operation => !operation.settled && !operation.cancelRequested
+        && operation.threadId === interaction.threadId && operation.nativeTurnId === interaction.turnId);
+      if (text && active) {
+        try {
+          await this.client.request('turn/steer', { threadId: interaction.threadId,
+            expectedTurnId: interaction.turnId, input: [{ type: 'text', text }] }, { timeoutMs: 5_000 });
+          if (!current()) return false;
+          this.#resolveAsyncQuestion(id, interaction);
+          return { replied: true };
+        } catch (error) {
+          // Only a definitive rejection after a terminal can start a new turn.
+          // A timed-out steer may have been accepted and must never be retried.
+          if (error?.code !== 'RPC_ERROR' || !this.completedTurns.has(`${interaction.threadId}:${interaction.turnId}`)) throw error;
+        }
+      }
+      if (!current()) return false;
+      this.#resolveAsyncQuestion(id, interaction);
+      return { replied: true, ...(text ? { followUp: { threadId: interaction.threadId, text } } : {}) };
+    } finally {
+      interaction.answering = false;
+    }
   }
 
   // ==========================================================================
