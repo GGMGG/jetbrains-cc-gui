@@ -1,4 +1,5 @@
-export const officePhases = ['IDLE', 'RUNNING', 'WAITING_USER', 'WAITING_PERMISSION', 'STOPPING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'UNKNOWN'] as const;
+const backendPhases = ['IDLE', 'QUEUED', 'RUNNING', 'THINKING', 'WAITING_USER', 'STOPPING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'UNKNOWN'] as const;
+export const officePhases = [...backendPhases, 'WAITING_PERMISSION', 'WAITING_PLAN'] as const;
 export type OfficePhase = typeof officePhases[number];
 export interface LocalOfficeSource {
   sourceKey: string;
@@ -40,14 +41,21 @@ export function parseLocalOfficeSnapshot(value: unknown): LocalOfficeSnapshot {
       || !identifier(item.sourceKey.bindingEpoch) || !identifier(item.routeGeneration)
       || !['AVAILABLE', 'DETACHED', 'CLOSED'].includes(String(item.routeStatus))
       || !identifier(item.metadata.projectId) || !text(item.metadata.projectLabel) || !text(item.metadata.tabLabel)
-      || !text(item.provider) || !text(item.modelLabel) || !officePhases.includes(item.execution.phase as OfficePhase)
-      || !text(item.execution.pendingInteractionId, 128)) return invalid();
+      || !text(item.provider) || !text(item.modelLabel) || !backendPhases.includes(item.execution.phase as typeof backendPhases[number])
+      || !['NONE', 'QUESTION', 'PERMISSION', 'PLAN'].includes(String(item.execution.waitReason))
+      || !(item.execution.pendingInteractionId === '' || identifier(item.execution.pendingInteractionId))
+      || !integer(item.execution.pendingInteractionCount) || item.execution.pendingInteractionCount > 16) return invalid();
+    const waiting = item.execution.phase === 'WAITING_USER';
+    if (waiting ? item.execution.waitReason === 'NONE' || item.execution.pendingInteractionId === '' || item.execution.pendingInteractionCount === 0
+      : item.execution.waitReason !== 'NONE' || item.execution.pendingInteractionId !== '' || item.execution.pendingInteractionCount !== 0) return invalid();
+    const phase: OfficePhase = waiting && item.execution.waitReason === 'PERMISSION' ? 'WAITING_PERMISSION'
+      : waiting && item.execution.waitReason === 'PLAN' ? 'WAITING_PLAN' : item.execution.phase as OfficePhase;
     const sourceKey = `${value.instanceId}/${item.sourceKey.contentHandleId}/${item.sourceKey.bindingEpoch}`;
     if (identities.has(sourceKey)) return invalid();
     identities.add(sourceKey);
     return { sourceKey, routeGeneration: item.routeGeneration, routeStatus: item.routeStatus as LocalOfficeSource['routeStatus'],
       projectId: item.metadata.projectId, projectLabel: item.metadata.projectLabel, tabLabel: item.metadata.tabLabel,
-      provider: item.provider, modelLabel: item.modelLabel, phase: item.execution.phase as OfficePhase,
+      provider: item.provider, modelLabel: item.modelLabel, phase,
       interactionId: item.execution.pendingInteractionId };
   });
   return { watermark: value.watermark, sampledAt: value.sampledAt, capacityReached: value.capacityReached, sources };

@@ -21,7 +21,9 @@ test.beforeEach(async ({ page }) => {
         sourceKey: { instanceId: 'idea', contentHandleId: `tab-${index}`, bindingEpoch: 'binding' },
         routeGeneration: 'route', routeStatus: 'AVAILABLE', provider: 'codex', modelLabel: 'model',
         metadata: { projectId: index % 2 ? 'project-B' : 'project-A', projectLabel: index % 2 ? 'Project B' : 'Project A', tabLabel: `Chat ${index}` },
-        execution: { phase: index === 0 ? 'WAITING_USER' : 'RUNNING', pendingInteractionId: index === 0 ? 'question' : '' },
+        execution: { phase: [0, 3, 4].includes(index) ? 'WAITING_USER' : index === 1 ? 'THINKING' : index === 2 ? 'QUEUED' : 'RUNNING',
+          waitReason: index === 0 ? 'QUESTION' : index === 3 ? 'PERMISSION' : index === 4 ? 'PLAN' : 'NONE',
+          pendingInteractionId: [0, 3, 4].includes(index) ? 'question' : '', pendingInteractionCount: [0, 3, 4].includes(index) ? 1 : 0 },
       }));
       const data = request.action === 'activate' ? { result: 'STALE_INTERACTION' } : {
         schemaVersion: 1, instanceId: 'idea', connectionEpoch: 'epoch', watermark: 1, sampledAt: 1000, capacityReached: false, sources,
@@ -37,6 +39,10 @@ test.beforeEach(async ({ page }) => {
 test('filters and pages real desks while retaining exact activation authority', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Open chat: Chat 0', exact: true })).toBeVisible();
   await expect(page.getByText('Waiting for your answer', { exact: true })).toBeVisible();
+  await expect(page.getByText('Thinking', { exact: true })).toBeVisible();
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+  await expect(page.getByText('Waiting for permission', { exact: true })).toBeVisible();
+  await expect(page.getByText('Waiting for plan review', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Open chat: Chat 0', exact: true }).click();
   await expect(page.getByText('This interaction has changed. Refresh and try again.')).toBeVisible();
   expect(await page.evaluate(() => window.__OFFICE_LOCAL_TEST__.activations)).toEqual([
