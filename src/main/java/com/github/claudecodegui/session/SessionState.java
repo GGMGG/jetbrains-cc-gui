@@ -205,6 +205,15 @@ public class SessionState {
         return turnOwner == owner;
     }
 
+    public record ExecutionBinding(String provider, String model, SessionExecutionState execution) { }
+
+    /** Atomic read for passive observers; no callback runs while session state is locked. */
+    public ExecutionBinding getExecutionBinding() {
+        synchronized (messageStateLock) {
+            return new ExecutionBinding(provider, model, executionState);
+        }
+    }
+
     public SessionExecutionState getExecutionState() {
         return executionState;
     }

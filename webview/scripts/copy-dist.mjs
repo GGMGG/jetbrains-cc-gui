@@ -173,7 +173,21 @@ const copyAsset = async (fileName) => {
   await copyFile(source, target);
 };
 
+const copyOffice = async () => {
+  const source = path.resolve(cwd, 'dist/office/office.html');
+  const target = path.resolve(cwd, '../src/main/resources/html/pet-office.html');
+  const bytes = await readFile(source);
+  if (bytes.length > 5 * 1024 * 1024) throw new Error('Office entry exceeds the native budget');
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, bytes);
+  console.log('[copy-dist] Copied Office HTML');
+};
+
 const main = async () => {
+  if (process.argv.includes('--office-only')) {
+    await copyOffice();
+    return;
+  }
   // Remote JCEF transfers handler responses over the Gateway channel. Keeping
   // hashed chunks compressed and cacheable avoids resending a 9 MB HTML blob
   // for every restored or newly-created chat tab.
@@ -186,6 +200,7 @@ const main = async () => {
   await writeFile(targetFile, html, 'utf-8');
 
   console.log(`[copy-dist] Copied HTML and ${assets.length} assets`);
+  if (process.argv.includes('--with-office')) await copyOffice();
 };
 
 main().catch((error) => {

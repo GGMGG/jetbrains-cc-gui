@@ -463,7 +463,8 @@
       "installSuccess": "Pet installed and selected",
       "uninstallSuccess": "Pet uninstalled",
       "aliasSuccess": "Pet alias updated",
-      "operationFailed": "Pet operation failed: {{error}}"
+      "operationFailed": "Pet operation failed: {{error}}",
+      "openOffice": "Open Office"
     },
     "basic": {
       "title": "Basic Configuration",

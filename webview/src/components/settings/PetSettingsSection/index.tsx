@@ -224,7 +224,9 @@ export default function PetSettingsSection({ addToast }: PetSettingsSectionProps
 
   return (
     <div className={styles.section}>
-      <h3 className={styles.title}>{t('settings.pet.title')}</h3>
+      <div className={styles.officeHeader}><h3 className={styles.title}>{t('settings.pet.title')}</h3>
+        <button type="button" className={styles.primaryButton} onClick={petBridge.openOffice}>{t('settings.pet.openOffice')}</button>
+      </div>
       <p className={styles.description}>{t('settings.pet.description')}</p>
 
       <div className={styles.scopeBar} role="group" aria-label={t('settings.pet.scopeLabel')}>

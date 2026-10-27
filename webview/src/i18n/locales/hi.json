@@ -148,6 +148,7 @@
     "continueRefiningPlan": "इस योजना को और बेहतर बनाना जारी रखें:"
   },
   "settings": {
+    "pet": { "openOffice": "Open Office" },
     "title": "सेटिंग्स",
     "basic": {
       "title": "बुनियादी कॉन्फ़िगरेशन",

@@ -148,6 +148,7 @@
     "continueRefiningPlan": "繼續完善此計畫："
   },
   "settings": {
+    "pet": { "openOffice": "Open Office" },
     "title": "設定",
     "basic": {
       "title": "基礎配置",

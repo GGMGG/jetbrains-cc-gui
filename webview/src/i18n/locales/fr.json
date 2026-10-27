@@ -148,6 +148,7 @@
     "continueRefiningPlan": "Continuer à affiner ce plan :"
   },
   "settings": {
+    "pet": { "openOffice": "Open Office" },
     "title": "Paramètres",
     "basic": {
       "title": "Configuration de base",
