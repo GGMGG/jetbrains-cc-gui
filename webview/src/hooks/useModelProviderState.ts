@@ -79,15 +79,29 @@ export function useModelProviderState({ addToast, t }: UseModelProviderStateOpti
     currentProviderRef.current = currentProvider;
   }, [currentProvider]);
 
+  // A previous provider's confirmation cannot describe a newly selected runtime.
+  useEffect(() => {
+    setCodexEffectiveSettings(null);
+  }, [currentProvider]);
+
   // Native settings acknowledgements only become effective after the app
   // server emits thread/settings/updated. Keep that boundary visible to the
   // UI so a mid-turn selection is presented as “next turn” until confirmed.
   useEffect(() => {
     const handleRuntimeEvent = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, unknown>>).detail;
-      if (currentProvider !== 'codex' || !detail || detail.kind !== 'thread/settings/updated'
-        || (detail.rootThreadId && detail.threadId !== detail.rootThreadId)) return;
+      if (currentProvider !== 'codex' || !detail) return;
       const payload = detail.payload;
+      const runtimeState = payload && typeof payload === 'object'
+        ? (payload as Record<string, unknown>).state : undefined;
+      if (detail.kind === 'runtimeReset' || (detail.kind === 'runtimeStateChanged'
+        && typeof runtimeState === 'string'
+        && ['starting', 'initializing', 'draining', 'stopped', 'failed'].includes(runtimeState))) {
+        setCodexEffectiveSettings(null);
+        return;
+      }
+      if (detail.kind !== 'thread/settings/updated'
+        || (detail.rootThreadId && detail.threadId !== detail.rootThreadId)) return;
       setCodexEffectiveSettings(payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload as Record<string, unknown> : null);
       const settings = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
@@ -104,6 +118,31 @@ export function useModelProviderState({ addToast, t }: UseModelProviderStateOpti
     window.addEventListener('codex-runtime-event', handleRuntimeEvent);
     return () => window.removeEventListener('codex-runtime-event', handleRuntimeEvent);
   }, [currentProvider, codexApprovalPreset, codexCollaborationMode, codexSandboxSelection]);
+
+  useEffect(() => {
+    const handleSettingsResponse = (event: Event) => {
+      if (currentProvider !== 'codex') return;
+      let detail: unknown = (event as CustomEvent<unknown>).detail;
+      if (typeof detail === 'string') {
+        try { detail = JSON.parse(detail); } catch { return; }
+      }
+      if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return;
+      const response = detail as Record<string, unknown>;
+      if (response.requestType !== 'codex_update_settings' || typeof response.error !== 'string') return;
+      const requested = response.requestedSettings;
+      if (!requested || typeof requested !== 'object' || Array.isArray(requested)) return;
+      const values = requested as Record<string, unknown>;
+      const expected: Record<string, string> = { collaborationMode: codexCollaborationMode,
+        approvalPreset: codexApprovalPreset, sandboxSelection: codexSandboxSelection };
+      const keys = Object.keys(expected).filter(key => Object.hasOwn(values, key));
+      // A late failure from a previous selection must not clear the current selection's pending state.
+      if (!keys.length || keys.some(key => values[key] !== expected[key])) return;
+      setCodexSettingsPending(false);
+      addToast(response.error, 'error');
+    };
+    window.addEventListener('codex-interaction-response', handleSettingsResponse);
+    return () => window.removeEventListener('codex-interaction-response', handleSettingsResponse);
+  }, [currentProvider, codexApprovalPreset, codexCollaborationMode, codexSandboxSelection, addToast]);
 
   // ── Provider-specific sub-hooks ──
   const claude = useClaudeProvider();

@@ -92,6 +92,33 @@ describe('Codex native auto availability', () => {
     });
   });
 
+  it.each([false, true])('clears a failed current settings update and reports its error (serialized: %s)', serialized => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => result.current.handleModeSelect('plan'));
+    expect(result.current.codexSettingsPending).toBe(true);
+    const response = { requestType: 'codex_update_settings', requestedSettings: { collaborationMode: 'plan' }, error: 'Configuration unavailable' };
+    act(() => window.dispatchEvent(new CustomEvent('codex-interaction-response', { detail: serialized ? JSON.stringify(response) : response })));
+    expect(result.current.codexSettingsPending).toBe(false);
+    expect(result.current.codexEffectiveSettings).toBeNull();
+    expect(options.addToast).toHaveBeenCalledWith('Configuration unavailable', 'error');
+  });
+
+  it('ignores stale failures and keeps successful queue acknowledgements pending until native confirmation', () => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => result.current.handleModeSelect('plan'));
+    options.addToast.mockClear();
+    for (const response of [
+      { requestType: 'codex_update_settings', requestedSettings: { collaborationMode: 'default' }, error: 'Old failure' },
+      { requestType: 'codex_update_settings', requestedSettings: { collaborationMode: 'plan' }, revision: 2, applied: false },
+      { requestType: 'codex_compact', error: 'Unrelated failure' },
+      'invalid json', null,
+    ]) act(() => window.dispatchEvent(new CustomEvent('codex-interaction-response', { detail: response })));
+    expect(result.current.codexSettingsPending).toBe(true);
+    expect(options.addToast).not.toHaveBeenCalled();
+  });
+
   it('derives an unclaimed access scope from the authoritative mode', () => {
     // A wiped localStorage snapshot leaves the scope on the safe default while
     // the app-level mode still says Full Auto; the scope must follow the mode
@@ -111,6 +138,46 @@ describe('Codex native auto availability', () => {
     expect(sendBridgeEvent).toHaveBeenCalledWith('set_codex_sandbox_selection', JSON.stringify({
       selection: 'danger-full-access', source: 'default',
     }));
+  });
+
+  it.each([
+    { kind: 'runtimeReset', payload: { reason: 'requested' } },
+    ...['starting', 'initializing', 'draining', 'stopped', 'failed'].map(state => ({
+      kind: 'runtimeStateChanged', payload: { state },
+    })),
+  ])('clears the old native confirmation on $kind $payload', detail => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => result.current.handleModeSelect('bypassPermissions'));
+    act(() => {
+      window.dispatchEvent(new CustomEvent('codex-runtime-event', {
+        detail: { kind: 'thread/settings/updated', payload: {
+          sandboxPolicy: { type: 'dangerFullAccess' }, approvalPolicy: 'never',
+        } },
+      }));
+    });
+    expect(result.current.codexEffectiveSandbox).toBe('danger-full-access');
+
+    act(() => window.dispatchEvent(new CustomEvent('codex-runtime-event', { detail })));
+
+    expect(result.current.codexEffectiveSandbox).toBeNull();
+    expect(result.current.codexEffectiveSettings).toBeNull();
+    expect(result.current.codexSandboxSelection).toBe('danger-full-access');
+  });
+
+  it('does not reuse a previous provider confirmation after switching away and back', () => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    act(() => window.dispatchEvent(new CustomEvent('codex-runtime-event', {
+      detail: { kind: 'thread/settings/updated', payload: { sandboxPolicy: { type: 'readOnly' } } },
+    })));
+    expect(result.current.codexEffectiveSandbox).toBe('read-only');
+
+    act(() => result.current.handleProviderSelect('claude'));
+    act(() => result.current.handleProviderSelect('codex'));
+
+    expect(result.current.codexEffectiveSettings).toBeNull();
+    expect(result.current.codexEffectiveSandbox).toBeNull();
   });
 
   it('never overrides an explicitly chosen access scope', () => {

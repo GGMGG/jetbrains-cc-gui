@@ -201,6 +201,11 @@ tasks.withType(JavaCompile).configureEach {
     options.release.set(17)
 }
 
+tasks.named('test', Test) {
+    // Isolate native configuration fixtures from the host's live Codex home.
+    environment 'CODEX_HOME', ''
+}
+
 // Ensure plugin.xml is patched with the correct since/until build and change notes
 patchPluginXml {
     // plugin compatibility range

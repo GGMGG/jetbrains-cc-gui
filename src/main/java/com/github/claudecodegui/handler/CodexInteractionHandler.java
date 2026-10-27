@@ -227,7 +227,9 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         if (bridge != null) {
             java.util.concurrent.CompletableFuture
                     .supplyAsync(() -> bridge.updateCodexSettings(channelId, cwd, settings), CodexSDKBridge.codexControlExecutor())
-                    .thenAccept(acknowledgement -> this.notifyResult(acknowledgement, null));
+                    .whenComplete((result, failure) -> notifySettingsResult(result, failure, settings));
+        } else {
+            notifySettingsResult(errorResult("Codex bridge is unavailable"), null, settings);
         }
     }
 
@@ -264,12 +266,25 @@ public class CodexInteractionHandler extends BaseMessageHandler {
         }
         CodexSDKBridge bridge = this.context.getCodexSDKBridge();
         if (bridge == null) {
-            notifyResult(errorResult("Codex bridge is unavailable"), null);
+            notifySettingsResult(errorResult("Codex bridge is unavailable"), null, settings);
             return;
         }
         java.util.concurrent.CompletableFuture
                 .supplyAsync(() -> bridge.updateCodexSettings(channelId, cwd, settings), CodexSDKBridge.codexControlExecutor())
-                .thenAccept(acknowledgement -> this.notifyResult(acknowledgement, null));
+                .whenComplete((result, failure) -> notifySettingsResult(result, failure, settings));
+    }
+
+    private void notifySettingsResult(JsonObject result, Throwable failure, JsonObject settings) {
+        if (failure != null) {
+            LOG.warn("[Codex] Settings update failed", failure);
+            result = errorResult("Codex settings update failed");
+        } else if (result == null) {
+            result = errorResult("Codex settings update returned no acknowledgement");
+        }
+        result = result.deepCopy();
+        result.addProperty("requestType", "codex_update_settings");
+        result.add("requestedSettings", settings.deepCopy());
+        notifyResult(result, null);
     }
 
     private static JsonObject errorResult(String message) {

@@ -1198,6 +1198,14 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 safeChannelId, ignored -> UUID.randomUUID().toString());
         params.addProperty("sessionEpoch", sessionEpoch);
         payloadWriter.accept(params);
+        if ("codex.updateSettings".equals(method)) {
+            try {
+                this.captureRuntimeConfiguration(params);
+            } catch (RuntimeException error) {
+                LOG.warn("[Codex] Could not prepare the settings update", error);
+                return interactionError("Codex provider configuration could not be captured");
+            }
+        }
         return this.appServerRequestExecutor.sendControlCommand(daemon, method, params, 10_000L);
     }
 
@@ -1208,6 +1216,9 @@ public class CodexSDKBridge extends BaseSDKBridge {
         // revision hash travel here, so a provider change rebuilds the runtime.
         params.addProperty("authMode", this.isCodexCliLoginActive() ? "cli_login" : "managed");
         try {
+            new com.github.claudecodegui.settings.CodexSettingsManager(this.gson, Path.of(this.ownerScope))
+                    .prepareNativeConfig(this::isCodexRuntimeAccessAllowed);
+            params.addProperty("codexHome", this.ownerScope.toString());
             JsonObject provider = this.settingsService.getActiveCodexProvider();
             if (provider != null) {
                 byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
@@ -1633,8 +1644,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
     }
 
     private static String resolveOwnerScope() {
-        String codexHome = System.getenv("CODEX_HOME");
-        return codexHome == null || codexHome.trim().isEmpty() ? "default" : codexHome.trim();
+        Path home = com.github.claudecodegui.util.CodexHomeResolver.resolve();
+        try {
+            return home.toRealPath().toString();
+        } catch (java.io.IOException error) {
+            return home.toString();
+        }
     }
 
     /**
