@@ -27,4 +27,8 @@ final class PetOfficeTestRoot {
         return root;
     }
 
+    static PetOfficeModeStore.Member member() {
+        var process = ProcessHandle.current();
+        return new PetOfficeModeStore.Member(UUID.randomUUID().toString(), process.pid(), process.info().startInstant().orElseThrow().toEpochMilli(), "");
+    }
 }

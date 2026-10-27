@@ -79,8 +79,30 @@ final class PetOfficePrivateFiles {
         }
     }
 
+    /** A process owns its unique overlay marker, independently of the coordinator lease. */
+    void writeMember(String name, JsonObject value) throws IOException {
+        requireMemberName(name);
+        writePrivateOwned(name, value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8), null);
+    }
+
+    void removeMember(String name) throws IOException {
+        requireMemberName(name);
+        UserPrincipal owner = validateDirectory();
+        Path file = privatePath(name);
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            validateFile(file, owner);
+            Files.delete(file);
+        }
+    }
+
+    private static void requireMemberName(String name) throws IOException {
+        if (!name.matches("overlay-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\.json")) {
+            throw new IOException("OFFICE_PARTICIPANT_INVALID");
+        }
+    }
+
     private void writePrivateOwned(String name, byte[] bytes, PetOfficeRuntimeLease lease) throws IOException {
-        if (!lease.isValid()) {
+        if (lease != null && !lease.isValid()) {
             throw new IOException("OFFICE_LEADER_LOST");
         }
         UserPrincipal owner = validateDirectory();
@@ -102,7 +124,7 @@ final class PetOfficePrivateFiles {
                 throw new IOException("OFFICE_ENDPOINT_INVALID");
             }
             Files.write(temporary, bytes, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING, LinkOption.NOFOLLOW_LINKS);
-            if (!lease.isValid()) {
+            if (lease != null && !lease.isValid()) {
                 throw new IOException("OFFICE_LEADER_LOST");
             }
             Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -123,7 +145,7 @@ final class PetOfficePrivateFiles {
         return limits.get(name);
     }
 
-    private UserPrincipal validateDirectory() throws IOException {
+    UserPrincipal validateDirectory() throws IOException {
         for (Path path = directory; path != null; path = path.getParent()) {
             BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             if (!attributes.isDirectory() || attributes.isSymbolicLink() || attributes.isOther()) {
