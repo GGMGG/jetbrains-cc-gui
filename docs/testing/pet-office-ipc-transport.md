@@ -7,7 +7,9 @@ start an application service or replace the local Office window yet.
 - A current desktop lease owns endpoint publication/removal. ACL-validated,
   bounded discovery records reject unsafe paths; a retired lease or different
   endpoint cannot erase a successor.
-- Client and server prove distinct roles using HMAC-SHA256. The secret is never
+- Protocol 4 uses a fresh server challenge with role-separated HMAC-SHA256;
+  captured authentication cannot be replayed on another connection. The client
+  verifies the server before sending any client proof. The secret is never
   sent on the wire or included in endpoint diagnostics. Every reply checks its
   protocol, leader, connection, request, type and result.
 - Concurrent calls share one serialized stream. An absolute request deadline

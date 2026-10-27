@@ -113,13 +113,12 @@ final class PetOfficeIpcServer implements AutoCloseable {
             deadline = deadlines.schedule(() -> closeSocket(socket), handshakeMillis, TimeUnit.MILLISECONDS);
             socket.setTcpNoDelay(true);
             JsonObject hello = PetOfficeIpcFrameCodec.read(socket.getInputStream());
-            fields(hello, "schemaVersion", "leaderEpoch", "type", "requestId", "connectionEpoch", "instanceId", "authProof");
             validateEnvelope(hello, identifier(hello, "connectionEpoch", false));
-            if (!"HELLO".equals(string(hello, "type", 32)) || !ownsLease.getAsBoolean()
-                    || !PetOfficeIpcAuthentication.verify(endpoint, "client", identifier(hello, "instanceId", false),
-                    identifier(hello, "connectionEpoch", false), identifier(hello, "requestId", false), hello)) {
+            if (!ownsLease.getAsBoolean()) {
                 throw new IOException("OFFICE_IPC_AUTH_FAILED");
             }
+            PetOfficeIpcHandshake.server(socket, endpoint, hello);
+            if (!ownsLease.getAsBoolean()) { throw new IOException("OFFICE_LEADER_LOST"); }
             try {
                 connection = registry.connect(identifier(hello, "instanceId", false), identifier(hello, "connectionEpoch", false));
             } catch (IOException rejected) {
