@@ -148,6 +148,9 @@ dependencies {
 }
 
 intellijPlatform {
+    // Match the disabled instrumentation task with the artifact used by test compilation.
+    instrumentCode = false
+
     pluginVerification {
         // Keep local verification focused on binary/internal API compatibility
         // issues that match Marketplace rejection criteria.
