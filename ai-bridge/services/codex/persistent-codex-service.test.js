@@ -287,13 +287,16 @@ test('an authoritative completed plan remains executable and rejects substituted
   assert.equal(codexEvents().filter(entry => entry.kind === 'turnStarted').length, 2);
 });
 
-test('the edit-only native response contains all turns without copying command transcripts', async () => {
+test('the edit-only response reads every native page even when an older webview requests full hydration', async () => {
   const result = await codexReadThreadPersistent({ channelId: 'whole-session', cwd: testCwd,
     threadId: 'whole-session', codexCommandPrefix: peerCommandPrefix('whole-session-edits'),
     params: { includeTurns: true, fileChangesOnly: true } });
   assert.deepEqual(result.thread, { id: 'whole-session' });
   assert.equal(result.fileChangeMessages.length, 40);
   assert.equal(result.fileChangeMessages[0].codexTurnId, 'turn-0');
+  assert.equal(result.fileChangeMessages.at(-1).codexTurnId, 'turn-39');
+  assert.equal(JSON.stringify(result).includes('large output'), false);
+  assert.equal(codexEvents().some(event => event.kind === 'nativeWarning'), false);
 });
 
 test('executing a plan rechecks its native body and the latest turn before dispatch', async () => {
@@ -529,9 +532,12 @@ test('a release drain never answers a late count by cold-starting its retired ru
   }
 });
 
-test('an in-flight count fails instead of paging a runtime that a release retired', async () => {
+for (const operation of [
+  { name: 'count', read: codexCountThreadMessagesPersistent, params: { updatedAt: 1 } },
+  { name: 'edit ledger', read: codexReadThreadPersistent, params: { fileChangesOnly: true } },
+]) test(`an in-flight ${operation.name} fails instead of paging a runtime that a release retired`, async () => {
   const data = { channelId: 'history-count-release-race', cwd: testCwd, threadId: 'th-test-root-0001',
-    codexCommandPrefix: peerCommandPrefix('early-notification'), params: { updatedAt: 1 } };
+    codexCommandPrefix: peerCommandPrefix('early-notification'), params: operation.params };
   const originalRead = CodexAppServerService.prototype.readOnly;
   const originalEnsureRuntime = CodexAppServerService.prototype.ensureRuntime;
   let announceRead;
@@ -554,9 +560,9 @@ test('an in-flight count fails instead of paging a runtime that a release retire
     return await originalEnsureRuntime.apply(this, args);
   };
   try {
-    // The paused read belongs to the only count this session ever issues, so no
+    // The paused read belongs to the only traversal this session ever issues, so no
     // warm cache can satisfy it; the release below must retire its runtime.
-    const obsolete = assert.rejects(codexCountThreadMessagesPersistent(data), /runtime changed/);
+    const obsolete = assert.rejects(operation.read(data), /runtime changed/);
     await readStarted;
     await codexReleaseThreadPersistent(data);
     runtimeResurrected = true;

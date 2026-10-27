@@ -268,16 +268,28 @@ export const SCENARIOS = {
   },
   'whole-session-edits': {
     async onThreadRead(params, ctx) {
-      if (params.fileChangesOnly !== undefined) {
-        ctx.replyError(ctx.currentId, { code: -32602, message: 'unknown native parameter' });
+      if (params.fileChangesOnly !== undefined || params.includeTurns === true || params.excludeTurns !== true) {
+        ctx.notify({ method: 'deprecationNotice', params: { summary: 'Full-history hydration is deprecated for paginated threads' } });
+        ctx.replyError(ctx.currentId, { code: -32602, message: 'Edit reads must use native pagination' });
         return;
       }
-      ctx.reply(ctx.currentId, { thread: { id: params.threadId, turns: Array.from({ length: 40 }, (_, index) => ({
-        id: `turn-${index}`, items: [
-          { id: `edit-${index}`, type: 'fileChange', status: 'completed', changes: [{ path: `/file-${index}.ts`, kind: 'add', diff: '+created' }] },
-          { id: `command-${index}`, type: 'commandExecution', command: 'inspect', aggregatedOutput: 'large output'.repeat(100) },
-        ],
-      })) } });
+      ctx.reply(ctx.currentId, { thread: { id: params.threadId } });
+    },
+    async onTurnsList(params, ctx) {
+      if (params.cursor !== null && params.cursor !== 'older-edits/+=') {
+        ctx.replyError(ctx.currentId, { code: -32602, message: 'Unexpected edit cursor' });
+        return;
+      }
+      const offset = params.cursor === null ? 0 : 30;
+      ctx.reply(ctx.currentId, { data: Array.from({ length: offset === 0 ? 30 : 10 }, (_, position) => {
+        const index = 39 - offset - position;
+        return {
+          id: `turn-${index}`, items: [
+            { id: `edit-${index}`, type: 'fileChange', status: 'completed', changes: [{ path: `/file-${index}.ts`, kind: 'add', diff: '+created' }] },
+            { id: `command-${index}`, type: 'commandExecution', command: 'inspect', aggregatedOutput: 'large output'.repeat(100) },
+          ],
+        };
+      }), nextCursor: offset === 0 ? 'older-edits/+=' : null });
     },
   },
   'image-view': {

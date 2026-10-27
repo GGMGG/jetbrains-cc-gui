@@ -221,6 +221,7 @@ test('module context and role initialize native threads without entering user tu
     assert.equal((await service.send({ input: [{ type: 'text', text: 'cold prompt' }] })).outcome, 'completed');
     const initialization = dispatched.filter((entry) => ['thread/start', 'thread/resume'].includes(entry.method));
     assert.deepEqual(initialization.map((entry) => entry.method), ['thread/start', 'thread/resume']);
+    assert.equal(initialization[1].params.excludeTurns, true, 'Cold sends must not hydrate the historical transcript');
     for (const entry of initialization) assert.equal(entry.params.developerInstructions, instructions);
     const turns = dispatched.filter((entry) => entry.method === 'turn/start');
     assert.deepEqual(turns.map((entry) => entry.params.input), ['first prompt', 'next prompt', 'cold prompt']
