@@ -1,6 +1,8 @@
 package com.github.claudecodegui.handler.history;
 
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
+import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.handler.NodeJsServiceCaller;
 import com.github.claudecodegui.handler.core.HandlerContext;
 
@@ -119,7 +121,8 @@ class HistoryLoadService {
                 }
 
                 // Load favorite data and merge into history data
-                String enhancedJson = enhanceHistoryWithFavorites(historyJson, provider);
+                String activityJson = enhanceHistoryWithActivity(historyJson, provider, context.getSession(), context.getCodexSDKBridge());
+                String enhancedJson = enhanceHistoryWithFavorites(activityJson, provider);
                 LOG.info("[HistoryHandler] enhanceHistoryWithFavorites 完成，JSON 长度: " + enhancedJson.length());
 
                 // Load custom titles and merge into history data
@@ -213,8 +216,28 @@ class HistoryLoadService {
     }
 
     /**
-     * Enhance history data: add favorite info to each session.
+     * Mark live turns and foreign native writers before optional metadata enrichment.
      */
+    static String enhanceHistoryWithActivity(String historyJson, String provider, ClaudeSession active, CodexSDKBridge bridge) {
+        if (!"codex".equals(provider)) {
+            return historyJson;
+        }
+        JsonObject history = new Gson().fromJson(historyJson, JsonObject.class);
+        String activeId = active != null && "codex".equals(active.getProvider()) ? active.getSessionId() : null;
+        if (history.has("sessions") && history.get("sessions").isJsonArray()) {
+            for (var element : history.getAsJsonArray("sessions")) {
+                JsonObject row = element.getAsJsonObject();
+                String id = row.get("sessionId").getAsString();
+                boolean current = id.equals(activeId);
+                boolean running = current && (active.isBusy() || active.getState().getExecutionState().hasLiveTurn());
+                boolean ownedElsewhere = bridge != null && bridge.hasCodexThreadOwner(id)
+                        && (!current || !bridge.ownsCodexThread(id));
+                row.addProperty("running", running || ownedElsewhere || (row.has("running") && row.get("running").getAsBoolean()));
+            }
+        }
+        return new Gson().toJson(history);
+    }
+
     private String enhanceHistoryWithFavorites(String historyJson, String currentProvider) {
         try {
             // Load favorite data

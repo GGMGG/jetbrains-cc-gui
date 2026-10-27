@@ -697,6 +697,25 @@ export const SCENARIOS = {
     },
   },
 
+  /** A blocking native question exercises the JSON-RPC answer path. */
+  'blocking-user-input': {
+    async onTurnStart(_params, ctx) {
+      ctx.reply(ctx.currentId, { turn: { id: TURN_ID, status: 'inProgress' } });
+      ctx.notify({ method: 'turn/started', params: { threadId: THREAD_ID,
+        turn: { id: TURN_ID, status: 'inProgress' } } });
+      const requestId = ctx.nextServerId();
+      ctx.serverRequest(requestId, 'item/tool/requestUserInput', {
+        threadId: THREAD_ID, turnId: TURN_ID, itemId: 'blocking-question',
+        questions: [{ id: 'choice', header: 'Test', question: 'Choose A, B or C',
+          options: ['A', 'B', 'C'].map(label => ({ label, description: '' })) }],
+      });
+      const response = await ctx.waitServerResponse(requestId);
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId: TURN_ID,
+        item: { type: 'agentMessage', id: 'blocking-answer', text: JSON.stringify(response) } } });
+      ctx.notify(turnCompleted(TURN_ID));
+    },
+  },
+
   /** turn/start is notified but never acknowledged (late-ack fixtures). */
   'never-respond': {
     async onTurnStart(_params, ctx) {

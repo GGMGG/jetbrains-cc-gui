@@ -36,6 +36,9 @@ public class SettingsHandler extends BaseMessageHandler {
     private final TokenTrackerHandler tokenTrackerHandler;
     private final DshPresetHandler dshPresetHandler;
     private final AiDataDirectoryHandler aiDataDirectoryHandler;
+    private final CodexStorageHandler codexStorageHandler;
+    private final CodexStorageMaintenanceHandler codexStorageMaintenanceHandler;
+    private final CodexStorageDeletionHandler codexStorageDeletionHandler;
 
     private static final String[] SUPPORTED_TYPES = {
         "get_mode",
@@ -133,6 +136,9 @@ public class SettingsHandler extends BaseMessageHandler {
         this.tokenTrackerHandler = new TokenTrackerHandler(context);
         this.dshPresetHandler = new DshPresetHandler(context);
         this.aiDataDirectoryHandler = new AiDataDirectoryHandler(context);
+        this.codexStorageHandler = new CodexStorageHandler(context);
+        this.codexStorageMaintenanceHandler = new CodexStorageMaintenanceHandler(context);
+        this.codexStorageDeletionHandler = new CodexStorageDeletionHandler(context);
         // Register theme change listener to automatically notify frontend when IDE theme changes
         registerThemeChangeListener();
     }
@@ -156,6 +162,7 @@ public class SettingsHandler extends BaseMessageHandler {
      * Should be called when the owning ClaudeChatWindow is disposed.
      */
     public void dispose() {
+        codexStorageHandler.dispose();
         if (themeCallbackHandle != null) {
             ThemeConfigService.unregisterThemeChangeListener(themeCallbackHandle);
             themeCallbackHandle = null;
@@ -164,11 +171,20 @@ public class SettingsHandler extends BaseMessageHandler {
 
     @Override
     public String[] getSupportedTypes() {
-        return SUPPORTED_TYPES;
+        return supportedTypes();
+    }
+
+    static String[] supportedTypes() {
+        return java.util.stream.Stream.of(SUPPORTED_TYPES, CodexStorageHandler.TYPES, CodexStorageMaintenanceHandler.TYPES, CodexStorageDeletionHandler.TYPES)
+                .flatMap(java.util.Arrays::stream).toArray(String[]::new);
     }
 
     @Override
     public boolean handle(String type, String content) {
+        if (codexStorageHandler.handle(type, content) || codexStorageMaintenanceHandler.handle(type, content)
+                || codexStorageDeletionHandler.handle(type, content)) {
+            return true;
+        }
         switch (type) {
             // Permission mode
             case "get_mode":
