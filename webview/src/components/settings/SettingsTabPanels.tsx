@@ -16,12 +16,14 @@ import PetSettingsSection from './PetSettingsSection';
 import AiDataStorageSection from './AiDataStorageSection';
 import { SkillsSettingsSection } from '../skills/SkillsSettingsSection';
 import ClawBotSection from './ClawBotSection';
+import HooksSettingsSection from './HooksSettingsSection';
 import type {
   UseSettingsThemeSyncReturn,
   UseSettingsBasicActionsReturn,
   UseProviderManagementReturn,
   UseCodexProviderManagementReturn,
   UseAgentManagementReturn,
+  UseHookManagementReturn,
 } from './hooks';
 
 export interface SettingsTabPanelProps {
@@ -33,6 +35,7 @@ export interface SettingsTabPanelProps {
   providerManagement: UseProviderManagementReturn;
   codexProviderManagement: UseCodexProviderManagementReturn;
   agentManagement: UseAgentManagementReturn;
+  hooksManagement: UseHookManagementReturn;
 }
 
 export const BasicPanel = ({ themeSync, basicActions, addToast }: SettingsTabPanelProps) => (
@@ -139,6 +142,10 @@ export const PromptsPanel = ({ currentProvider, addToast }: SettingsTabPanelProp
 
 export const SkillsPanel = ({ currentProvider }: SettingsTabPanelProps) => (
   <SkillsSettingsSection currentProvider={currentProvider} />
+);
+
+export const HooksPanel = ({ hooksManagement }: SettingsTabPanelProps) => (
+  <HooksSettingsSection management={hooksManagement} />
 );
 
 export const PetPanel = ({ addToast }: SettingsTabPanelProps) => (
