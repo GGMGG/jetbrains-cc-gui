@@ -2,7 +2,7 @@ import { parseLocalOfficeSnapshot, parseOfficeWindowSettings, type OfficeWindowS
 
 export const officeNavigationResults = ['ACTIVATED', 'ATTENTION_REQUESTED', 'TARGET_GONE', 'STALE_INTERACTION', 'UNAVAILABLE'] as const;
 export type OfficeNavigationResult = typeof officeNavigationResults[number];
-interface Replies { scene: LocalOfficeSnapshot; activate: { result: OfficeNavigationResult }; preferences: OfficeWindowSettings; }
+interface Replies { scene: LocalOfficeSnapshot; activate: { result: OfficeNavigationResult }; preferences: OfficeWindowSettings; exit: { closing: true }; }
 declare global {
   interface Window {
     __PET_OFFICE_PAGE__?: string;
@@ -41,7 +41,8 @@ function request<K extends keyof Replies>(action: K, payload: Record<string, unk
         try {
           if (action === 'scene') resolve(parseLocalOfficeSnapshot(value) as Replies[K]);
           else if (action === 'preferences') resolve(parseOfficeWindowSettings(value) as Replies[K]);
-          else if (object(value) && officeNavigationResults.includes(value.result as OfficeNavigationResult)) resolve(value as Replies[K]);
+          else if (action === 'exit' && object(value) && value.closing === true) resolve(value as Replies[K]);
+          else if (action === 'activate' && object(value) && officeNavigationResults.includes(value.result as OfficeNavigationResult)) resolve(value as Replies[K]);
           else reject(new Error('OFFICE_RESPONSE_INVALID'));
         } catch { reject(new Error('OFFICE_RESPONSE_INVALID')); }
       },
@@ -55,6 +56,7 @@ function request<K extends keyof Replies>(action: K, payload: Record<string, unk
   });
 }
 export function readLocalOffice(signal?: AbortSignal) { return request('scene', {}, signal); }
+export function exitLocalOffice(signal?: AbortSignal) { return request('exit', {}, signal); }
 export function activateLocalOfficeSource(source: LocalOfficeSource, signal?: AbortSignal) {
   return request('activate', { sourceKey: source.sourceKey, routeGeneration: source.routeGeneration, interactionId: source.interactionId }, signal);
 }

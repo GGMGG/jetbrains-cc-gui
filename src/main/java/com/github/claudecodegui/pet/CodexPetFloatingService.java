@@ -79,6 +79,7 @@ public final class CodexPetFloatingService
     private static final String GLOBAL_STATE_KEY = "claudecodegui.codexPetFloating.globalState";
     private static final String DELETE_CONFIRMATION_KEY = "claudecodegui.codexPetFloating.confirmBeforeDelete";
     private static final AtomicLong GLOBAL_STATE_VERSION = new AtomicLong();
+    private static volatile boolean officeOverlayPermission = !com.intellij.openapi.util.SystemInfo.isWindows;
     private static final Set<CodexPetFloatingService> INSTANCES =
             Collections.newSetFromMap(new WeakHashMap<>());
     public static final String SCOPE_PROJECT = "project";
@@ -180,10 +181,38 @@ public final class CodexPetFloatingService
         synchronized (INSTANCES) {
             INSTANCES.add(this);
         }
+        Application app = ApplicationManager.getApplication();
+        if (app != null && !app.isUnitTestMode() && com.intellij.openapi.util.SystemInfo.isWindows) {
+            com.github.claudecodegui.pet.office.PetOfficeRuntimeService.getInstance().start();
+        }
     }
 
     public static CodexPetFloatingService getInstance(@NotNull Project project) {
         return project.getService(CodexPetFloatingService.class);
+    }
+
+    /** Worker-side revocation is immediate; no filesystem probe occurs during rendering or dragging. */
+    public static void revokeOfficeOverlayPermission() { officeOverlayPermission = false; }
+
+    public static boolean officeOverlayPermitted() { return officeOverlayPermission; }
+
+    /** Called only on the EDT. A detachment acknowledgement requires physical overlay removal. */
+    public static boolean reconcileOfficeDisplay(boolean allowOverlay) {
+        officeOverlayPermission = allowOverlay;
+        List<CodexPetFloatingService> services;
+        synchronized (INSTANCES) {
+            services = new ArrayList<>(INSTANCES);
+        }
+        boolean detached = true;
+        for (CodexPetFloatingService service : services) {
+            if (allowOverlay) {
+                service.syncComponent();
+            } else {
+                service.detachComponent();
+                detached &= service.overlayWindow == null && service.petComponent == null;
+            }
+        }
+        return detached;
     }
 
     @Override
@@ -572,7 +601,7 @@ public final class CodexPetFloatingService
             }
             boolean visible;
             synchronized (this) {
-                visible = activeState().enabled;
+                visible = activeState().enabled && officeOverlayPermission;
             }
             if (!visible) {
                 detachComponent();
@@ -604,6 +633,9 @@ public final class CodexPetFloatingService
             return;
         }
         detachComponent();
+        if (overlayWindow != null) {
+            return;
+        }
         Object existingOwner = targetPane.getClientProperty(PET_OWNER_KEY);
         if (existingOwner instanceof CodexPetFloatingService && existingOwner != this) {
             LOG.debug("[CodexPet] Another project already owns the pet slot for this IDE frame");
@@ -703,6 +735,9 @@ public final class CodexPetFloatingService
         }
         if (overlayWindow != null) {
             overlayWindow.dispose();
+            if (overlayWindow.isDisplayable()) {
+                return;
+            }
         }
         overlayWindow = null;
         petComponent = null;

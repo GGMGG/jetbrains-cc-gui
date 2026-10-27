@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { activateLocalOfficeSource, readLocalOffice } from './officeLocalBridge';
+import { activateLocalOfficeSource, readLocalOffice, exitLocalOffice } from './officeLocalBridge';
 import type { LocalOfficeSnapshot, LocalOfficeSource } from './officeLocalModel';
 import OfficeWindowSettings from './OfficeWindowSettings';
 
@@ -15,6 +15,8 @@ export default function LocalOffice() {
   const [revision, setRevision] = useState(0);
   const [navigating, setNavigating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exiting, setExiting] = useState(false);
+  const exitingRef = useRef(false);
   const navigatingRef = useRef(false);
   const lifetime = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -59,10 +61,24 @@ export default function LocalOffice() {
       if (!signal?.aborted) setNavigation(reason instanceof Error ? reason.message : 'UNAVAILABLE');
     } finally { navigatingRef.current = false; if (!signal?.aborted) setNavigating(false); }
   }
+  async function exitOffice() {
+    if (exitingRef.current) return;
+    exitingRef.current = true;
+    setExiting(true);
+    try { await exitLocalOffice(lifetime.current?.signal); }
+    catch (reason) {
+      if (!lifetime.current?.signal.aborted) {
+        setNavigation(reason instanceof Error ? reason.message : 'UNAVAILABLE');
+        exitingRef.current = false;
+        setExiting(false);
+      }
+    }
+  }
   return <main className="office-local" style={{ zoom: (snapshot?.settings?.zoom ?? 100) / 100 }}>
     <header><div><h1>{snapshot?.settings?.officeName || t('title')}</h1><p>{t('hint')}</p></div>
       {snapshot?.settings && <button type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(value => !value)}>{t('windowSettings')}</button>}
-      <button type="button" onClick={() => setRevision(value => value + 1)}>{t('refresh')}</button></header>
+      <button type="button" onClick={() => setRevision(value => value + 1)}>{t('refresh')}</button>
+      <button type="button" disabled={exiting} onClick={() => void exitOffice()}>{t('exitOffice')}</button></header>
     {settingsOpen && snapshot?.settings && <OfficeWindowSettings settings={snapshot.settings} onSaved={settings => setSnapshot(previous => previous
       ? { ...previous, settings: !previous.settings || settings.generation >= previous.settings.generation ? settings : previous.settings } : previous)} />}
     <div className="office-local-toolbar">

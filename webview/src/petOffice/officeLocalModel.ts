@@ -51,9 +51,13 @@ export function parseLocalOfficeSnapshot(value: unknown): LocalOfficeSnapshot {
     || !integer(value.watermark) || !integer(value.sampledAt) || value.sampledAt > 8_640_000_000_000_000 || typeof value.capacityReached !== 'boolean'
     || !Array.isArray(value.sources) || value.sources.length > 256) return invalid();
   const identities = new Set<string>();
+  const owners: unknown = value.participants ?? [value.instanceId];
+  if (!Array.isArray(owners) || owners.length === 0 || owners.length > 16 || !owners.every(identifier)
+    || new Set(owners).size !== owners.length || !owners.includes(value.instanceId)) return invalid();
+  const qualifiedProjects = owners.length > 1;
   const sources = value.sources.map((item): LocalOfficeSource => {
     if (!object(item) || !object(item.sourceKey) || !object(item.metadata) || !object(item.execution)
-      || item.sourceKey.instanceId !== value.instanceId || !identifier(item.sourceKey.contentHandleId)
+      || !identifier(item.sourceKey.instanceId) || !owners.includes(item.sourceKey.instanceId) || !identifier(item.sourceKey.contentHandleId)
       || !identifier(item.sourceKey.bindingEpoch) || !identifier(item.routeGeneration)
       || !['AVAILABLE', 'DETACHED', 'CLOSED'].includes(String(item.routeStatus))
       || !identifier(item.metadata.projectId) || !text(item.metadata.projectLabel) || !text(item.metadata.tabLabel)
@@ -66,11 +70,12 @@ export function parseLocalOfficeSnapshot(value: unknown): LocalOfficeSnapshot {
       : item.execution.waitReason !== 'NONE' || item.execution.pendingInteractionId !== '' || item.execution.pendingInteractionCount !== 0) return invalid();
     const phase: OfficePhase = waiting && item.execution.waitReason === 'PERMISSION' ? 'WAITING_PERMISSION'
       : waiting && item.execution.waitReason === 'PLAN' ? 'WAITING_PLAN' : item.execution.phase as OfficePhase;
-    const sourceKey = `${value.instanceId}/${item.sourceKey.contentHandleId}/${item.sourceKey.bindingEpoch}`;
+    const sourceKey = `${item.sourceKey.instanceId}/${item.sourceKey.contentHandleId}/${item.sourceKey.bindingEpoch}`;
     if (identities.has(sourceKey)) return invalid();
     identities.add(sourceKey);
     return { sourceKey, routeGeneration: item.routeGeneration, routeStatus: item.routeStatus as LocalOfficeSource['routeStatus'],
-      projectId: item.metadata.projectId, projectLabel: item.metadata.projectLabel, tabLabel: item.metadata.tabLabel,
+      projectId: qualifiedProjects ? `${item.sourceKey.instanceId}:${item.metadata.projectId}` : item.metadata.projectId,
+      projectLabel: item.metadata.projectLabel, tabLabel: item.metadata.tabLabel,
       provider: item.provider, modelLabel: item.modelLabel, phase,
       interactionId: item.execution.pendingInteractionId };
   });

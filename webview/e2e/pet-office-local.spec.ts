@@ -3,14 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 interface TestSettings { revision: string; generation: number; officeName: string; topmost: boolean; zoom: number; recovered: boolean; }
-interface TestState { fail: boolean; losePreferenceReply: boolean; settings: TestSettings; activations: Array<Record<string, string>>; actions: string[]; }
+interface TestState { fail: boolean; peer: boolean; losePreferenceReply: boolean; settings: TestSettings; activations: Array<Record<string, string>>; actions: string[]; }
 declare global { interface Window { __OFFICE_LOCAL_TEST__: TestState; } }
 
 test.beforeEach(async ({ page }) => {
   const html = await readFile(resolve('dist/office/office.html'), 'utf8');
   await page.route('**/office-fixture.html', route => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
   await page.addInitScript(() => {
-    const state: TestState = { fail: false, losePreferenceReply: false, activations: [], actions: [],
+    const state: TestState = { fail: false, peer: false, losePreferenceReply: false, activations: [], actions: [],
       settings: { revision: 'initial', generation: 0, officeName: '', topmost: true, zoom: 100, recovered: false } };
     window.__OFFICE_LOCAL_TEST__ = state;
     window.__PET_OFFICE_PAGE__ = 'test-page';
@@ -27,6 +27,8 @@ test.beforeEach(async ({ page }) => {
           waitReason: index === 0 ? 'QUESTION' : index === 3 ? 'PERMISSION' : index === 4 ? 'PLAN' : 'NONE',
           pendingInteractionId: [0, 3, 4].includes(index) ? 'question' : '', pendingInteractionCount: [0, 3, 4].includes(index) ? 1 : 0 },
       }));
+      if (state.peer) sources[0] = { ...sources[0], sourceKey: { instanceId: 'peer', contentHandleId: 'tab-0', bindingEpoch: 'peer-binding' },
+        metadata: { projectId: 'project-A', projectLabel: 'Peer project', tabLabel: 'Peer chat' } };
       if (request.action === 'preferences') {
         const patch = request.payload as unknown as { expectedRevision: string; officeName: string; topmost: boolean; zoom: number };
         if (patch.expectedRevision !== state.settings.revision) {
@@ -37,8 +39,9 @@ test.beforeEach(async ({ page }) => {
           officeName: patch.officeName, topmost: patch.topmost, zoom: patch.zoom, recovered: false };
         if (state.losePreferenceReply) return true;
       }
-      const data = request.action === 'activate' ? { result: 'STALE_INTERACTION' } : request.action === 'preferences' ? state.settings : {
+      const data = request.action === 'exit' ? { closing: true } : request.action === 'activate' ? { result: 'STALE_INTERACTION' } : request.action === 'preferences' ? state.settings : {
         schemaVersion: 1, instanceId: 'idea', connectionEpoch: 'epoch', watermark: 1, sampledAt: 1000, capacityReached: false, sources, settings: state.settings,
+        participants: state.peer ? ['idea', 'peer'] : ['idea'],
       };
       setTimeout(() => window.onPetOfficeResponse?.(JSON.stringify({ requestId: request.requestId, pageToken: request.pageToken,
         action: request.action, success: !state.fail, data, error: state.fail ? 'OFFICE_UNAVAILABLE' : undefined })), 0);
@@ -107,4 +110,27 @@ test('preserves the visible sample and disables desks until a failed read recove
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(desk).toBeEnabled();
+});
+
+test('keeps peer project identity and forwards the exact remote source', async ({ page }) => {
+  await page.evaluate(() => { window.__OFFICE_LOCAL_TEST__.peer = true; });
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.getByRole('combobox').selectOption('peer:project-A');
+  await page.getByRole('button', { name: 'Open chat: Peer chat', exact: true }).click();
+  expect(await page.evaluate(() => window.__OFFICE_LOCAL_TEST__.activations)).toEqual([
+    { sourceKey: 'peer/tab-0/peer-binding', routeGeneration: 'route', interactionId: 'question' },
+  ]);
+  await expect(page.getByRole('button', { name: 'Open chat: Chat 2', exact: true })).toHaveCount(0);
+});
+
+test('only confirms exit after a valid acknowledgement and permits retry after failure', async ({ page }) => {
+  await page.evaluate(() => { window.__OFFICE_LOCAL_TEST__.fail = true; });
+  const exit = page.getByRole('button', { name: 'Exit Office', exact: true });
+  await exit.click();
+  await expect(exit).toBeEnabled();
+  await page.evaluate(() => { window.__OFFICE_LOCAL_TEST__.fail = false; });
+  await exit.click();
+  await expect(exit).toBeDisabled();
+  expect(await page.evaluate(() => window.__OFFICE_LOCAL_TEST__.actions.filter(action => action === 'exit').length)).toBe(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });

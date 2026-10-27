@@ -22,6 +22,13 @@ public class PetOfficeLocalProtocolTest {
     }
 
     @Test
+    public void explicitExitIsScopedToThePageAndTakesNoCallerSelectedTarget() throws Exception {
+        assertEquals("exit", parse("exit", new JsonObject()).action());
+        assertThrows(IOException.class, () -> parse("exit", target()));
+        assertThrows(IOException.class, () -> PetOfficeLocalProtocol.parse(envelope("exit", new JsonObject()), "old-page"));
+    }
+
+    @Test
     public void navigationPreservesOpaqueBindingRouteAndInteraction() throws Exception {
         JsonObject payload = target();
         var request = parse("activate", payload);
