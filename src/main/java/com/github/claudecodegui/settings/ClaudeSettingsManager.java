@@ -19,6 +19,7 @@ import java.nio.file.Paths;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
@@ -583,6 +584,16 @@ public class ClaudeSettingsManager {
      * </ul>
      */
     public void applyProviderToClaudeSettings(JsonObject provider) throws IOException {
+        applyProviderToClaudeSettings(provider, id -> null);
+    }
+
+    /**
+     * @param provider       the provider to apply
+     * @param providerLookup finds a saved provider by id (null when unknown); used to remove the
+     *                       env values the provider recorded in {@code codemossProviderId} wrote
+     */
+    public void applyProviderToClaudeSettings(JsonObject provider, Function<String, JsonObject> providerLookup)
+            throws IOException {
         if (provider == null) {
             throw new IllegalArgumentException("Provider cannot be null");
         }
@@ -591,7 +602,8 @@ public class ClaudeSettingsManager {
         // concurrent provider sync in another window is merged rather than
         // clobbered by a decision computed from an old read.
         mutateClaudeSettings(current -> {
-            ClaudeSettingsSyncPlan.Decision decision = ClaudeSettingsSyncPlan.plan(current, provider);
+            JsonObject previousProvider = lookupWriter(current, providerLookup);
+            ClaudeSettingsSyncPlan.Decision decision = ClaudeSettingsSyncPlan.plan(current, provider, previousProvider);
             if (decision.action == ClaudeSettingsSyncPlan.Action.SKIP) {
                 LOG.info("[ClaudeSettingsManager] Skip settings.json sync: " + decision.reason
                         + (provider.has("id") && !provider.get("id").isJsonNull()
@@ -604,6 +616,14 @@ public class ClaudeSettingsManager {
             LOG.info("[ClaudeSettingsManager] Final settings keys: " + decision.nextSettings.keySet());
             return decision.nextSettings;
         });
+    }
+
+    private static JsonObject lookupWriter(JsonObject settings, Function<String, JsonObject> providerLookup) {
+        if (providerLookup == null || !settings.has("codemossProviderId")
+                || !settings.get("codemossProviderId").isJsonPrimitive()) {
+            return null;
+        }
+        return providerLookup.apply(settings.get("codemossProviderId").getAsString());
     }
 
     /**
