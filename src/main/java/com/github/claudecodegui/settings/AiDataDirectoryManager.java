@@ -168,7 +168,7 @@ public final class AiDataDirectoryManager {
     public JsonObject migrate(String requestedRoot) throws IOException {
         synchronized (OPERATION_LOCK) {
             requireSupported();
-            if (DshHostProcessCoordinator.getInstance().hasRunningHost()) {
+            if (scanExternalProcesses && DshHostProcessCoordinator.getInstance().hasRunningHost()) {
                 throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
             }
             AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
@@ -515,8 +515,9 @@ public final class AiDataDirectoryManager {
     }
 
     private boolean hasExternalAiProcess() {
-        return DshHostProcessCoordinator.getInstance().hasRunningHost()
-                || scanExternalProcesses && externalProcessDetector.hasRunningProcess();
+        // Only the canonical user home can be used by independently launched hosts.
+        return scanExternalProcesses && (DshHostProcessCoordinator.getInstance().hasRunningHost()
+                || externalProcessDetector.hasRunningProcess());
     }
 
     private void importLegacyState() throws IOException {
