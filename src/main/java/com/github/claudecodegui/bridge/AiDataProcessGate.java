@@ -60,7 +60,7 @@ public final class AiDataProcessGate {
                     try {
                         processLock = migrationCoordinator.tryAcquireProcessLock();
                     } catch (java.io.IOException error) {
-                        throw new IllegalStateException("AI_DATA_COORDINATION_UNAVAILABLE", error);
+                        throw coordinationFailure(error);
                     }
                 }
                 if (!migrationIntent && !migrationActive && (migrationCoordinator == null || processLock != null)) {
@@ -115,7 +115,7 @@ public final class AiDataProcessGate {
                 try {
                     shared = maintenance ? migrationCoordinator.tryAcquireMaintenanceReadLock() : migrationCoordinator.tryAcquireProcessLock();
                 } catch (java.io.IOException error) {
-                    throw new IllegalStateException("AI_DATA_COORDINATION_UNAVAILABLE", error);
+                    throw coordinationFailure(error);
                 }
                 if (shared == null) {
                     return null;
@@ -126,6 +126,12 @@ public final class AiDataProcessGate {
         } finally {
             lock.unlock();
         }
+    }
+
+    private static IllegalStateException coordinationFailure(java.io.IOException error) {
+        String code = "AI_DATA_RECOVERY_REQUIRED".equals(error.getMessage())
+                ? "AI_DATA_RECOVERY_REQUIRED" : "AI_DATA_COORDINATION_UNAVAILABLE";
+        return new IllegalStateException(code, error);
     }
 
     /** Attempts to begin an exclusive migration without waiting for active processes or byte snapshots. */

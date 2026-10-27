@@ -82,6 +82,7 @@ public final class AiDataMigrationCoordinator {
 
     private ProcessLock tryAcquireSharedLock(boolean maintenance) throws IOException {
         prepareDirectory();
+        requireRecoveredMigration();
         Path path = lockPath();
         SharedProcessLock shared = SHARED_PROCESS_LOCKS.computeIfAbsent(path, ignored -> new SharedProcessLock());
         synchronized (shared) {
@@ -103,6 +104,7 @@ public final class AiDataMigrationCoordinator {
                     channel.close();
                     return null;
                 }
+                requireRecoveredMigration();
                 shared.channel = channel;
                 shared.lock = lock;
                 shared.references = 1;
@@ -111,6 +113,16 @@ public final class AiDataMigrationCoordinator {
                 channel.close();
                 throw error;
             }
+        }
+    }
+
+    private void requireRecoveredMigration() throws IOException {
+        Path journal = coordinationDirectory.resolve("state").resolve("migration-journal.json");
+        boolean legacyPending = coordinationDirectory.equals(defaultCoordinationDirectory())
+                && Files.exists(Path.of(com.intellij.openapi.application.PathManager.getSystemPath(),
+                        "cc-gui", "ai-data-storage", "migration-journal.json"), LinkOption.NOFOLLOW_LINKS);
+        if (Files.exists(journal, LinkOption.NOFOLLOW_LINKS) || legacyPending) {
+            throw new IOException("AI_DATA_RECOVERY_REQUIRED");
         }
     }
 

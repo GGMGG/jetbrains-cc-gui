@@ -1,5 +1,8 @@
 package com.github.claudecodegui.dependency;
 
+import com.github.claudecodegui.bridge.AiDataProcessGate;
+import com.github.claudecodegui.bridge.ProcessManager;
+
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.model.NodeDetectionResult;
@@ -422,8 +425,11 @@ public class DependencyManager {
                 return InstallResult.failure(sdkId, "Installation interrupted", "");
             }
         }
-        try {
+        try (AiDataProcessGate.ProcessPermit ignored = AiDataProcessGate.getInstance().acquireProcessPermit()) {
             return installSdkLocked(sdk, sdkId, requestedVersion, logCallback);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return InstallResult.failure(sdkId, "AI_PROCESS_START_INTERRUPTED", "");
         } finally {
             lock.unlock();
         }
@@ -526,32 +532,39 @@ public class DependencyManager {
                 pb.redirectErrorStream(true);
                 configureProcessEnvironment(pb);
 
-                Process process = pb.start();
-
-                // Read output in real time and collect logs
-                StringBuilder installLogs = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        log.accept(line);
-                        installLogs.append(line).append("\n");
+                ProcessManager processes = new ProcessManager();
+                String channelId = ProcessManager.newChannelId("sdk-install");
+                Process process = processes.startManagedProcess(channelId, pb);
+                int exitCode;
+                try {
+                    // Read output in real time and collect logs
+                    StringBuilder installLogs = new StringBuilder();
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            log.accept(line);
+                            installLogs.append(line).append("\n");
+                        }
                     }
-                }
 
-                boolean finished = process.waitFor(3, TimeUnit.MINUTES);
-                if (!finished) {
-                    process.destroyForcibly();
-                    lastResult = InstallResult.failure(sdkId,
-                            "Installation timed out (3 minutes)", logs.toString());
-                    continue; // Retry
-                }
+                    boolean finished = process.waitFor(3, TimeUnit.MINUTES);
+                    if (!finished) {
+                        processes.interruptChannel(channelId);
+                        lastResult = InstallResult.failure(sdkId,
+                                "Installation timed out (3 minutes)", logs.toString());
+                        continue; // Retry
+                    }
 
-                int exitCode = process.exitValue();
-                if (exitCode == 0) {
-                    // Installation succeeded, proceed to next steps
-                    installed = true;
-                    break;
+                    exitCode = process.exitValue();
+                    if (exitCode == 0) {
+                        // Installation succeeded, proceed to next steps
+                        installed = true;
+                        break;
+                    }
+                } finally {
+                    processes.interruptChannel(channelId);
+                    processes.unregisterProcess(channelId, process);
                 }
 
                 // Installation failed, record the result
@@ -640,7 +653,10 @@ public class DependencyManager {
      * @return true if the uninstallation completed fully, false if some files failed to delete
      */
     public boolean uninstallSdk(String sdkId) {
-        try {
+        try (AiDataProcessGate.ReadPermit admission = AiDataProcessGate.getInstance().tryAcquireReadPermit()) {
+            if (admission == null) {
+                return false;
+            }
             Path sdkDir = getSdkDir(sdkId);
             if (!Files.exists(sdkDir)) {
                 return true;

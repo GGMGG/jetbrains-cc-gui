@@ -46,6 +46,26 @@ public class AiDataMigrationCoordinatorTest {
     }
 
     @Test
+    public void pendingMigrationBlocksNewSharedAdmissionUntilRecoveryClearsItsJournal() throws Exception {
+        Path coordination = temporaryFolder.getRoot().toPath().resolve("coordination");
+        Path state = Files.createDirectories(coordination.resolve("state"));
+        Path journal = state.resolve("migration-journal.json");
+        Files.writeString(journal, "{}", StandardCharsets.UTF_8);
+        AiDataMigrationCoordinator coordinator = new AiDataMigrationCoordinator(coordination);
+
+        var error = assertThrows(java.io.IOException.class, coordinator::tryAcquireProcessLock);
+        assertEquals("AI_DATA_RECOVERY_REQUIRED", error.getMessage());
+        assertThrows(java.io.IOException.class, coordinator::tryAcquireMaintenanceReadLock);
+        try (var recovery = coordinator.tryAcquire("recovery")) {
+            assertNotNull(recovery);
+            Files.delete(journal);
+        }
+        try (var admitted = coordinator.tryAcquireProcessLock()) {
+            assertNotNull(admitted);
+        }
+    }
+
+    @Test
     public void sharedProcessLockBlocksExclusiveMigration() throws Exception {
         Path coordinationDirectory = temporaryFolder.getRoot().toPath().resolve("coordination");
         AiDataMigrationCoordinator first = new AiDataMigrationCoordinator(coordinationDirectory);
