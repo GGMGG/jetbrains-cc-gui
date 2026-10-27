@@ -12,9 +12,15 @@ final class HookPathPolicy {
     private static final Pattern CONTROL_CHARACTERS = Pattern.compile("[\\u0000-\\u001f]");
 
     private final Path userHome;
+    private final Path codexHome;
 
     HookPathPolicy(Path userHome) {
+        this(userHome, userHome.resolve(".codex"));
+    }
+
+    HookPathPolicy(Path userHome, Path codexHome) {
         this.userHome = userHome.toAbsolutePath().normalize();
+        this.codexHome = codexHome.toAbsolutePath().normalize();
     }
 
     Path validateExistingTarget(Path project, String location) throws IOException {
@@ -33,7 +39,7 @@ final class HookPathPolicy {
         if (isClaudeSettings(target, project)) {
             return target;
         }
-        if (isCodexConfig(target, project)) {
+        if (isCodexConfig(target, project) || isCodexHooksJson(target, project)) {
             return target;
         }
         return isUnderAnyHookRoot(target, project) ? target : null;
@@ -64,18 +70,26 @@ final class HookPathPolicy {
 
     boolean isCodexConfig(Path target, Path project) {
         Path normalized = target.toAbsolutePath().normalize();
-        if (normalized.equals(userHome.resolve(".codex/config.toml"))) {
+        if (normalized.equals(codexHome.resolve("config.toml"))) {
             return true;
         }
         return project != null && normalized.equals(project.resolve(".codex/config.toml"));
     }
 
+    boolean isCodexHooksJson(Path target, Path project) {
+        Path normalized = target.toAbsolutePath().normalize();
+        return normalized.equals(codexHome.resolve("hooks.json"))
+                || project != null && normalized.equals(project.resolve(".codex/hooks.json"));
+    }
+
+    boolean isUserCodexConfig(Path target) {
+        return target.toAbsolutePath().normalize().equals(codexHome.resolve("config.toml"));
+    }
+
     boolean isUnderAnyHookRoot(Path target, Path project) throws IOException {
-        if (isUnderHookRoot(target, userHome.resolve(".codex/hooks"))
-                || isUnderHookRoot(target, userHome.resolve(".codemoss/hooks"))) {
+        if (isUnderHookRoot(target, userHome.resolve(".codemoss/hooks"))) {
             return true;
         }
-        return project != null && (isUnderHookRoot(target, project.resolve(".codex/hooks"))
-                || isUnderHookRoot(target, project.resolve(".codemoss/hooks")));
+        return project != null && isUnderHookRoot(target, project.resolve(".codemoss/hooks"));
     }
 }

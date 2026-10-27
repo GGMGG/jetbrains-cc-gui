@@ -1,67 +1,74 @@
 package com.github.claudecodegui.hooks;
 
 import org.junit.Test;
+import org.tomlj.Toml;
+import java.nio.file.Path;
+import java.util.List;
+import static org.junit.Assert.*;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-
-/** Regression tests for lossless Codex hook discovery and native toggles. */
+/** Native hook state is per handler and does not alter the declaration or trust hash. */
 public class CodexHookTomlTest {
+    private static final Path SOURCE = Path.of("fixture/config.toml").toAbsolutePath();
+    private static final String DECLARATION = "# keep comment\n[[hooks.PreToolUse]]\nmatcher=\"Bash\"\n"
+            + "hooks=[{type=\"command\",command=\"python guard.py\"},{type=\"command\",command=\"echo second\"}]\n";
 
-    @Test
-    public void parsesAndUpdatesOneHookWithoutReformattingOtherContent() {
-        String source = """
-                # keep this comment
-                [features]
-                hooks = true
-
-                [[hooks.pre_tool_use]]
-                matcher = "Bash"
-                enabled = true # keep inline comment
-                hooks = [{ type = "command", command = "python", args = ["guard.py"] }]
-
-                [model_aliases]
-                fast = "gpt-test"
-                """;
-
-        CodexHookToml.ParseResult parsed = CodexHookToml.parse(source);
+    @Test public void defaultsToEnabledAndWritesNativeStateForOnlyOneHandler() {
+        var parsed = CodexHookToml.parse(DECLARATION, SOURCE, DECLARATION);
         assertTrue(parsed.valid());
         assertTrue(parsed.featureEnabled());
-        assertEquals(1, parsed.entries().size());
-        assertEquals("python guard.py", parsed.entries().get(0).command());
-
-        CodexHookToml.UpdateResult updated = CodexHookToml.updateEnabled(source, "pre_tool_use/0", false);
+        assertEquals(2, parsed.entries().size());
+        String key = SOURCE + ":pre_tool_use:0:0";
+        assertEquals(key, parsed.entries().get(0).managedKey());
+        assertTrue(parsed.entries().get(0).enabled());
+        var updated = CodexHookToml.updateEnabled(DECLARATION, key, false);
         assertTrue(updated.success());
-        assertNull(updated.errorCode());
-        assertTrue(updated.content().contains("enabled = false # keep inline comment"));
-        assertTrue(updated.content().contains("# keep this comment"));
-        assertTrue(updated.content().contains("fast = \"gpt-test\""));
+        assertTrue(updated.content().startsWith(DECLARATION));
+        assertFalse(Toml.parse(updated.content()).getBoolean(List.of("hooks", "state", key, "enabled")));
+        var after = CodexHookToml.parse(updated.content(), SOURCE, updated.content());
+        assertFalse(after.entries().get(0).enabled());
+        assertTrue(after.entries().get(1).enabled());
+        assertTrue(after.sourceIssues().isEmpty());
     }
 
-    @Test
-    public void rejectsInvalidTomlAndMissingEnabledField() {
-        assertFalse(CodexHookToml.parse("[[hooks.pre_tool_use]\n").valid());
-        String source = """
-                [[hooks.pre_tool_use]]
-                hooks = [{ type = "command", command = "python" }]
-                """;
-
-        CodexHookToml.UpdateResult result = CodexHookToml.updateEnabled(source, "pre_tool_use/0", false);
-
-        assertFalse(result.success());
-        assertEquals("CODEX_ENABLED_INVALID", result.errorCode());
-    }
-
-    @Test
-    public void preservesCrLfWhenToggling() {
-        String source = "[[hooks.pre_tool_use]]\r\nenabled = true\r\n"
-                + "hooks = [{ type = \"command\", command = \"python\" }]\r\n";
-
-        CodexHookToml.UpdateResult result = CodexHookToml.updateEnabled(source, "pre_tool_use/0", false);
-
+    @Test public void preservesCrLfAndTrustedHashWhileChangingAnExistingState() {
+        String key = CodexHookToml.stateKey(SOURCE, "PreToolUse", 0, 0);
+        String source = CodexHookToml.updateEnabled(DECLARATION.replace("\n", "\r\n"), key, true).content()
+                + "trusted_hash = \"sha256:fixture\"\r\n";
+        var result = CodexHookToml.updateEnabled(source, key, false);
         assertTrue(result.success());
         assertEquals(source.replace("enabled = true", "enabled = false"), result.content());
+    }
+
+    @Test public void addsAnEnabledPreferenceBesideAnExistingTrustHash() {
+        String key = "simple:stop:0:0";
+        String source = "[hooks.state.\"simple:stop:0:0\"] # preserve\ntrusted_hash=\"sha256:fixture\"\n";
+        var result = CodexHookToml.updateEnabled(source, key, false);
+        assertTrue(result.success());
+        assertTrue(result.content().contains("trusted_hash=\"sha256:fixture\""));
+        assertFalse(Toml.parse(result.content()).getBoolean(List.of("hooks", "state", key, "enabled")));
+    }
+
+    @Test public void supportsTheFeatureDefaultAndDeprecatedAlias() {
+        assertTrue(CodexHookToml.parse(DECLARATION, SOURCE, "").featureEnabled());
+        assertTrue(CodexHookToml.parse(DECLARATION, SOURCE, "[features]\ncodex_hooks=true\n").featureEnabled());
+        assertFalse(CodexHookToml.parse(DECLARATION, SOURCE, "[features]\nhooks=false\n").featureEnabled());
+    }
+
+    @Test public void readsHooksJsonUsingOnlyUserState() {
+        String json = "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo ready\"}]}]}}";
+        Path source = Path.of("fixture/hooks.json").toAbsolutePath();
+        String key = source + ":stop:0:0";
+        String preferences = CodexHookToml.updateEnabled("", key, false).content();
+        var parsed = CodexHookToml.parseJson(json, source, preferences);
+        assertTrue(parsed.valid());
+        assertFalse(parsed.entries().get(0).enabled());
+        assertEquals(key, parsed.entries().get(0).managedKey());
+    }
+
+    @Test public void refusesInvalidOrUnsupportedInlineStateWithoutRewritingIt() {
+        assertFalse(CodexHookToml.parse("[[hooks.Stop]\n", SOURCE, "").valid());
+        var updated = CodexHookToml.updateEnabled("[hooks.state]\nkey={enabled=true}\n", "key", false);
+        assertFalse(updated.success());
+        assertEquals("CODEX_STATE_INLINE_UNSUPPORTED", updated.errorCode());
     }
 }

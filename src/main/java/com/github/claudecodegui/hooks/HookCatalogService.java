@@ -54,13 +54,19 @@ public final class HookCatalogService {
     );
 
     private final Path userHome;
+    private final Path codexHome;
 
     public HookCatalogService() {
-        this(Paths.get(NodeDetector.resolveHomeForFileOps()));
+        this(Paths.get(NodeDetector.resolveHomeForFileOps()), com.github.claudecodegui.util.CodexHomeResolver.resolve());
     }
 
     public HookCatalogService(Path userHome) {
+        this(userHome, userHome.resolve(".codex"));
+    }
+
+    public HookCatalogService(Path userHome, Path codexHome) {
         this.userHome = userHome.toAbsolutePath().normalize();
+        this.codexHome = codexHome.toAbsolutePath().normalize();
     }
 
     /** Scan supported locations for the supplied project root. */
@@ -78,16 +84,16 @@ public final class HookCatalogService {
             scanClaudeSettings(claudeDir.resolve("settings.local.json"), "PROJECT_LOCAL", items, sources);
         }
 
-        scanDirectory("codex", "GLOBAL", userHome.resolve(".codex").resolve("hooks"), items, sources);
         scanDirectory("codemoss", "GLOBAL", userHome.resolve(".codemoss").resolve("hooks"), items, sources);
         if (project != null) {
-            scanDirectory("codex", "PROJECT", project.resolve(".codex").resolve("hooks"), items, sources);
             scanDirectory("codemoss", "PROJECT", project.resolve(".codemoss").resolve("hooks"), items, sources);
         }
 
-        scanCodexConfig(userHome.resolve(".codex").resolve("config.toml"), "GLOBAL", items, sources);
+        scanCodexConfig(codexHome.resolve("config.toml"), "GLOBAL", items, sources);
+        scanCodexConfig(codexHome.resolve("hooks.json"), "GLOBAL", items, sources);
         if (project != null) {
             scanCodexConfig(project.resolve(".codex").resolve("config.toml"), "PROJECT", items, sources);
+            scanCodexConfig(project.resolve(".codex").resolve("hooks.json"), "PROJECT", items, sources);
         }
 
         JsonObject result = new JsonObject();
@@ -256,8 +262,8 @@ public final class HookCatalogService {
         JsonObject item = baseItem(provider, scope, event, file, command, null, revision(file));
         item.addProperty("enabled", true);
         item.addProperty("toggleSupported", false);
-        item.addProperty("managedToggleSupported", true);
-        item.addProperty("toggleMode", "ccgui-managed");
+        item.addProperty("managedToggleSupported", false);
+        item.addProperty("executionStateKnown", false);
         item.addProperty("toggleReason", SCRIPT_TOGGLE_UNCONFIRMED);
         item.addProperty("format", "script-file");
         item.addProperty("relativePath", relative);
@@ -393,7 +399,8 @@ public final class HookCatalogService {
     }
 
     private void scanCodexConfig(Path configPath, String scope, JsonArray items, JsonArray sources) {
-        JsonObject source = source("codex", scope, configPath, "config-toml");
+        boolean json = configPath.getFileName().toString().equals("hooks.json");
+        JsonObject source = source("codex", scope, configPath, json ? "hooks-json" : "config-toml");
         sources.add(source);
         if (!Files.isRegularFile(configPath)) {
             return;
@@ -403,8 +410,15 @@ public final class HookCatalogService {
                 addSourceIssue(source, "SOURCE_TOO_LARGE");
                 return;
             }
-            CodexHookToml.ParseResult parsed = CodexHookToml.parse(
-                    Files.readString(configPath, StandardCharsets.UTF_8));
+            Path stateConfig = codexHome.resolve("config.toml");
+            if (Files.exists(stateConfig) && Files.size(stateConfig) > MAX_PREVIEW_BYTES) {
+                addSourceIssue(source, "SOURCE_TOO_LARGE");
+                return;
+            }
+            String preferences = Files.isRegularFile(stateConfig) ? Files.readString(stateConfig, StandardCharsets.UTF_8) : "";
+            String declarations = Files.readString(configPath, StandardCharsets.UTF_8);
+            CodexHookToml.ParseResult parsed = json ? CodexHookToml.parseJson(declarations, configPath, preferences)
+                    : CodexHookToml.parse(declarations, configPath, preferences);
             for (String issue : parsed.sourceIssues()) {
                 addSourceIssue(source, issue);
             }
@@ -420,6 +434,7 @@ public final class HookCatalogService {
                 item.addProperty("sourceId", item.get("sourceId").getAsString()
                         + "-" + shortHash(entry.managedKey()));
                 item.addProperty("managedKey", entry.managedKey());
+                item.addProperty("nativeStateRevision", Files.isRegularFile(stateConfig) ? HookSourceRevision.read(stateConfig) : "missing");
                 item.addProperty("enabled", Boolean.TRUE.equals(entry.enabled()));
                 boolean toggleSupported = entry.enabled() != null && entry.validationIssues().isEmpty();
                 item.addProperty("toggleSupported", toggleSupported);
@@ -427,7 +442,7 @@ public final class HookCatalogService {
                 item.addProperty("toggleMode", "native");
                 item.addProperty("toggleReason", toggleSupported
                         ? CODEX_CONFIG_HOOKS_SUPPORTED : "CODEX_CONFIG_HOOK_INVALID");
-                item.addProperty("format", "config-toml");
+                item.addProperty("format", json ? "hooks-json" : "config-toml");
                 JsonArray issues = new JsonArray();
                 entry.validationIssues().forEach(issues::add);
                 item.add("validationIssues", issues);
@@ -444,12 +459,12 @@ public final class HookCatalogService {
         JsonArray capabilities = new JsonArray();
         capabilities.add(capability("claude", "settings-json", true, false,
                 true, CLAUDE_INDIVIDUAL_TOGGLE_UNSUPPORTED, "UNVERIFIED"));
-        capabilities.add(capability("codex", "hook-directory", true, false,
-                true, SCRIPT_TOGGLE_UNCONFIRMED, "UNVERIFIED"));
+        capabilities.add(capability("codex", "hooks-json", true, true,
+                false, CODEX_CONFIG_HOOKS_SUPPORTED, "UNVERIFIED"));
         capabilities.add(capability("codemoss", "hook-directory", true, false,
-                true, SCRIPT_TOGGLE_UNCONFIRMED, "UNVERIFIED"));
+                false, SCRIPT_TOGGLE_UNCONFIRMED, "UNVERIFIED"));
         capabilities.add(capability("codex", "config-toml", true, true,
-                false, CODEX_CONFIG_HOOKS_SUPPORTED, "VERIFIED"));
+                false, CODEX_CONFIG_HOOKS_SUPPORTED, "UNVERIFIED"));
         return capabilities;
     }
 

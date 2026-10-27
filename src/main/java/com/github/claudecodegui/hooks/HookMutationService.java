@@ -42,8 +42,12 @@ public final class HookMutationService {
     private final HookPathPolicy pathPolicy;
 
     public HookMutationService(Path userHome) {
+        this(userHome, userHome.resolve(".codex"));
+    }
+
+    public HookMutationService(Path userHome, Path codexHome) {
         this.userHome = userHome.toAbsolutePath().normalize();
-        this.pathPolicy = new HookPathPolicy(this.userHome);
+        this.pathPolicy = new HookPathPolicy(this.userHome, codexHome);
     }
 
     public JsonObject read(String projectRoot, String location) {
@@ -145,10 +149,66 @@ public final class HookMutationService {
         }
     }
 
+    /** Creates only a missing user config. A hard link publishes the complete file without replacing a concurrent writer. */
+    JsonObject writeNativeState(String projectRoot, Path target, String expectedRevision, String content) {
+        if (Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            return write(projectRoot, target.toString(), expectedRevision, content);
+        }
+        if (!pathPolicy.isUserCodexConfig(target) || !"missing".equals(expectedRevision)) {
+            return failure("HOOK_REVISION_CONFLICT");
+        }
+        if (content.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES || Toml.parse(content).hasErrors()) {
+            return failure("INVALID_TOML");
+        }
+        try {
+            Path directory = backupDirectory(target);
+            HookLocalStorage.prepare(userHome, directory);
+            try (FileChannel channel = FileChannel.open(directory.resolve(".ccgui-hooks.lock"), StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                FileLock lock;
+                try {
+                    lock = channel.tryLock();
+                } catch (OverlappingFileLockException error) {
+                    return failure("HOOK_FILE_LOCKED");
+                }
+                if (lock == null) {
+                    return failure("HOOK_FILE_LOCKED");
+                }
+                try (FileLock ignored = lock) {
+                    if (Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                        return failure("HOOK_REVISION_CONFLICT");
+                    }
+                    Files.createDirectories(target.getParent());
+                    Path temporary = Files.createTempFile(target.getParent(), ".ccgui-hook-state-", ".tmp");
+                    try {
+                        Files.writeString(temporary, content, StandardCharsets.UTF_8);
+                        HookLocalStorage.restrictFile(temporary);
+                        Files.createLink(target, temporary);
+                        JsonObject result = success();
+                        result.addProperty("location", target.toString());
+                        result.addProperty("revision", revision(target));
+                        result.addProperty("content", content);
+                        return result;
+                    } finally {
+                        Files.deleteIfExists(temporary);
+                    }
+                }
+            }
+        } catch (java.nio.file.FileAlreadyExistsException error) {
+            return failure("HOOK_REVISION_CONFLICT");
+        } catch (IOException | UnsupportedOperationException error) {
+            LOG.debug("[HookMutation] Could not create native hook state", error);
+            return failure("WRITE_FAILED");
+        }
+    }
+
     private String validateContent(Path target, Path project, String content) {
         if (pathPolicy.isCodexConfig(target, project)) {
             TomlParseResult parsed = Toml.parse(content);
             return parsed.hasErrors() ? "INVALID_TOML" : null;
+        }
+        if (pathPolicy.isCodexHooksJson(target, project)) {
+            return CodexHookToml.parseJson(content, target, "").valid() ? null : "INVALID_JSON";
         }
         if (!isClaudeSettings(target, project)) {
             return null;

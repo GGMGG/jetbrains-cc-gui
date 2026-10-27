@@ -53,7 +53,7 @@ public class HookWindowsAttributesTest {
     }
 
     @Test
-    public void scriptQuarantineAndRestorePreserveContentAclOwnerAndDosFlags() throws Exception {
+    public void legacyScriptRestorePreservesContentAclOwnerAndDosFlags() throws Exception {
         Path home = windowsHome();
         Path script = Files.createDirectories(home.resolve(".codemoss/hooks/nested")).resolve("guard.ps1");
         String original = "Write-Output 'isolated hook fixture'\n";
@@ -63,8 +63,7 @@ public class HookWindowsAttributesTest {
         JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
         HookToggleService toggles = new HookToggleService(home);
 
-        JsonObject disabled = toggles.toggle(null, request(item, false));
-        assertTrue(disabled.toString(), disabled.get("success").getAsBoolean());
+        HookToggleServiceTest.legacyDisabledScript(home, script, item);
         assertFalse(Files.exists(script));
         JsonObject disabledItem = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
         JsonObject enabled = toggles.toggle(null, request(disabledItem, true));

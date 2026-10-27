@@ -53,6 +53,47 @@ public class HookToggleServiceTest {
     }
 
     @Test
+    public void restoresMultipleHandlersInTheirOriginalOrder() throws Exception {
+        for (boolean wrapped : new boolean[] {false, true}) {
+            for (String order : new String[] {"AB", "BA"}) {
+                Path home = temporaryFolder.newFolder().toPath();
+                Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
+                String handlers = "{\"type\":\"command\",\"command\":\"A\"},{\"type\":\"command\",\"command\":\"B\"},"
+                        + "{\"type\":\"command\",\"command\":\"C\"}";
+                Files.writeString(settings, "{\"hooks\":{\"Stop\":[" + (wrapped ? "{\"hooks\":[" + handlers + "]}" : handlers) + "]}}");
+                HookCatalogService catalog = new HookCatalogService(home);
+                HookToggleService service = new HookToggleService(home);
+                for (String command : new String[] {"A", "B"}) {
+                    JsonObject item = commandItem(catalog.scan(null).getAsJsonArray("items"), command);
+                    assertTrue(service.toggle(null, request(item, false)).get("success").getAsBoolean());
+                }
+                for (char command : order.toCharArray()) {
+                    JsonObject item = commandItem(catalog.scan(null).getAsJsonArray("items"), String.valueOf(command));
+                    assertTrue(service.toggle(null, request(item, true)).get("success").getAsBoolean());
+                }
+                JsonArray array = JsonParser.parseString(Files.readString(settings)).getAsJsonObject()
+                        .getAsJsonObject("hooks").getAsJsonArray("Stop");
+                if (wrapped) {
+                    array = array.get(0).getAsJsonObject().getAsJsonArray("hooks");
+                }
+                assertEquals(3, array.size());
+                for (int index = 0; index < 3; index++) {
+                    assertEquals(String.valueOf((char) ('A' + index)), array.get(index).getAsJsonObject().get("command").getAsString());
+                }
+            }
+        }
+    }
+
+    private static JsonObject commandItem(JsonArray items, String command) {
+        for (var item : items) {
+            if (command.equals(item.getAsJsonObject().get("command").getAsString())) {
+                return item.getAsJsonObject();
+            }
+        }
+        throw new AssertionError("Hook fixture missing: " + command);
+    }
+
+    @Test
     public void nonCommandClaudeHandlersDoNotRequireCommandFields() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
         Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
@@ -103,26 +144,17 @@ public class HookToggleServiceTest {
     }
 
     @Test
-    public void quarantinesAndRestoresCodemossScript() throws Exception {
+    public void unverifiedDirectoryScriptsAreEditableButCannotBeQuarantined() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
-        Path script = Files.createDirectories(home.resolve(".codemoss").resolve("hooks"))
-                .resolve("before.sh");
-        Files.writeString(script, "#!/bin/sh\necho ready\n", StandardCharsets.UTF_8);
-        JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items")
-                .get(0).getAsJsonObject();
-        HookToggleService service = new HookToggleService(home);
-
-        JsonObject disable = service.toggle(null, request(item, false));
-        assertTrue(disable.toString(), disable.get("success").getAsBoolean());
-        assertFalse(Files.exists(script));
-        JsonObject disabledItem = findItem(new HookCatalogService(home).scan(null).getAsJsonArray("items"),
-                item.get("sourceId").getAsString());
-        assertNotNull(disabledItem);
-        assertFalse(disabledItem.get("enabled").getAsBoolean());
-
-        JsonObject enable = service.toggle(null, request(disabledItem, true));
-        assertTrue(enable.toString(), enable.get("success").getAsBoolean());
-        assertTrue(Files.exists(script));
+        Path script = Files.createDirectories(home.resolve(".codemoss/hooks")).resolve("before.sh");
+        Files.writeString(script, "echo keep reference\n");
+        JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
+        assertFalse(item.get("managedToggleSupported").getAsBoolean());
+        assertFalse(item.get("executionStateKnown").getAsBoolean());
+        JsonObject result = new HookToggleService(home).toggle(null, request(item, false));
+        assertFalse(result.get("success").getAsBoolean());
+        assertEquals("HOOK_TOGGLE_UNSUPPORTED", result.get("errorCode").getAsString());
+        assertEquals("echo keep reference\n", Files.readString(script));
     }
 
     @Test
@@ -135,7 +167,7 @@ public class HookToggleServiceTest {
         HookCatalogService catalog = new HookCatalogService(home);
         JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
         HookToggleService service = new HookToggleService(home);
-        assertTrue(service.toggle(null, request(item, false)).get("success").getAsBoolean());
+        legacyDisabledScript(home, script, item);
         Path statePath = new HookToggleStateStore(home, provider).getStateFile();
         JsonObject state = JsonParser.parseString(Files.readString(statePath)).getAsJsonObject();
         state.getAsJsonArray("disabledScripts").get(0).getAsJsonObject().addProperty("revision", legacyRevision);
@@ -157,7 +189,7 @@ public class HookToggleServiceTest {
         HookCatalogService catalog = new HookCatalogService(home);
         JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
         HookToggleService service = new HookToggleService(home);
-        assertTrue(service.toggle(null, request(item, false)).get("success").getAsBoolean());
+        legacyDisabledScript(home, script, item);
         JsonObject disabled = findDisabled(catalog.scan(null).getAsJsonArray("items"));
         JsonObject state = JsonParser.parseString(Files.readString(new HookToggleStateStore(home, provider).getStateFile()))
                 .getAsJsonObject();
@@ -226,8 +258,7 @@ public class HookToggleServiceTest {
         Files.writeString(script, "echo ready", StandardCharsets.UTF_8);
         JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items")
                 .get(0).getAsJsonObject();
-        assertTrue(new HookToggleService(home).toggle(null, request(item, false))
-                .get("success").getAsBoolean());
+        legacyDisabledScript(home, script, item);
         Files.delete(hooks);
 
         JsonObject disabled = findDisabled(new HookCatalogService(home).scan(null).getAsJsonArray("items"));
@@ -249,10 +280,12 @@ public class HookToggleServiceTest {
         JsonObject item = new HookCatalogService(aliasHome).scan(null).getAsJsonArray("items")
                 .get(0).getAsJsonObject();
 
-        JsonObject result = new HookToggleService(aliasHome).toggle(null, request(item, false));
+        legacyDisabledScript(aliasHome, hook, item);
+        JsonObject disabled = findDisabled(new HookCatalogService(aliasHome).scan(null).getAsJsonArray("items"));
+        JsonObject result = new HookToggleService(aliasHome).toggle(null, request(disabled, true));
 
         assertTrue(result.toString(), result.get("success").getAsBoolean());
-        assertFalse(Files.exists(hook));
+        assertTrue(Files.exists(hook));
     }
 
     @Test
@@ -264,10 +297,9 @@ public class HookToggleServiceTest {
                 [features]
                 hooks = true
 
-                [[hooks.pre_tool_use]]
+                [[hooks.PreToolUse]]
                 matcher = "Bash"
-                enabled = true
-                hooks = [{ type = "command", command = "python", args = ["guard.py"] }]
+                hooks = [{ type = "command", command = "python guard.py" }]
 
                 [model_aliases]
                 fast = "gpt-test"
@@ -286,6 +318,91 @@ public class HookToggleServiceTest {
         assertFalse(rescanned.get("enabled").getAsBoolean());
     }
 
+    @Test
+    public void projectHooksJsonTogglesOnlyUserStateAndKeepsReferencedScripts() throws Exception {
+        Path home = temporaryFolder.newFolder("native-home").toPath();
+        Path project = temporaryFolder.newFolder("native-project").toPath();
+        Path hooks = Files.createDirectories(project.resolve(".codex")).resolve("hooks.json");
+        String declaration = "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo project\"}]}]}}\r\n";
+        Files.writeString(hooks, declaration);
+        Path script = Files.createDirectories(home.resolve(".codex/hooks")).resolve("referenced.sh");
+        Files.writeString(script, "echo keep reference\n");
+        HookCatalogService catalog = new HookCatalogService(home);
+        JsonArray items = catalog.scan(project.toString()).getAsJsonArray("items");
+        assertEquals(1, items.size());
+        JsonObject item = items.get(0).getAsJsonObject();
+        assertEquals("missing", item.get("nativeStateRevision").getAsString());
+
+        JsonObject result = new HookToggleService(home).toggle(project.toString(), request(item, false));
+
+        assertTrue(result.toString(), result.get("success").getAsBoolean());
+        Path userConfig = home.resolve(".codex/config.toml");
+        assertFalse(org.tomlj.Toml.parse(Files.readString(userConfig)).getBoolean(
+                java.util.List.of("hooks", "state", item.get("managedKey").getAsString(), "enabled")));
+        assertEquals(declaration, Files.readString(hooks));
+        assertEquals("echo keep reference\n", Files.readString(script));
+        assertFalse(catalog.scan(project.toString()).getAsJsonArray("items").get(0).getAsJsonObject().get("enabled").getAsBoolean());
+        assertFalse(Files.exists(project.resolve(".codex/.ccgui-hooks-state.json")));
+    }
+
+    @Test
+    public void linkedCodexHomeUsesThePhysicalNativeStateKey() throws Exception {
+        Path home = temporaryFolder.getRoot().toPath();
+        Path physical = Files.createDirectories(home.resolve("physical-codex"));
+        Path alias = home.resolve("codex-link");
+        Files.createSymbolicLink(alias, physical);
+        Path declaration = physical.resolve("hooks.json");
+        String original = "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo fixture\"}]}]}}";
+        Files.writeString(declaration, original);
+        HookCatalogService catalog = new HookCatalogService(home, alias);
+        JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
+        String expected = declaration.toRealPath() + ":stop:0:0";
+        assertEquals(expected, item.get("managedKey").getAsString());
+        JsonObject result = new HookToggleService(home, alias).toggle(null, request(item, false));
+        assertTrue(result.toString(), result.get("success").getAsBoolean());
+        assertFalse(org.tomlj.Toml.parse(Files.readString(physical.resolve("config.toml"))).getBoolean(
+                java.util.List.of("hooks", "state", expected, "enabled")));
+        assertEquals(original, Files.readString(declaration));
+    }
+
+    @Test
+    public void nativeToggleRejectsAChangedUserPreferenceBaseline() throws Exception {
+        Path home = temporaryFolder.getRoot().toPath();
+        Path config = Files.createDirectories(home.resolve(".codex")).resolve("config.toml");
+        String declaration = "[[hooks.Stop]]\nhooks=[{type=\"command\",command=\"echo ready\"}]\n";
+        Files.writeString(config, declaration);
+        JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
+        Files.writeString(config, declaration + "\n[features]\nhooks=false\n");
+        String changed = Files.readString(config);
+
+        JsonObject result = new HookToggleService(home).toggle(null, request(item, false));
+
+        assertFalse(result.get("success").getAsBoolean());
+        assertEquals("HOOK_REVISION_CONFLICT", result.get("errorCode").getAsString());
+        assertEquals(changed, Files.readString(config));
+    }
+
+    static void legacyDisabledScript(Path home, Path script, JsonObject item) throws Exception {
+        Path provider = home.resolve(".codemoss");
+        Path quarantine = Files.createDirectories(provider.resolve(".ccgui-disabled-hooks/legacy")).resolve(script.getFileName());
+        String revision = HookSourceRevision.read(script);
+        var attributes = HookMutationService.readDosAttributes(script);
+        Files.move(script, quarantine);
+        HookMutationService.copyDosAttributes(attributes, quarantine);
+        JsonObject state = HookToggleStateStore.emptyState();
+        JsonObject entry = new JsonObject();
+        entry.addProperty("sourceId", item.get("sourceId").getAsString());
+        entry.addProperty("provider", "codemoss");
+        entry.addProperty("scope", "GLOBAL");
+        entry.addProperty("originalLocation", item.get("rawLocation").getAsString());
+        entry.addProperty("quarantineLocation", quarantine.toString());
+        entry.addProperty("relativePath", script.getFileName().toString());
+        entry.addProperty("revision", revision);
+        entry.addProperty("event", script.getFileName().toString());
+        state.getAsJsonArray("disabledScripts").add(entry);
+        new HookToggleStateStore(home, provider).write(state);
+    }
+
     private static JsonObject request(JsonObject item, boolean enabled) {
         JsonObject request = new JsonObject();
         request.addProperty("provider", item.get("provider").getAsString());
@@ -297,6 +414,9 @@ public class HookToggleServiceTest {
         request.addProperty("sourceId", item.get("sourceId").getAsString());
         if (item.has("managedKey")) {
             request.addProperty("managedKey", item.get("managedKey").getAsString());
+        }
+        if (item.has("nativeStateRevision")) {
+            request.addProperty("nativeStateRevision", item.get("nativeStateRevision").getAsString());
         }
         request.addProperty("requestId", "test-request");
         request.addProperty("location", item.get("rawLocation").getAsString());

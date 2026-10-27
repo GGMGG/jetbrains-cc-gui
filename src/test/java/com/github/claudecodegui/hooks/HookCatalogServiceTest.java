@@ -53,10 +53,9 @@ public class HookCatalogServiceTest {
                 [features]
                 hooks = true
 
-                [[hooks.pre_tool_use]]
+                [[hooks.PreToolUse]]
                 matcher = "Bash"
-                enabled = true
-                hooks = [{ type = "command", command = "python", args = ["guard.py"] }]
+                hooks = [{ type = "command", command = "python guard.py" }]
                 """, StandardCharsets.UTF_8);
         Files.createDirectories(project.resolve(".claude"));
         Files.writeString(project.resolve(".claude").resolve("settings.local.json"), "not-json",
@@ -91,7 +90,7 @@ public class HookCatalogServiceTest {
 
         JsonObject codexItem = findItem(items, "codex");
         assertNotNull(codexItem);
-        assertEquals("pre_tool_use", codexItem.get("event").getAsString());
+        assertEquals("PreToolUse", codexItem.get("event").getAsString());
         assertEquals("Bash", codexItem.get("matcher").getAsString());
         assertEquals("python guard.py", codexItem.get("command").getAsString());
         assertTrue(codexItem.get("enabled").getAsBoolean());
@@ -139,7 +138,7 @@ public class HookCatalogServiceTest {
         assertTrue(codexTomlCapability.get("editSupported").getAsBoolean());
         assertTrue(codexTomlCapability.get("toggleSupported").getAsBoolean());
         assertFalse(codexTomlCapability.get("managedToggleSupported").getAsBoolean());
-        assertEquals("VERIFIED", codexTomlCapability.get("versionStatus").getAsString());
+        assertEquals("UNVERIFIED", codexTomlCapability.get("versionStatus").getAsString());
         assertFalse(codexTomlCapability.has("sourceControlSupported"));
         assertEquals("CODEX_CONFIG_HOOKS_SUPPORTED",
                 codexTomlCapability.get("reasonCode").getAsString());

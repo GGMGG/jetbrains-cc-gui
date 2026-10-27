@@ -1,152 +1,169 @@
 package com.github.claudecodegui.hooks;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.github.claudecodegui.util.PlatformUtils;
 import org.tomlj.Toml;
-import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
-import org.tomlj.TomlPosition;
-import org.tomlj.TomlTable;
-
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Parses and minimally updates Codex hooks stored in config.toml. */
+/** Codex 0.163 declarations and per-handler user state; never executes hooks. */
 final class CodexHookToml {
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().serializeNulls().create();
+    private static final Set<String> EVENTS = Set.of("PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt");
+    private static final Pattern ENABLED_LINE = Pattern.compile("^(\\s*(?:enabled|\"enabled\"|'enabled')\\s*=\\s*)(?:true|false)(\\s*(?:#.*)?)$");
+    private CodexHookToml() { }
 
-    private static final Pattern ENABLED_LINE = Pattern.compile(
-            "^(\\s*(?:enabled|\\\"enabled\\\"|'enabled')\\s*=\\s*)(?:true|false)(\\s*(?:#.*)?)$"
-    );
-
-    private CodexHookToml() {
+    static ParseResult parse(String content, Path source, String userConfig) {
+        TomlParseResult parsed = Toml.parse(content);
+        TomlParseResult user = Toml.parse(userConfig);
+        if (parsed.hasErrors() || user.hasErrors()) {
+            return invalid("INVALID_TOML");
+        }
+        JsonObject root = JsonParser.parseString(parsed.toJson()).getAsJsonObject();
+        JsonObject preferences = JsonParser.parseString(user.toJson()).getAsJsonObject();
+        return collect(root.get("hooks"), source, preferences, featureEnabled(root, featureEnabled(preferences, true)));
     }
 
-    static ParseResult parse(String content) {
-        TomlParseResult parsed = Toml.parse(content == null ? "" : content);
-        if (parsed.hasErrors()) {
-            return new ParseResult(false, false, List.of(), List.of("INVALID_TOML"));
+    static ParseResult parseJson(String content, Path source, String userConfig) {
+        TomlParseResult user = Toml.parse(userConfig);
+        if (user.hasErrors()) {
+            return invalid("INVALID_TOML");
         }
-        boolean featureEnabled = parsed.isTable("features")
-                && parsed.getTable("features").isBoolean("hooks")
-                && parsed.getTable("features").getBoolean("hooks");
-        Object hooksValue = parsed.get("hooks");
-        if (hooksValue == null) {
+        try {
+            JsonObject root = JsonParser.parseString(content).getAsJsonObject();
+            if (!Set.of("description", "hooks").containsAll(root.keySet())) {
+                return invalid("CODEX_HOOK_FILE_FIELDS_INVALID");
+            }
+            JsonObject preferences = JsonParser.parseString(user.toJson()).getAsJsonObject();
+            return collect(root.get("hooks"), source, preferences, featureEnabled(preferences, true));
+        } catch (RuntimeException error) {
+            return invalid("INVALID_JSON");
+        }
+    }
+
+    private static boolean featureEnabled(JsonObject root, boolean fallback) {
+        JsonObject features = object(root.get("features"));
+        if (features == null) {
+            return fallback;
+        }
+        Boolean current = bool(features.get("hooks"));
+        Boolean legacy = bool(features.get("codex_hooks"));
+        return current != null ? current : legacy != null ? legacy : fallback;
+    }
+
+    private static ParseResult collect(JsonElement value, Path source, JsonObject preferences, boolean featureEnabled) {
+        if (value == null) {
             return new ParseResult(true, featureEnabled, List.of(), List.of());
         }
-        if (!(hooksValue instanceof TomlTable hooksTable)) {
-            return new ParseResult(false, featureEnabled, List.of(), List.of("CODEX_HOOKS_NOT_TABLE"));
+        JsonObject hooks = object(value);
+        if (hooks == null) {
+            return invalid("CODEX_HOOKS_NOT_TABLE");
         }
-
+        JsonObject preferenceHooks = object(preferences.get("hooks"));
+        JsonObject state = preferenceHooks == null ? null : object(preferenceHooks.get("state"));
         List<Entry> entries = new ArrayList<>();
-        List<String> sourceIssues = new ArrayList<>();
-        for (String event : hooksTable.keySet()) {
-            Object eventValue = hooksTable.get(event);
-            if (!(eventValue instanceof TomlArray eventHooks) || !containsOnlyTables(eventHooks)) {
-                addIssue(sourceIssues, "CODEX_HOOK_EVENT_NOT_ARRAY");
+        List<String> issues = new ArrayList<>();
+        for (String event : hooks.keySet()) {
+            if ("state".equals(event)) {
                 continue;
             }
-            for (int index = 0; index < eventHooks.size(); index++) {
-                Object value = eventHooks.get(index);
-                if (!(value instanceof TomlTable hook)) {
-                    addIssue(sourceIssues, "CODEX_HOOK_ENTRY_NOT_TABLE");
+            if (!EVENTS.contains(event)) {
+                issues.add("CODEX_EVENT_UNSUPPORTED");
+                continue;
+            }
+            JsonElement groups = hooks.get(event);
+            if (!groups.isJsonArray()) {
+                issues.add("CODEX_HOOK_EVENT_NOT_ARRAY");
+                continue;
+            }
+            JsonArray groupArray = groups.getAsJsonArray();
+            for (int groupIndex = 0; groupIndex < groupArray.size(); groupIndex++) {
+                JsonObject group = object(groupArray.get(groupIndex));
+                if (group == null || !group.has("hooks") || !group.get("hooks").isJsonArray()) {
+                    issues.add("CODEX_COMMANDS_INVALID");
                     continue;
                 }
-                List<String> issues = new ArrayList<>();
-                Boolean enabled = hook.isBoolean("enabled") ? hook.getBoolean("enabled") : null;
-                if (enabled == null) {
-                    issues.add("CODEX_ENABLED_INVALID");
-                }
-                String matcher = null;
-                if (hook.contains("matcher")) {
-                    if (hook.isString("matcher")) {
-                        matcher = hook.getString("matcher");
-                    } else {
-                        issues.add("CODEX_MATCHER_INVALID");
+                JsonArray handlers = group.getAsJsonArray("hooks");
+                String matcher = string(group.get("matcher"));
+                for (int handlerIndex = 0; handlerIndex < handlers.size(); handlerIndex++) {
+                    JsonObject handler = object(handlers.get(handlerIndex));
+                    List<String> handlerIssues = new ArrayList<>();
+                    String type = handler == null ? null : string(handler.get("type"));
+                    String command = handler == null ? null : string(handler.get("command"));
+                    if (handler != null && PlatformUtils.isWindows() && string(handler.get("commandWindows")) != null) {
+                        command = string(handler.get("commandWindows"));
                     }
+                    if ("mcp_tool".equals(type) && string(handler.get("server")) != null && string(handler.get("tool")) != null) {
+                        command = string(handler.get("server")) + "/" + string(handler.get("tool"));
+                    } else if (!"command".equals(type) || command == null || command.isBlank()) {
+                        handlerIssues.add("CODEX_HANDLER_UNSUPPORTED");
+                    }
+                    if (group.has("matcher") && !group.get("matcher").isJsonNull() && matcher == null) {
+                        handlerIssues.add("CODEX_MATCHER_INVALID");
+                    }
+                    String key = stateKey(source, event, groupIndex, handlerIndex);
+                    JsonObject override = state == null ? null : object(state.get(key));
+                    Boolean enabled = override == null ? null : bool(override.get("enabled"));
+                    if (override != null && override.has("enabled") && enabled == null) {
+                        handlerIssues.add("CODEX_ENABLED_INVALID");
+                    }
+                    entries.add(new Entry(event, key, enabled == null || enabled, matcher, command == null ? "" : command,
+                            GSON.toJson(handler), Set.copyOf(handlerIssues)));
                 }
-                TomlArray commands = hook.isArray("hooks") ? hook.getArray("hooks") : null;
-                if (commands == null || !containsOnlyTables(commands) || commands.isEmpty()) {
-                    issues.add("CODEX_COMMANDS_INVALID");
-                }
-                TomlPosition enabledPosition = hook.inputPositionOf("enabled");
-                entries.add(new Entry(
-                        event,
-                        index,
-                        event + "/" + index,
-                        enabled,
-                        matcher,
-                        commandPreview(commands),
-                        hook.toJson(),
-                        enabledPosition == null ? -1 : enabledPosition.line(),
-                        Set.copyOf(issues)
-                ));
             }
         }
-        return new ParseResult(true, featureEnabled, List.copyOf(entries), List.copyOf(sourceIssues));
+        return new ParseResult(true, featureEnabled, List.copyOf(entries), List.copyOf(issues));
     }
 
-    static UpdateResult updateEnabled(String content, String managedKey, boolean enabled) {
-        ParseResult parsed = parse(content);
-        if (!parsed.valid()) {
+    static String stateKey(Path source, String event, int group, int handler) {
+        String label = event.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase(java.util.Locale.ROOT);
+        Path nativeSource = source.toAbsolutePath().normalize();
+        try {
+            // The native CLI canonicalizes config layers, including a linked CODEX_HOME.
+            nativeSource = nativeSource.toRealPath();
+        } catch (java.io.IOException ignored) {
+            // Parsing previews for absent files still has a deterministic identity.
+        }
+        return nativeSource + ":" + label + ":" + group + ":" + handler;
+    }
+
+    static UpdateResult updateEnabled(String content, String key, boolean enabled) {
+        TomlParseResult parsed = Toml.parse(content);
+        if (parsed.hasErrors() || key == null || key.isBlank()) {
             return new UpdateResult(null, "INVALID_TOML");
         }
-        Entry target = null;
-        for (Entry entry : parsed.entries()) {
-            if (entry.managedKey().equals(managedKey)) {
-                if (target != null) {
-                    return new UpdateResult(null, "HOOK_IDENTITY_AMBIGUOUS");
-                }
-                target = entry;
+        List<String> field = List.of("hooks", "state", key, "enabled");
+        if (parsed.contains(field)) {
+            if (!parsed.isBoolean(field)) {
+                return new UpdateResult(null, "CODEX_ENABLED_INVALID");
             }
+            String updated = replaceEnabledLine(content, parsed.inputPositionOf(field).line(), enabled);
+            return new UpdateResult(updated, updated == null ? "CODEX_STATE_INLINE_UNSUPPORTED" : null);
         }
-        if (target == null) {
-            return new UpdateResult(null, "HOOK_NOT_FOUND");
-        }
-        if (target.enabled() == null || target.enabledLine() < 1) {
-            return new UpdateResult(null, "CODEX_ENABLED_INVALID");
-        }
-        String updated = replaceEnabledLine(content, target.enabledLine(), enabled);
-        return updated == null
-                ? new UpdateResult(null, "CODEX_ENABLED_INVALID")
-                : new UpdateResult(updated, null);
-    }
-
-    private static String commandPreview(TomlArray commands) {
-        if (commands == null || commands.isEmpty() || !(commands.get(0) instanceof TomlTable command)) {
-            return "";
-        }
-        String executable = command.isString("command") ? command.getString("command") : "";
-        TomlArray args = command.isArray("args") ? command.getArray("args") : null;
-        if (args == null || !containsOnlyStrings(args)) {
-            return executable;
-        }
-        StringBuilder preview = new StringBuilder(executable);
-        for (int i = 0; i < args.size(); i++) {
-            if (!preview.isEmpty()) {
-                preview.append(' ');
+        String table = "[hooks.state." + GSON.toJson(key) + "]";
+        String newline = content.contains("\r\n") ? "\r\n" : "\n";
+        Matcher header = Pattern.compile("(?m)^" + Pattern.quote(table) + "[ \\t]*(?:#.*)?\\r?$").matcher(content);
+        if (header.find()) {
+            int end = content.indexOf('\n', header.end());
+            if (end < 0) {
+                return new UpdateResult(content + newline + "enabled = " + enabled + newline, null);
             }
-            preview.append(args.getString(i));
+            return new UpdateResult(content.substring(0, end + 1) + "enabled = " + enabled + newline + content.substring(end + 1), null);
         }
-        return preview.toString();
-    }
-
-    private static boolean containsOnlyTables(TomlArray array) {
-        for (int i = 0; i < array.size(); i++) {
-            if (!(array.get(i) instanceof TomlTable)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean containsOnlyStrings(TomlArray array) {
-        for (int i = 0; i < array.size(); i++) {
-            if (!(array.get(i) instanceof String)) {
-                return false;
-            }
-        }
-        return true;
+        String result = content + (content.isEmpty() || content.endsWith("\n") ? "" : newline)
+                + newline + table + newline + "enabled = " + enabled + newline;
+        return Toml.parse(result).hasErrors() ? new UpdateResult(null, "CODEX_STATE_INLINE_UNSUPPORTED") : new UpdateResult(result, null);
     }
 
     private static String replaceEnabledLine(String content, int lineNumber, boolean enabled) {
@@ -158,42 +175,24 @@ final class CodexHookToml {
             }
             start = next + 1;
         }
-        int lineBreak = content.indexOf('\n', start);
-        int end = lineBreak < 0 ? content.length() : lineBreak;
-        int contentEnd = end > start && content.charAt(end - 1) == '\r' ? end - 1 : end;
-        Matcher matcher = ENABLED_LINE.matcher(content.substring(start, contentEnd));
-        if (!matcher.matches()) {
-            return null;
+        int end = content.indexOf('\n', start);
+        if (end < 0) {
+            end = content.length();
         }
-        String replacement = matcher.group(1) + enabled + matcher.group(2);
-        return content.substring(0, start) + replacement + content.substring(contentEnd);
+        int valueEnd = end > start && content.charAt(end - 1) == '\r' ? end - 1 : end;
+        Matcher matcher = ENABLED_LINE.matcher(content.substring(start, valueEnd));
+        return matcher.matches() ? content.substring(0, start) + matcher.group(1) + enabled + matcher.group(2) + content.substring(valueEnd) : null;
     }
 
-    private static void addIssue(List<String> issues, String issue) {
-        if (!issues.contains(issue)) {
-            issues.add(issue);
-        }
+    private static JsonObject object(JsonElement value) { return value != null && value.isJsonObject() ? value.getAsJsonObject() : null; }
+    private static String string(JsonElement value) {
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString() ? value.getAsString() : null;
     }
-
-    record Entry(
-            String event,
-            int index,
-            String managedKey,
-            Boolean enabled,
-            String matcher,
-            String command,
-            String rawPreview,
-            int enabledLine,
-            Set<String> validationIssues
-    ) {
+    private static Boolean bool(JsonElement value) {
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean() ? value.getAsBoolean() : null;
     }
-
-    record ParseResult(boolean valid, boolean featureEnabled, List<Entry> entries, List<String> sourceIssues) {
-    }
-
-    record UpdateResult(String content, String errorCode) {
-        boolean success() {
-            return errorCode == null;
-        }
-    }
+    private static ParseResult invalid(String issue) { return new ParseResult(false, false, List.of(), List.of(issue)); }
+    record Entry(String event, String managedKey, Boolean enabled, String matcher, String command, String rawPreview, Set<String> validationIssues) { }
+    record ParseResult(boolean valid, boolean featureEnabled, List<Entry> entries, List<String> sourceIssues) { }
+    record UpdateResult(String content, String errorCode) { boolean success() { return errorCode == null; } }
 }

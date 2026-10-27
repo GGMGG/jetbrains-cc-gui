@@ -32,12 +32,14 @@ public class HookHandler extends BaseMessageHandler {
 
     public HookHandler(HandlerContext context) {
         this(context, new HookCatalogService(), new HookMutationService(
-                java.nio.file.Paths.get(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps())));
+                java.nio.file.Paths.get(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps()),
+                com.github.claudecodegui.util.CodexHomeResolver.resolve()));
     }
 
     HookHandler(HandlerContext context, HookCatalogService catalogService) {
         this(context, catalogService, new HookMutationService(
-                java.nio.file.Paths.get(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps())));
+                java.nio.file.Paths.get(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps()),
+                com.github.claudecodegui.util.CodexHomeResolver.resolve()));
     }
 
     HookHandler(HandlerContext context, HookCatalogService catalogService, HookMutationService mutationService) {
@@ -45,7 +47,8 @@ public class HookHandler extends BaseMessageHandler {
         this.catalogService = catalogService;
         this.mutationService = mutationService;
         this.toggleService = new HookToggleService(
-                java.nio.file.Paths.get(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps()));
+                java.nio.file.Paths.get(com.github.claudecodegui.bridge.NodeDetector.resolveHomeForFileOps()),
+                com.github.claudecodegui.util.CodexHomeResolver.resolve());
     }
 
     @Override
@@ -102,8 +105,13 @@ public class HookHandler extends BaseMessageHandler {
             JsonObject json = GSON.fromJson(content, JsonObject.class);
             String projectRoot = context.getProject() == null ? null : context.getProject().getBasePath();
             CompletableFuture
-                    .supplyAsync(() -> attachRequestedLocation(toggleService.toggle(projectRoot, json), json),
-                            AppExecutorUtil.getAppExecutorService())
+                    .supplyAsync(() -> {
+                        try {
+                            return attachRequestedLocation(toggleService.toggle(projectRoot, json), json);
+                        } catch (RuntimeException e) {
+                            return attachRequestedLocation(failure("INVALID_REQUEST"), json);
+                        }
+                    }, AppExecutorUtil.getAppExecutorService())
                     .thenAccept(result -> ApplicationManager.getApplication().invokeLater(() ->
                             callJavaScript("window.hookToggleResult", escapeJs(GSON.toJson(result)))));
         } catch (RuntimeException e) {
@@ -120,7 +128,7 @@ public class HookHandler extends BaseMessageHandler {
                         try {
                             return attachRequestedLocation(mutation.apply(json, projectRoot), json);
                         } catch (RuntimeException e) {
-                            return failure("INVALID_REQUEST");
+                            return attachRequestedLocation(failure("INVALID_REQUEST"), json);
                         }
                     }, AppExecutorUtil.getAppExecutorService())
                     .thenAccept(result -> ApplicationManager.getApplication().invokeLater(() ->
