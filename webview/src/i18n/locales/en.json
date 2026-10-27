@@ -82,7 +82,12 @@
       "tooltipReset": "Resets: {{value}} (local time)",
       "clickToSwitch": "Click period label to switch window",
       "worstHint": "Dot shows worst window ({{color}})",
-      "paceColors": { "green": "green", "yellow": "yellow", "red": "red", "neutral": "unknown" },
+      "paceColors": {
+        "green": "green",
+        "yellow": "yellow",
+        "red": "red",
+        "neutral": "unknown"
+      },
       "stale": "Data may be outdated (refresh failed)"
     },
     "noMatchingFiles": "No matching files",
@@ -1460,7 +1465,8 @@
       "minutesAgo": "minutes ago",
       "secondsAgo": "seconds ago"
     },
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "sessionInUse": "In-use sessions cannot be deleted."
   },
   "permission": {
     "dialogTitle": "Permission Request",

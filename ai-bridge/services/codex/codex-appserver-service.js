@@ -118,6 +118,7 @@ export class CodexAppServerService extends EventEmitter {
     this.startupFailures = [];
 
     this.state = 'stopped';
+    this.idleReleaseInProgress = false;
     this.runtimeGeneration = 0;
     this.client = null;
     this.runtimeResetPromise = null;
@@ -183,6 +184,9 @@ export class CodexAppServerService extends EventEmitter {
 
   /** Lazily start the runtime and perform the handshake. Idempotent. */
   async ensureRuntime() {
+    if (this.idleReleaseInProgress) {
+      throw new ClassifiedError('THREAD_RELEASING', 'Codex thread is being released for deletion');
+    }
     if (this.state === 'ready' && this.client?.alive) {
       return;
     }
@@ -662,6 +666,9 @@ export class CodexAppServerService extends EventEmitter {
    * outcome exactly once at the native terminal.
    */
   enqueueOperation({ kind, threadId, clientMessageId = null, settings = undefined, markerPayload = null }) {
+    if (this.idleReleaseInProgress) {
+      throw new ClassifiedError('THREAD_RELEASING', 'Codex thread is being released for deletion');
+    }
     if (!OPERATION_KINDS.includes(kind)) {
       throw new Error(`unknown operation kind: ${kind}`);
     }
@@ -2140,11 +2147,27 @@ export class CodexAppServerService extends EventEmitter {
     return await operation.promise;
   }
 
-  /**
-   * Release a thread and drain its relation set (D1): pending operations are
-   * cancelled, descendants unloaded, and the lease freed after confirmation.
-   */
-  async releaseThread(threadId = null) {
+  /** Refuse deletion while any work still belongs to this channel runtime. */
+  assertIdleForRelease() {
+    // Native descendants do not own FIFO operations. Their turns and resumes
+    // must finish before a release can retire the entire channel runtime.
+    if (this.busy || this.bootstrapInFlight || this.pendingInteractions.size > 0
+        || this.threadResumes.size > 0
+        || [...this.threads.values()].some(thread => thread.state === 'running' || thread.state === 'loading')
+        || this.queue.some(operation => !operation.settled)
+        || [...this.operations.values()].some(operation => !operation.settled)
+        || !['ready', 'stopped', 'failed'].includes(this.state) || this.idleReleaseInProgress) {
+      throw new ClassifiedError('SESSION_RUNNING', 'Codex session has pending work and cannot be deleted');
+    }
+  }
+
+  /** Release the relation set after native exit; deletion may require an idle owner. */
+  async releaseThread(threadId = null, { onlyIfIdle = false } = {}) {
+    if (onlyIfIdle) {
+      this.assertIdleForRelease();
+      // Set before yielding: a concurrent send must never revive this retiring owner.
+      this.idleReleaseInProgress = true;
+    }
     const target = threadId ?? this.rootThreadId;
     this.#setState('draining');
     try {

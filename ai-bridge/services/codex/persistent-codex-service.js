@@ -841,6 +841,11 @@ export async function codexReleaseThreadPersistent(stdinData) {
     return { released: null };
   }
   const entry = sessionServices.get(sessionKeyOf(stdinData));
+  const onlyIfIdle = stdinData?.onlyIfIdle === true;
+  // Reject before changing registry/count/title ownership. A busy channel must
+  // remain available to its active turn and to a later, non-destructive retry.
+  if (onlyIfIdle) service.assertIdleForRelease();
+  const releasing = service.releaseThread(stdinData?.threadId || null, { onlyIfIdle });
   entry?.titleAbort?.abort();
   // An in-flight count must not keep paging (or cold-start) a runtime this
   // release is retiring; release does not bump the runtime generation, so the
@@ -848,7 +853,7 @@ export async function codexReleaseThreadPersistent(stdinData) {
   nativeHistoryCounters.delete(service);
   retiredSessionServices.add(service);
   try {
-    return await service.releaseThread(stdinData?.threadId || null);
+    return await releasing;
   } finally {
     await entry?.titleTask;
     if (sessionServices.get(sessionKeyOf(stdinData))?.service === service) sessionServices.delete(sessionKeyOf(stdinData));
