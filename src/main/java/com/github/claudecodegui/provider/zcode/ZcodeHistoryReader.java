@@ -3,6 +3,7 @@ package com.github.claudecodegui.provider.zcode;
 import com.github.claudecodegui.bridge.BridgeDirectoryResolver;
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.bridge.ProcessManager;
 import com.github.claudecodegui.startup.BridgePreloader;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -151,48 +152,55 @@ public class ZcodeHistoryReader {
 
         LOG.info("[ZcodeHistoryReader] Running: " + String.join(" ", cmd));
 
-        Process process = pb.start();
+        ProcessManager processes = new ProcessManager();
+        String channelId = ProcessManager.newChannelId("zcode-history");
+        Process process = processes.startManagedProcess(channelId, pb);
+        try {
 
-        // Parameters go over stdin (ZCODE_USE_STDIN=true); close it so the child
-        // does not wait for more input.
-        try (OutputStreamWriter writer = new OutputStreamWriter(
-                process.getOutputStream(), StandardCharsets.UTF_8)) {
-            writer.write(gson.toJson(stdinPayload != null ? stdinPayload : new JsonObject()));
-            writer.flush();
-        } catch (Exception e) {
-            LOG.warn("[ZcodeHistoryReader] Failed to write stdin: " + e.getMessage());
-        }
+            // Parameters go over stdin (ZCODE_USE_STDIN=true); close it so the child
+            // does not wait for more input.
+            try (OutputStreamWriter writer = new OutputStreamWriter(
+                    process.getOutputStream(), StandardCharsets.UTF_8)) {
+                writer.write(gson.toJson(stdinPayload != null ? stdinPayload : new JsonObject()));
+                writer.flush();
+            } catch (Exception e) {
+                LOG.warn("[ZcodeHistoryReader] Failed to write stdin: " + e.getMessage());
+            }
 
-        // Drain stdout on a daemon thread (bounded) so a verbose child cannot
-        // deadlock on a full pipe buffer while this thread enforces the timeout.
-        StringBuilder output = new StringBuilder();
-        Thread readerThread = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    synchronized (output) {
-                        if (output.length() < MAX_OUTPUT_CHARS) {
-                            output.append(line).append('\n');
+            // Drain stdout on a daemon thread (bounded) so a verbose child cannot
+            // deadlock on a full pipe buffer while this thread enforces the timeout.
+            StringBuilder output = new StringBuilder();
+            Thread readerThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        synchronized (output) {
+                            if (output.length() < MAX_OUTPUT_CHARS) {
+                                output.append(line).append('\n');
+                            }
                         }
                     }
+                } catch (Exception ignored) {
                 }
-            } catch (Exception ignored) {
+            });
+            readerThread.setDaemon(true);
+            readerThread.start();
+
+            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                LOG.warn("[ZcodeHistoryReader] Timed out running zcode " + command);
+                return null;
             }
-        });
-        readerThread.setDaemon(true);
-        readerThread.start();
+            // Process exited; the reader hits EOF promptly — join for the final lines.
+            readerThread.join(2000L);
 
-        boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            LOG.warn("[ZcodeHistoryReader] Timed out running zcode " + command);
-            return null;
+            return extractJsonObject(output.toString());
+        } finally {
+            processes.interruptChannel(channelId);
+            processes.unregisterProcess(channelId, process);
         }
-        // Process exited; the reader hits EOF promptly — join for the final lines.
-        readerThread.join(2000L);
-
-        return extractJsonObject(output.toString());
     }
 
     /** Last parseable JSON object line (channel-manager may print diagnostics first). */
