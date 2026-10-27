@@ -3569,6 +3569,11 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             }
 
             @Override
+            public HistoryHandler getHistoryHandler() {
+                return historyHandler;
+            }
+
+            @Override
             public SessionLifecycleManager getSessionLifecycleManager() {
                 return sessionLifecycleManager;
             }
