@@ -22,8 +22,8 @@ button:focus-visible, select:focus-visible { outline: 3px solid #386de8; outline
 .office-local-pet { width: 100px; height: 80px; fill: #b4d2ff; stroke: #355583; stroke-width: 3; }
 .office-local-pet circle { fill: #355583; }
 .office-local-phase { margin-top: 8px; font-size: 12px; }
-.office-local-running { border-bottom-color: #477ce1; }
-.office-local-waiting_user, .office-local-waiting_permission { border-bottom-color: #c08b23; }
+.office-local-running, .office-local-thinking, .office-local-queued { border-bottom-color: #477ce1; }
+.office-local-waiting_user, .office-local-waiting_permission, .office-local-waiting_plan { border-bottom-color: #c08b23; }
 .office-local-succeeded { border-bottom-color: #39896b; }
 .office-local-failed { border-bottom-color: #b34959; }
 .office-local nav { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 24px; }

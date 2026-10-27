@@ -5,7 +5,7 @@ import { activateLocalOfficeSource, readLocalOffice, receiveLocalOfficeResponse,
 const scene = () => ({ schemaVersion: 1, instanceId: 'instance', connectionEpoch: 'epoch', watermark: 1, sampledAt: 1000, capacityReached: false,
   sources: [{ sourceKey: { instanceId: 'instance', contentHandleId: 'tab', bindingEpoch: 'binding' }, routeGeneration: 'route', routeStatus: 'AVAILABLE',
     metadata: { projectId: 'project', projectLabel: 'Project', tabLabel: 'Chat' }, provider: 'codex', modelLabel: 'model',
-    execution: { phase: 'WAITING_USER', pendingInteractionId: 'question' } }] });
+    execution: { phase: 'WAITING_USER', waitReason: 'QUESTION', pendingInteractionId: 'question', pendingInteractionCount: 1 } }] });
 let messages: Array<{ requestId: string; pageToken: string; action: string; payload: Record<string, unknown> }>;
 function reply(index = 0, data: unknown = scene(), overrides: Record<string, unknown> = {}) {
   receiveLocalOfficeResponse(JSON.stringify({ ...messages[index], success: true, data, ...overrides }));
@@ -28,6 +28,19 @@ describe('the local Office boundary', () => {
     const invalid = updateOfficeWindowPreferences(patch);
     reply(1, { revision: 'saved' });
     await expect(invalid).rejects.toThrow('OFFICE_RESPONSE_INVALID');
+  });
+  it('renders every backend activity and distinguishes permission and plan waits', () => {
+    for (const phase of ['QUEUED', 'THINKING', 'RUNNING']) {
+      const value = scene();
+      Object.assign(value.sources[0].execution, { phase, waitReason: 'NONE', pendingInteractionId: '', pendingInteractionCount: 0 });
+      expect(parseLocalOfficeSnapshot(value).sources[0].phase).toBe(phase);
+    }
+    for (const [reason, phase] of [['PERMISSION', 'WAITING_PERMISSION'], ['PLAN', 'WAITING_PLAN'], ['QUESTION', 'WAITING_USER']]) {
+      const value = scene(); value.sources[0].execution.waitReason = reason;
+      expect(parseLocalOfficeSnapshot(value).sources[0].phase).toBe(phase);
+    }
+    const invalid = scene(); invalid.sources[0].execution.pendingInteractionCount = 0;
+    expect(() => parseLocalOfficeSnapshot(invalid)).toThrow('OFFICE_RESPONSE_INVALID');
   });
   it('retains source, route and interaction identity without selecting by row index', async () => {
     const source = parseLocalOfficeSnapshot(scene()).sources[0];
