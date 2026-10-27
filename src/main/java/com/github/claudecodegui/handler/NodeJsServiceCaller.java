@@ -4,6 +4,7 @@ import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.bridge.NodeProcessRunner;
 import com.github.claudecodegui.bridge.ProcessManager;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.google.gson.Gson;
 
 import java.util.List;
 import java.util.Set;
@@ -17,6 +18,7 @@ import java.util.Set;
 public class NodeJsServiceCaller {
 
     private static final int PROCESS_TIMEOUT_SECONDS = 30;
+    private static final Gson GSON = new Gson();
 
     private static final Set<String> ALLOWED_FAVORITES_FUNCTIONS = Set.of(
         "loadFavorites", "toggleFavorite", "removeFavorite"
@@ -140,6 +142,52 @@ public class NodeJsServiceCaller {
     }
 
     /**
+     * Remove the favorites of several sessions in one Node process.
+     *
+     * @param sessionIds the deleted sessions
+     * @return {@code true} or {@code false} as printed by {@code removeFavorites}
+     */
+    public String callNodeJsRemoveFavorites(List<String> sessionIds) throws Exception {
+        String nodePath = context.getClaudeSDKBridge().getNodeExecutable();
+        String servicePath = resolveServicePath(nodePath,
+                context.getClaudeSDKBridge().getSdkTestDir().getAbsolutePath(), "favorites-service.cjs");
+        ProcessBuilder pb = buildNodeProcessBuilder(nodePath, batchScript("removeFavorites", "result"), servicePath);
+        pb.redirectErrorStream(true);
+        return executeLocked(FAVORITES_FILE_LOCK, pb, GSON.toJson(sessionIds));
+    }
+
+    /**
+     * Delete the custom titles of several sessions in one Node process.
+     *
+     * @param sessionIds the deleted sessions
+     * @return {@code {"success":true|false}}
+     */
+    public String callNodeJsDeleteTitles(List<String> sessionIds) throws Exception {
+        String nodePath = context.getClaudeSDKBridge().getNodeExecutable();
+        String servicePath = resolveServicePath(nodePath,
+                context.getClaudeSDKBridge().getSdkTestDir().getAbsolutePath(), "session-titles-service.cjs");
+        ProcessBuilder pb = buildNodeProcessBuilder(nodePath,
+                batchScript("deleteTitles", "{ success: result }"), servicePath);
+        pb.redirectErrorStream(true);
+        return executeLocked(TITLES_FILE_LOCK, pb, GSON.toJson(sessionIds));
+    }
+
+    /**
+     * Inline script that reads a JSON array of session ids from stdin. Stdin carries any batch
+     * size (an environment variable is capped at 32 KiB on Windows) and also reaches WSL node.
+     */
+    private static String batchScript(String functionName, String printedExpression) {
+        return "const { " + functionName + " } = require(process.argv[1]); "
+                + "let input = ''; "
+                + "process.stdin.setEncoding('utf8'); "
+                + "process.stdin.on('data', chunk => input += chunk); "
+                + "process.stdin.on('end', () => { "
+                + "  const result = " + functionName + "(JSON.parse(input)); "
+                + "  console.log(JSON.stringify(" + printedExpression + ")); "
+                + "});";
+    }
+
+    /**
      * Build a ProcessBuilder for running a Node.js inline script.
      * Delegates to {@link NodeDetector#buildNodeInlineCommand} so WSL prefixing is centralised.
      */
@@ -150,8 +198,12 @@ public class NodeJsServiceCaller {
     }
 
     private String executeLocked(Object fileLock, ProcessBuilder pb) throws Exception {
+        return executeLocked(fileLock, pb, null);
+    }
+
+    private String executeLocked(Object fileLock, ProcessBuilder pb, String stdinData) throws Exception {
         synchronized (fileLock) {
-            return executeNodeScript(pb);
+            return executeNodeScript(pb, stdinData);
         }
     }
 
@@ -177,10 +229,14 @@ public class NodeJsServiceCaller {
      * deadline is enforced.
      */
     String executeNodeScript(ProcessBuilder pb) throws Exception {
+        return executeNodeScript(pb, null);
+    }
+
+    private String executeNodeScript(ProcessBuilder pb, String stdinData) throws Exception {
         // L8 fix: register with ProcessManager so cleanupAllProcesses sees this child.
         ProcessManager processManager = context.getClaudeSDKBridge().getProcessManager();
         NodeProcessRunner.Result result =
-                NodeProcessRunner.run(pb, processManager, "node-service", null, processTimeoutSeconds);
+                NodeProcessRunner.run(pb, processManager, "node-service", stdinData, processTimeoutSeconds);
         if (result.exitCode() != 0) {
             throw new Exception("Node.js process exited with code " + result.exitCode() + ": " + result.output());
         }

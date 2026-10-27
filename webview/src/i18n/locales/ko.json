@@ -1132,7 +1132,8 @@
     "allowWithRule": "Allow with this command rule",
     "allowWithNetworkRule": "Allow with this network rule",
     "codexDeliveryRetry": "Codex가 선택을 받지 못했습니다({{error}}). 다시 선택해 주세요.",
-    "codexDeliveryFailed": "Codex가 선택을 받지 못했습니다({{error}}). 대화가 계속되지 않으면 중지를 누른 뒤 다시 보내 주세요."
+    "codexDeliveryFailed": "Codex가 선택을 받지 못했습니다({{error}}). 대화가 계속되지 않으면 중지를 누른 뒤 다시 보내 주세요.",
+    "codexDeliveryUnconfirmed": "Codex가 아직 선택을 받았는지 확인하지 못했습니다({{error}}). 선택이 여전히 적용될 수 있으니 다시 응답하지 마세요. 대화가 계속되지 않으면 중지를 누른 뒤 다시 보내 주세요."
   },
   "askUserQuestion": {
     "title": "Claude가 질문이 있습니다",
