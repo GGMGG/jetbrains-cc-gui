@@ -3,6 +3,7 @@ package com.github.claudecodegui.handler.history;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.NodeJsServiceCaller;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.dsh.DshHistoryReader;
 
 import com.github.claudecodegui.cache.SessionIndexCache;
@@ -71,7 +72,7 @@ class HistoryDeleteService {
             return;
         }
         quiesceActiveSessionForDeletion(
-                context.getSession(), Collections.singleton(sessionId), currentProvider)
+                context.getSession(), Collections.singleton(sessionId), currentProvider, context.getCodexSDKBridge())
                 .thenRunAsync(() -> {
                     try {
                         LOG.info("[HistoryHandler] ========== Delete session start ==========");
@@ -108,7 +109,7 @@ class HistoryDeleteService {
             return;
         }
 
-        quiesceActiveSessionForDeletion(context.getSession(), sessionIds, currentProvider)
+        quiesceActiveSessionForDeletion(context.getSession(), sessionIds, currentProvider, context.getCodexSDKBridge())
                 .thenRunAsync(() -> {
                     try {
                         LOG.info("[HistoryHandler] ========== Batch delete sessions start ==========");
@@ -170,16 +171,53 @@ class HistoryDeleteService {
             Collection<String> sessionIds,
             String currentProvider
     ) {
-        if (session == null || sessionIds == null || sessionIds.isEmpty()) {
+        return quiesceActiveSessionForDeletion(session, sessionIds, currentProvider, null);
+    }
+
+    static CompletableFuture<Void> quiesceActiveSessionForDeletion(
+            ClaudeSession session,
+            Collection<String> sessionIds,
+            String currentProvider,
+            CodexSDKBridge bridge
+    ) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
-        String activeSessionId = session.getSessionId();
-        if (activeSessionId == null
+        String activeSessionId = session == null || !Objects.equals(session.getProvider(), currentProvider)
+                ? null : session.getSessionId();
+        if ("codex".equals(currentProvider) && bridge != null) {
+            for (String target : sessionIds) {
+                if (bridge.hasCodexThreadOwner(target)
+                        && (!Objects.equals(target, activeSessionId) || !bridge.ownsCodexThread(target))) {
+                    return CompletableFuture.failedFuture(new java.io.IOException("SESSION_RUNNING"));
+                }
+            }
+        }
+        if (session == null || activeSessionId == null
                 || !sessionIds.contains(activeSessionId)
                 || !Objects.equals(session.getProvider(), currentProvider)) {
             return CompletableFuture.completedFuture(null);
         }
-        return session.interrupt();
+        String channelId = session.getChannelId();
+        String cwd = session.getCwd();
+        if (!"codex".equals(currentProvider)) {
+            return session.interrupt();
+        }
+        if (session.isBusy() || session.getState().getExecutionState().hasLiveTurn()) {
+            return CompletableFuture.failedFuture(new java.io.IOException("SESSION_RUNNING"));
+        }
+        if (bridge == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return bridge.releaseIdleCodexThread(channelId, cwd, activeSessionId).thenAccept(result -> {
+            if (result == null || result.has("error")) {
+                throw new java.util.concurrent.CompletionException(new java.io.IOException("SESSION_RUNNING"));
+            }
+            if (!Objects.equals(activeSessionId, session.getSessionId())
+                    || !Objects.equals(currentProvider, session.getProvider()) || !Objects.equals(channelId, session.getChannelId())) {
+                throw new java.util.concurrent.CompletionException(new java.io.IOException("SELECTED_DATA_CHANGED"));
+            }
+        });
     }
 
     static List<String> parseSessionIds(String content) {
