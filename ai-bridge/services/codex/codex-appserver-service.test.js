@@ -86,6 +86,26 @@ function eventsOf(events, kind) {
   return events.filter((event) => event.kind === kind);
 }
 
+test('native configuration and guardian warnings remain visible without finishing a running turn', async () => {
+  const fixture = makeService({ scenario: 'never-respond' });
+  const operation = fixture.service.enqueueOperation({ kind: 'send', markerPayload: { input: [{ type: 'text', text: 'Keep working' }] } });
+  await waitFor(() => operation.nativeTurnId, 1000, 'warning test turn');
+  const peer = fixture.getPeer();
+  try {
+    const client = fixture.getClient();
+    client.sanitizeDiagnostic = text => text.replaceAll('fixture-secret', '[redacted]');
+    for (const method of ['warning', 'configWarning', 'guardianWarning', 'deprecationNotice']) {
+      peer.notify({ method, params: { threadId: operation.threadId,
+        summary: 'Check native configuration', message: 'Check native configuration', details: 'fixture-secret is obsolete' } });
+    }
+    const warnings = eventsOf(fixture.events, 'nativeWarning');
+    assert.equal(warnings.length, 4);
+    assert.ok(warnings.every(event => event.payload.message.includes('Check native configuration')));
+    assert.ok(warnings.every(event => !event.payload.message.includes('fixture-secret')));
+    assert.equal(fixture.service.busy, true);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
 test('idle deletion refuses an active turn and its queued successor without interrupting either', async () => {
   const { service, dispatchCounts } = makeService({ scenario: 'never-respond' });
   const first = service.enqueueOperation({ kind: 'send', markerPayload: { input: [] } });

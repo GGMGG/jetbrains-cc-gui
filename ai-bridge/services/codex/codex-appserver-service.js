@@ -1157,6 +1157,17 @@ export class CodexAppServerService extends EventEmitter {
         // The native turn terminal, rather than a retry notice, releases its writer.
         break;
       }
+      case 'warning':
+      case 'configWarning':
+      case 'guardianWarning':
+      case 'deprecationNotice': {
+        const message = [params?.message ?? params?.summary, params?.details]
+          .filter(value => typeof value === 'string' && value.trim()).join('\n');
+        if (message) this.emit('codex_event', this.#envelope({ kind: 'nativeWarning',
+          threadId: params?.threadId ?? null, turnId: params?.turnId ?? null,
+          payload: { method, message: this.client?.sanitizeDiagnostic?.(message) ?? message } }));
+        break;
+      }
       case 'turn/started':
         this.#handleTurnStarted(params);
         break;
