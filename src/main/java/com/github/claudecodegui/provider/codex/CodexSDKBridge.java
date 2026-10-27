@@ -718,7 +718,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     params.add("rpcId", entry.rpcId() == null ? new JsonObject() : entry.rpcId().deepCopy());
                     params.add("result", result == null ? new JsonObject() : result.deepCopy());
                 });
-        if (!acknowledgement.has("error")) {
+        if (endsInteraction(acknowledgement)) {
             this.interactionRegistry.resolve(interactionKey);
         }
         return acknowledgement;
@@ -759,10 +759,24 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     params.addProperty("code", code);
                     params.addProperty("message", message == null ? "Codex interaction cancelled" : message);
                 });
-        if (!acknowledgement.has("error")) {
+        if (endsInteraction(acknowledgement)) {
             this.interactionRegistry.resolve(interactionKey);
         }
         return acknowledgement;
+    }
+
+    /**
+     * Whether a reply ack means the native request is over: it was delivered, or Codex reports it
+     * no longer waits for it. Keeping the latter registered would let a page refresh show a dialog
+     * that can never be answered. An unconfirmed (timed-out) reply may still land, so it stays.
+     */
+    static boolean endsInteraction(JsonObject acknowledgement) {
+        if (!acknowledgement.has("error")) {
+            return true;
+        }
+        return acknowledgement.has("code") && acknowledgement.get("code").isJsonPrimitive()
+                && CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(
+                        acknowledgement.get("code").getAsString());
     }
 
     private static boolean sameChannel(String first, String second) {
