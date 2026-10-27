@@ -1075,7 +1075,8 @@
     "allowWithRule": "Allow with this command rule",
     "allowWithNetworkRule": "Allow with this network rule",
     "codexDeliveryRetry": "Codex не получил ваш выбор ({{error}}). Выберите ещё раз.",
-    "codexDeliveryFailed": "Codex не получил ваш выбор ({{error}}). Если диалог не продолжается, нажмите «Стоп» и отправьте сообщение снова."
+    "codexDeliveryFailed": "Codex не получил ваш выбор ({{error}}). Если диалог не продолжается, нажмите «Стоп» и отправьте сообщение снова.",
+    "codexDeliveryUnconfirmed": "Codex ещё не подтвердил получение вашего выбора ({{error}}). Он ещё может вступить в силу, поэтому не отвечайте повторно; если диалог не продолжается, нажмите «Стоп» и отправьте сообщение снова."
   },
   "askUserQuestion": {
     "title": "У Claude есть вопросы к вам",
