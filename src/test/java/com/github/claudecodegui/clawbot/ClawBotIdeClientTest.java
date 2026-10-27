@@ -62,6 +62,20 @@ public class ClawBotIdeClientTest {
     }
 
     @Test
+    public void typedTransportFailuresArePreservedWithoutAcceptingProviderText() throws Exception {
+        for (String code : List.of("ILINK_SEND_REJECTED", "ILINK_SEND_RATE_LIMITED", "ILINK_SEND_RESULT_UNKNOWN", "provider text", "ILINK_bad")) {
+            try (var server = server(request -> {
+                JsonObject payload = new JsonObject();
+                payload.addProperty("code", code);
+                return response(request, "ERROR", payload);
+            }); var client = new ClawBotIdeClient(server.start(), "idea", 1)) {
+                String expected = code.matches("ILINK_[A-Z_]+") ? code : "CLAWBOT_IPC_RESULT_INVALID";
+                assertEquals(expected, assertThrows(IOException.class, () -> client.register(registration("a", "idea", 1))).getMessage());
+            }
+        }
+    }
+
+    @Test
     public void duplicateSnapshotsAreRejectedBeforeAnyNetworkDispatch() throws Exception {
         var requests = new AtomicInteger();
         try (var server = server(request -> { requests.incrementAndGet(); return handle(new ClawBotSessionRegistry(), request); });
