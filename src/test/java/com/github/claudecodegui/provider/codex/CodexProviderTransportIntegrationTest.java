@@ -511,7 +511,7 @@ public class CodexProviderTransportIntegrationTest {
     }
 
     private Fixture fixture(String scenario) throws Exception {
-        Path root = this.folder.newFolder(scenario).toPath();
+        Path root = Files.createTempDirectory(this.folder.getRoot().toPath(), scenario + "-");
         Path cwd = Files.createDirectory(root.resolve("workspace"));
         Path trace = root.resolve("trace.ndjson");
         AtomicReference<Process> process = new AtomicReference<>();
