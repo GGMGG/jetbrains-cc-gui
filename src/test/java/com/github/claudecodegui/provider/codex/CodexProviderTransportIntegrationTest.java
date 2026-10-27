@@ -8,6 +8,10 @@ import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.CallbackHandler;
 import com.github.claudecodegui.session.CodexMessageHandler;
 import com.github.claudecodegui.session.SessionState;
+import com.github.claudecodegui.clawbot.ClawBotInteractionExchange;
+import com.github.claudecodegui.clawbot.ClawBotTurnLifecycle;
+import com.github.claudecodegui.handler.PermissionHandler;
+import com.github.claudecodegui.handler.core.HandlerContext;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Rule;
@@ -32,6 +36,202 @@ import static org.junit.Assert.assertTrue;
 public class CodexProviderTransportIntegrationTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
+
+    @Test
+    public void clawBotAnswersNativeQuestionsBeforeAndAfterTheOriginalTurnAndClosesIdeDialog() throws Exception {
+        for (boolean completed : new boolean[]{false, true}) {
+            try (Fixture fixture = fixture(completed ? "async-question-completed" : "async-question")) {
+                CompletableFuture<SDKResult> send = fixture.send();
+                JsonObject question = fixture.awaitEvent("interactionRequested");
+                if (completed) assertTrue(send.get(15, TimeUnit.SECONDS).success);
+                HandlerContext context = questionContext(fixture);
+                PermissionHandler handler = new PermissionHandler(context);
+                ClawBotInteractionExchange exchange = new ClawBotInteractionExchange();
+                ClawBotTurnLifecycle turn = new ClawBotTurnLifecycle();
+                turn.bind(send.thenApply(result -> null));
+                CompletableFuture<Void> followUpTerminal = new CompletableFuture<>();
+                AtomicReference<String> followUp = new AtomicReference<>();
+                AtomicReference<CompletableFuture<Void>> followUpSend = new AtomicReference<>();
+                context.setCodexInteractionResponder((owner, response) -> turn.respond(response, owner::getSessionId, () -> true,
+                        input -> {
+                            followUp.set(input);
+                            CompletableFuture<Void> next = followUpTerminal.thenCompose(ignored -> fixture.bridge.sendMessage(
+                                    "fixture", input, owner.getSessionId(), fixture.cwd.toString(), List.of(), "default", "test-model",
+                                    "", "medium", null, fixture.callback, "answer-client", new JsonObject()))
+                                    .thenAccept(result -> assertTrue(result.success));
+                            followUpSend.set(next);
+                            return next;
+                        }, Runnable::run));
+                exchange.update(handler.getClawBotInteractions());
+                assertEquals("WAITING_USER", handler.getClawBotPendingInteractionPhase());
+                assertTrue(exchange.prompt().contains("Choose A, B or C"));
+                assertTrue(exchange.prompt().contains("2. B"));
+                if (completed) assertFalse(turn.finishIfReady(!handler.getClawBotInteractions().isEmpty()));
+                long before = handler.getClawBotInteractionRevision();
+                // A Webview reload rotates only its own token, not the authenticated WeChat question.
+                fixture.bridge.refreshCodexInteractionPage("fixture", 2L);
+                assertTrue(exchange.answer(exchange.revision(), "2", handler::answerClawBotInteraction).contains("已收到回答"));
+                JsonObject closed = fixture.awaitEvent("interactionResolved");
+                assertEquals(string(question, "interactionKey"), string(closed, "interactionKey"));
+                assertTrue(closed.get("resolved").getAsBoolean());
+                assertTrue(handler.getClawBotInteractionRevision() > before);
+                assertTrue(handler.getClawBotInteractions().isEmpty());
+                assertFalse(handler.answerClawBotInteraction(string(question, "interactionKey"), new JsonObject()));
+                if (completed) {
+                    assertTrue(followUp.get().endsWith("\nB"));
+                    assertFalse(turn.finishIfReady(false));
+                    followUpTerminal.complete(null);
+                    followUpSend.get().get(15, TimeUnit.SECONDS);
+                    assertTrue(fixture.callback.messages.stream().anyMatch(message -> message.contains("Choose A, B or C\\nB")));
+                } else {
+                    assertTrue(send.get(15, TimeUnit.SECONDS).success);
+                    assertEquals(null, followUp.get());
+                    assertTrue(fixture.callback.messages.stream().anyMatch(message -> message.contains("Choose A, B or C\\nB")));
+                }
+                assertTrue(turn.finishIfReady(false));
+            }
+        }
+    }
+
+    @Test
+    public void clawBotQuestionsAreScopedToChannelThreadProviderAndNativeDeadline() throws Exception {
+        try (Fixture fixture = fixture("async-question-completed")) {
+            fixture.send().get(15, TimeUnit.SECONDS);
+            JsonObject question = fixture.awaitEvent("interactionRequested");
+            HandlerContext context = questionContext(fixture);
+            PermissionHandler handler = new PermissionHandler(context);
+            ClaudeSession owner = context.getSession();
+            assertEquals(1, handler.getClawBotInteractions().size());
+            String key = handler.getClawBotInteractions().get(0).token();
+            owner.getState().setChannelId("other-channel");
+            assertTrue(handler.getClawBotInteractions().isEmpty());
+            assertFalse(handler.answerClawBotInteraction(key, new JsonObject()));
+            owner.getState().setChannelId("fixture");
+            owner.getState().setSessionId("other-thread");
+            assertTrue(handler.getClawBotInteractions().isEmpty());
+            owner.getState().setSessionId("th-test-root-0001");
+            owner.setProvider("claude");
+            assertTrue(handler.getClawBotInteractions().isEmpty());
+            owner.setProvider("codex");
+            JsonObject expired = question.deepCopy();
+            expired.getAsJsonObject("payload").getAsJsonObject("params").addProperty("deadlineAt", 1L);
+            fixture.bridge.handleCodexDaemonEvent("codex_event", expired);
+            assertTrue(handler.getClawBotInteractions().isEmpty());
+            assertFalse(handler.answerClawBotInteraction(key, new JsonObject()));
+        }
+    }
+
+    @Test
+    public void reusedNativeRpcIdsInvalidateOldWeChatAnswersAndDisposalHidesQuestions() throws Exception {
+        try (Fixture fixture = fixture("async-question-completed")) {
+            fixture.send().get(15, TimeUnit.SECONDS);
+            JsonObject question = fixture.awaitEvent("interactionRequested");
+            HandlerContext context = questionContext(fixture);
+            PermissionHandler handler = new PermissionHandler(context);
+            ClawBotInteractionExchange exchange = new ClawBotInteractionExchange();
+            exchange.update(handler.getClawBotInteractions());
+            String previous = exchange.revision();
+            String oldToken = handler.getClawBotInteractions().get(0).token();
+            fixture.bridge.handleCodexDaemonEvent("codex_event", question.deepCopy());
+            assertFalse(oldToken.equals(handler.getClawBotInteractions().get(0).token()));
+            assertFalse(handler.answerClawBotInteraction(oldToken, new JsonObject()));
+            exchange.update(handler.getClawBotInteractions());
+            assertFalse(previous.equals(exchange.revision()));
+            context.setDisposed(true);
+            assertTrue(handler.getClawBotInteractions().isEmpty());
+        }
+    }
+
+    @Test
+    public void concurrentIdeAndWeChatAnswersDispatchOnlyOneNativeDecision() throws Exception {
+        try (Fixture fixture = fixture("async-question")) {
+            CompletableFuture<SDKResult> send = fixture.send();
+            JsonObject question = fixture.awaitEvent("interactionRequested");
+            String remoteToken = fixture.bridge.getPendingCodexQuestions("fixture", "th-test-root-0001").get(0).remoteToken();
+            JsonObject answer = JsonParser.parseString("{\"answers\":{\"question-1\":{\"answers\":[\"A\"]}}}").getAsJsonObject();
+            CountDownLatch start = new CountDownLatch(1);
+            CompletableFuture<JsonObject> ide = CompletableFuture.supplyAsync(() -> {
+                await(start);
+                return fixture.bridge.respondCodexInteraction("fixture", fixture.cwd.toString(),
+                        string(question, "interactionKey"), string(question, "dialogToken"), answer);
+            });
+            CompletableFuture<JsonObject> weChat = CompletableFuture.supplyAsync(() -> {
+                await(start);
+                return fixture.bridge.respondCodexQuestion("fixture", fixture.cwd.toString(), "th-test-root-0001", remoteToken, answer);
+            });
+            start.countDown();
+            assertFalse(ide.get(15, TimeUnit.SECONDS).has("error") == weChat.get(15, TimeUnit.SECONDS).has("error"));
+            assertTrue(send.get(15, TimeUnit.SECONDS).success);
+            assertEquals(1, fixture.trace().stream().filter(event -> "turn/steer".equals(string(event, "method"))).count());
+        }
+    }
+
+    @Test
+    public void ideAnswerOrNativeResetInvalidatesTheWeChatQuestion() throws Exception {
+        for (boolean reset : new boolean[]{false, true}) {
+            try (Fixture fixture = fixture("async-question-completed")) {
+                fixture.send().get(15, TimeUnit.SECONDS);
+                JsonObject question = fixture.awaitEvent("interactionRequested");
+                PermissionHandler handler = new PermissionHandler(questionContext(fixture));
+                ClawBotInteractionExchange exchange = new ClawBotInteractionExchange();
+                exchange.update(handler.getClawBotInteractions());
+                String revision = exchange.revision();
+                if (reset) {
+                    JsonObject event = question.deepCopy();
+                    event.addProperty("kind", "runtimeReset");
+                    fixture.bridge.handleCodexDaemonEvent("codex_event", event);
+                } else {
+                    JsonObject answers = JsonParser.parseString("{\"answers\":{\"question-1\":{\"answers\":[\"C\"]}}}").getAsJsonObject();
+                    assertFalse(fixture.bridge.respondCodexInteraction("fixture", fixture.cwd.toString(),
+                            string(question, "interactionKey"), string(question, "dialogToken"), answers).has("error"));
+                }
+                exchange.update(handler.getClawBotInteractions());
+                assertEquals("", exchange.revision());
+                assertTrue(exchange.answer(revision, "1", handler::answerClawBotInteraction).contains("已处理"));
+            }
+        }
+    }
+
+    @Test
+    public void clawBotSupportsBlockingNativeQuestionsAndCancelsWithoutAnotherTurn() throws Exception {
+        for (String scenario : new String[]{"blocking-user-input", "async-question-completed"}) {
+            for (boolean cancel : new boolean[]{false, true}) {
+                if (scenario.equals("async-question-completed") && !cancel) continue;
+                try (Fixture fixture = fixture(scenario)) {
+                    CompletableFuture<SDKResult> send = fixture.send();
+                    fixture.awaitEvent("interactionRequested");
+                    if (scenario.equals("async-question-completed")) send.get(15, TimeUnit.SECONDS);
+                    PermissionHandler handler = new PermissionHandler(questionContext(fixture));
+                    ClawBotInteractionExchange exchange = new ClawBotInteractionExchange();
+                    exchange.update(handler.getClawBotInteractions());
+                    assertTrue(exchange.prompt().contains("Choose A, B or C"));
+                    assertTrue(exchange.answer(exchange.revision(), cancel ? "取消回答" : "C", handler::answerClawBotInteraction)
+                            .contains(cancel ? "已取消回答" : "已收到回答"));
+                    assertTrue(send.get(15, TimeUnit.SECONDS).success);
+                    assertTrue(handler.getClawBotInteractions().isEmpty());
+                    if (cancel) {
+                        assertEquals(1, fixture.trace().stream().filter(event -> "turn/start".equals(string(event, "method"))).count());
+                    } else if (scenario.equals("blocking-user-input")) {
+                        assertTrue(fixture.callback.messages.stream().anyMatch(message -> message.contains("choice") && message.contains("C")));
+                    }
+                }
+            }
+        }
+    }
+
+    private static HandlerContext questionContext(Fixture fixture) {
+        HandlerContext context = new HandlerContext(null, null, fixture.bridge, null, new HandlerContext.JsCallback() {
+            @Override public void callJavaScript(String functionName, String... args) { }
+            @Override public String escapeJs(String value) { return value; }
+        });
+        ClaudeSession owner = new ClaudeSession(null, null, fixture.bridge, null);
+        owner.setProvider("codex");
+        owner.getState().setChannelId("fixture");
+        owner.getState().setSessionId("th-test-root-0001");
+        owner.getState().setCwd(fixture.cwd.toString());
+        context.setSession(owner);
+        return context;
+    }
 
     @Test
     public void concurrentPageAnswersDispatchOnlyOneNativeDecision() throws Exception {
@@ -423,7 +623,7 @@ public class CodexProviderTransportIntegrationTest {
     }
 
     private Fixture fixture(String scenario) throws Exception {
-        Path root = this.folder.newFolder(scenario).toPath();
+        Path root = Files.createTempDirectory(this.folder.getRoot().toPath(), scenario + "-");
         Path cwd = Files.createDirectory(root.resolve("workspace"));
         Path trace = root.resolve("trace.ndjson");
         AtomicReference<Process> process = new AtomicReference<>();
