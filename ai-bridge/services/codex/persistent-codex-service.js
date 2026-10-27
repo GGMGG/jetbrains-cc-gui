@@ -724,7 +724,9 @@ export async function codexReadThreadPersistent(stdinData) {
 export function projectThreadFileChanges(thread) {
   return (thread?.turns ?? []).flatMap(turn => (turn.items ?? [])
     .filter(item => item.type === 'fileChange' || item.type === 'file_change')
-    .flatMap(item => projectCodexItemMessages(item, { threadId: thread.id, turnId: turn.id, authoritative: true })));
+    .flatMap(item => projectCodexItemMessages(item, { threadId: thread.id, turnId: turn.id, authoritative: true }))
+    // This endpoint is a snapshot ledger, while chat/history also need the paired tool receipts.
+    .filter(message => message.type === 'assistant'));
 }
 
 export async function codexListModelsPersistent(stdinData) {
@@ -749,13 +751,13 @@ export async function codexRespondInteractionPersistent(stdinData) {
   if (!service) {
     throw new Error('codex runtime is not connected for this session');
   }
-  const replied = service.respondInteraction(stdinData.rpcId, stdinData.result ?? {});
+  const replied = await service.respondInteraction(stdinData.rpcId, stdinData.result ?? {});
   if (!replied) {
     const error = new Error('invalid native Codex interaction result');
     error.code = 'INVALID_INTERACTION_RESULT';
     throw error;
   }
-  return { replied: true };
+  return typeof replied === 'object' ? replied : { replied: true };
 }
 
 /** Control operation (bypasses queue): typed error reply. */
