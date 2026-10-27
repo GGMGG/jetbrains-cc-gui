@@ -57,3 +57,9 @@ The frontend's 48 affected cases, test TypeScript compilation and production
 build pass. These checks exercise disposable fixtures; no account, installed AI
 CLI or live user configuration is required. macOS, Linux and WSL relocation
 remain unsupported in both the backend and UI.
+
+After integrating official base `c4772b39`, the full Java suite passes: 2,092
+cases discovered, 2,076 passed and 16 skipped, with no failures or errors;
+Checkstyle passes. The subsequent bridge refusal correction passes 35 affected
+frontend cases and the production build. An explicit false host dispatch now
+returns false to the migration controls while legacy void bridges still work.
