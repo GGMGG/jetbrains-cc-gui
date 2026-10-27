@@ -44,6 +44,11 @@ final class ClawBotIpcJson {
         return parseValue(bytes, 256, 512, 2048);
     }
 
+    static JsonElement parseOutbox(byte[] bytes) throws IOException {
+        if (bytes.length > 24 * 1024 * 1024) { throw new IOException("CLAWBOT_OUTBOX_JSON_INVALID"); }
+        return parseValue(bytes, 256, 512, 512);
+    }
+
     private static JsonElement parseValue(byte[] bytes, int fieldLimit, int nameLimit, int arrayLimit) throws IOException {
         try {
             String json = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
