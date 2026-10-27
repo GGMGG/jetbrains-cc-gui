@@ -111,6 +111,8 @@ public class SessionState {
     // Claims and releases share messageStateLock with history application.
     private volatile Object loadingOwner;
     private volatile Object turnOwner = new Object();
+    private volatile SessionExecutionState executionState = new SessionExecutionState();
+
 
     // Message history is also updated by daemon reader and history-loader threads.
     // Every message callback and history replacement takes this lock so a transport
@@ -181,11 +183,16 @@ public class SessionState {
     /** Starts a send before any previous provider process has finished shutting down. */
     public Object beginTurn() {
         synchronized (messageStateLock) {
+            // Preserve an unfinished predecessor as a detached source, without changing cancellation policy.
+            if (executionState.hasLiveTurn()) {
+                rebindExecution();
+            }
             turnOwner = new Object();
             busy = true;
             loading = true;
             loadingOwner = null;
             error = null;
+            executionState.beginTurn();
             return turnOwner;
         }
     }
@@ -196,6 +203,33 @@ public class SessionState {
 
     public boolean isCurrentTurn(Object owner) {
         return turnOwner == owner;
+    }
+
+    public SessionExecutionState getExecutionState() {
+        return executionState;
+    }
+
+    public SessionExecutionState.Snapshot getExecutionSnapshot() {
+        return executionState.snapshot();
+    }
+
+    public SessionExecutionState.Turn executionTurnForOwner(Object owner) {
+        synchronized (messageStateLock) {
+            return isCurrentTurn(owner) ? executionState.currentTurn() : null;
+        }
+    }
+
+    public SessionExecutionOwnership executionOwnershipForOwner(Object owner) {
+        synchronized (messageStateLock) {
+            SessionExecutionState.Turn turn = executionTurnForOwner(owner);
+            return turn == null ? null : new SessionExecutionOwnership(executionState, turn);
+        }
+    }
+
+    public SessionExecutionOwnership currentExecutionOwnership() {
+        synchronized (messageStateLock) {
+            return executionOwnershipForOwner(turnOwner);
+        }
     }
 
     public boolean isLoading() {
@@ -308,7 +342,26 @@ public class SessionState {
 
     // Setters
     public void setSessionId(String sessionId) {
-        this.sessionId = sessionId;
+        synchronized (messageStateLock) {
+            if (!java.util.Objects.equals(this.sessionId, sessionId)) {
+                // Native recovery may replace a provider ID mid-turn without replacing its actor.
+                // Initial identity discovery also preserves an already completed turn's terminal event.
+                if (!executionState.hasLiveTurn() && (this.sessionId != null || executionState.currentTurn() == null)) {
+                    rebindExecution();
+                }
+                this.sessionId = sessionId;
+            }
+        }
+    }
+
+    /** History selection is a binding change even before the first provider-assigned ID arrives. */
+    public void setRestoredSessionId(String sessionId) {
+        synchronized (messageStateLock) {
+            if (!java.util.Objects.equals(this.sessionId, sessionId)) {
+                rebindExecution();
+                this.sessionId = sessionId;
+            }
+        }
     }
 
     public void setChannelId(String channelId) {
@@ -408,7 +461,9 @@ public class SessionState {
     }
 
     public void setModel(String model) {
-        this.model = normalizeRetiredModelId(model);
+        synchronized (messageStateLock) {
+            this.model = normalizeRetiredModelId(model);
+        }
     }
 
     /**
@@ -422,7 +477,9 @@ public class SessionState {
      * {@link #setModel(String)} so stale built-in ids still self-heal.</p>
      */
     public void setModelVerbatim(String model) {
-        this.model = model == null ? null : model.trim();
+        synchronized (messageStateLock) {
+            this.model = model == null ? null : model.trim();
+        }
     }
 
     /**
@@ -473,7 +530,12 @@ public class SessionState {
     }
 
     public void setProvider(String provider) {
-        this.provider = provider;
+        synchronized (messageStateLock) {
+            if (!java.util.Objects.equals(this.provider, provider)) {
+                rebindExecution();
+                this.provider = provider;
+            }
+        }
     }
 
     public void setReasoningEffort(String reasoningEffort) {
@@ -499,17 +561,29 @@ public class SessionState {
     }
 
     public void setRuntimeSessionEpoch(String runtimeSessionEpoch) {
-        if (runtimeSessionEpoch == null || runtimeSessionEpoch.trim().isEmpty()) {
-            this.runtimeSessionEpoch = UUID.randomUUID().toString();
-            return;
+        synchronized (messageStateLock) {
+            String epoch = runtimeSessionEpoch == null || runtimeSessionEpoch.trim().isEmpty()
+                    ? UUID.randomUUID().toString() : runtimeSessionEpoch;
+            if (!this.runtimeSessionEpoch.equals(epoch)) {
+                rebindExecution();
+                this.runtimeSessionEpoch = epoch;
+            }
         }
-        this.runtimeSessionEpoch = runtimeSessionEpoch;
     }
 
     public String rotateRuntimeSessionEpoch() {
         String newEpoch = UUID.randomUUID().toString();
-        this.runtimeSessionEpoch = newEpoch;
+        setRuntimeSessionEpoch(newEpoch);
         return newEpoch;
+    }
+
+    private void rebindExecution() {
+        executionState = new SessionExecutionState();
+        turnOwner = new Object();
+        busy = false;
+        if (loadingOwner == null) {
+            loading = false;
+        }
     }
 
     public void setSlashCommands(List<String> slashCommands) {
