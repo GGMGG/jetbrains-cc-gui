@@ -56,6 +56,16 @@ final class PetOfficeWindowPreferenceController {
     /** The caller enters on its bounded IO worker; no IO worker waits for the EDT. */
     void update(PetOfficeWindowPreferences.Patch patch, BooleanSupplier active, WindowTarget target,
                 Consumer<Runnable> ui, Consumer<Runnable> io, Consumer<Reply> completed) {
+        update(patch.expectedRevision(), previous -> PetOfficeWindowPreferences.changed(previous, patch), active, target, ui, io, completed);
+    }
+
+    void updateFull(String expectedRevision, PetOfficePreferencesStore.Preferences preferences, BooleanSupplier active, WindowTarget target,
+                    Consumer<Runnable> ui, Consumer<Runnable> io, Consumer<Reply> completed) {
+        update(expectedRevision, previous -> preferences, active, target, ui, io, completed);
+    }
+
+    private void update(String expectedRevision, java.util.function.UnaryOperator<PetOfficePreferencesStore.Preferences> change,
+                        BooleanSupplier active, WindowTarget target, Consumer<Runnable> ui, Consumer<Runnable> io, Consumer<Reply> completed) {
         if (!updating.compareAndSet(false, true)) {
             completed.accept(new Reply(null, "OFFICE_PREFERENCES_BUSY"));
             return;
@@ -68,7 +78,7 @@ final class PetOfficeWindowPreferenceController {
             }
             synchronized (lease) {
                 previous = store.read().state();
-                saved = store.update(patch.expectedRevision(), PetOfficeWindowPreferences.changed(previous.preferences(), patch), null, lease);
+                saved = store.update(expectedRevision, change.apply(previous.preferences()), null, lease);
             }
         } catch (IOException | RuntimeException failure) {
             finish(completed, code(failure));

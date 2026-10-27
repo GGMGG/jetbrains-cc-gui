@@ -135,6 +135,7 @@ public final class PetOfficeLocalService implements Disposable {
             }
             var store = new PetOfficePreferencesStore(directory);
             Page page = new Page(acquired, new PetOfficeWindowPreferenceController(store, acquired, store.read()));
+            page.live = livePage(page, directory);
             attempted = page;
             pendingPage = page;
             var runtime = PetOfficeRuntimeService.getInstance();
@@ -216,10 +217,24 @@ public final class PetOfficeLocalService implements Disposable {
             current = page;
             String language = Locale.getDefault().getLanguage().startsWith("zh") ? "zh" : "en";
             String bootstrap = "<script>window.__PET_OFFICE_PAGE__=" + JSON.toJson(page.token)
+                    + ";window.__PET_OFFICE_BOOTSTRAP__=" + bootstrap(page, language)
                     + ";window.__PET_OFFICE_LANGUAGE__=" + JSON.toJson(language)
                     + ";window.__PET_OFFICE_SEND__=function(request){" + page.query.inject("request") + ";return true;};</script>";
             page.browser.loadHTML(html.replace("<!-- OFFICE_BOOTSTRAP -->", bootstrap), page.url);
             page.window.setVisible(page.initiallyVisible);
+            page.sceneRefresh = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(() -> {
+                if (valid(page) && page.refreshQueued.compareAndSet(false, true)) {
+                    if (!submit(() -> {
+                        try {
+                            page.live.refresh();
+                        } finally {
+                            page.refreshQueued.set(false);
+                        }
+                    })) {
+                        page.refreshQueued.set(false);
+                    }
+                }
+            }, 500, 500, TimeUnit.MILLISECONDS);
         } catch (Exception | LinkageError failure) {
             if (current == page) {
                 current = null;
@@ -240,6 +255,7 @@ public final class PetOfficeLocalService implements Disposable {
         try {
             request = PetOfficeLocalProtocol.parse(message, page.token);
         } catch (IOException invalid) {
+            receiveLive(page, message);
             return null;
         }
         if (page.pending.incrementAndGet() > 8) {
@@ -253,6 +269,74 @@ public final class PetOfficeLocalService implements Disposable {
             respond(page, request, null, "OFFICE_BUSY");
         }
         return null;
+    }
+
+    private void receiveLive(Page page, String message) {
+        try {
+            var data = PetOfficeLiveMessage.parse(message);
+            if (!data.pageGeneration().equals(page.token) || page.pending.incrementAndGet() > 8) {
+                if (data.pageGeneration().equals(page.token)) { page.pending.decrementAndGet(); }
+                return;
+            }
+            long receivedAt = System.nanoTime();
+            if (!submit(() -> {
+                try {
+                    if (!valid(page)) { return; }
+                    switch (data.command()) {
+                        case "hide":
+                            onEdt(() -> { if (valid(page)) { changePresentation(page, true, false, () -> page.window.setVisible(false)); } });
+                            break;
+                        case "exit":
+                            exitOwned(page.lease);
+                            break;
+                        case "navigate":
+                            var request = new PetOfficeTabNavigator.Request(data.field("requestId"), data.field("sourceKey"),
+                                    data.field("routeGeneration"), data.field("interactionId"));
+                            PetOfficeRuntimeService.getInstance().navigate(page.token, request, () -> valid(page),
+                                    result -> page.live.result(request.requestId(), result.name()), receivedAt);
+                            break;
+                        default:
+                            page.live.receive(data);
+                            if (data.command().equals("ready")) { onEdt(() -> { if (valid(page)) { page.live.visible(page.window.isVisible()); } }); }
+                    }
+                } catch (IOException | RuntimeException unavailable) {
+                    // Invalid commands and retired pages never gain navigation, storage or window authority.
+                } finally { page.pending.decrementAndGet(); }
+            })) { page.pending.decrementAndGet(); }
+        } catch (IOException invalid) { /* The strict live protocol has no generic command fallback. */ }
+    }
+
+    private PetOfficeLivePage livePage(Page page, Path directory) {
+        var sources = new PetOfficeLivePage.Sources() {
+            public PetOfficeParticipantRegistry.View view() throws IOException { return PetOfficeRuntimeService.getInstance().view(); }
+            public java.util.Map<String, PetOfficeAppearanceService.Appearance> appearances(PetOfficeSessionRegistry.CompleteSnapshot snapshot) throws IOException {
+                return PetOfficeRuntimeService.getInstance().appearances(snapshot);
+            }
+            public byte[] bytes(String key, PetOfficeAppearanceService.Appearance appearance, java.util.function.BooleanSupplier allowed) throws IOException {
+                return PetOfficeRuntimeService.getInstance().assetBytes(key, appearance, allowed);
+            }
+        };
+        var appearances = new PetOfficeAppearanceService(
+                () -> PetOfficeAssetRoot.resolvePets(Path.of(com.github.claudecodegui.util.PlatformUtils.getHomeDirectory())),
+                () -> com.github.claudecodegui.bridge.AiDataProcessGate.getInstance().tryAcquireReadPermit());
+        return new PetOfficeLivePage(page.token, directory, page.lease, sources, () -> valid(page), page.preferences,
+                preferences -> {
+                    page.window.setTitle(windowTitle(preferences));
+                    page.window.setAlwaysOnTop(preferences.topmost());
+                },
+                appearances, PetOfficeLocalService::onEdt, action -> { if (!submit(action)) { throw new RejectedExecutionException(); } },
+                (callback, json) -> { if (valid(page)) { page.browser.getCefBrowser().executeJavaScript("window." + callback + "?.(" + json + ");", page.url, 0); } });
+    }
+
+    private static String bootstrap(Page page, String language) {
+        JsonObject value = new JsonObject();
+        value.addProperty("pageGeneration", page.token);
+        value.addProperty("language", language);
+        value.addProperty("mode", "live");
+        value.addProperty("protocolVersion", PetOfficeSceneProtocol.VERSION);
+        value.addProperty("alwaysOnTop", page.preferences.state().preferences().topmost());
+        value.add("sharedPreferences", JSON.toJsonTree(page.preferences.state()));
+        return JSON.toJson(value);
     }
 
     private void dispatch(Page page, PetOfficeLocalProtocol.Request request, long receivedAt) {
@@ -406,6 +490,7 @@ public final class PetOfficeLocalService implements Disposable {
             if (valid(page) && revision == page.presentationRevision) {
                 if (error.isEmpty()) {
                     apply.run();
+                    page.live.visible(visible);
                 } else {
                     unavailable();
                 }
@@ -420,6 +505,7 @@ public final class PetOfficeLocalService implements Disposable {
         if (page.boundsSave != null) {
             page.boundsSave.cancel(false);
         }
+        if (page.sceneRefresh != null) { page.sceneRefresh.cancel(false); }
         Rectangle finalBounds = normalBounds(page.window);
         try {
             PetOfficeRuntimeService.getInstance().closePage(page.token);
@@ -445,6 +531,7 @@ public final class PetOfficeLocalService implements Disposable {
                 }
                 Runnable finish = () -> {
                     try {
+                        if (page.live != null) { page.live.close(); }
                         if (finalBounds != null && page.lease.isValid()) {
                             page.preferences.saveBounds(bounds(finalBounds));
                         }
@@ -563,6 +650,9 @@ public final class PetOfficeLocalService implements Disposable {
         private JFrame window;
         private CefRequestHandlerAdapter requestHandler;
         private ScheduledFuture<?> boundsSave;
+        private ScheduledFuture<?> sceneRefresh;
+        private final AtomicBoolean refreshQueued = new AtomicBoolean();
+        private PetOfficeLivePage live;
         private Rectangle lastNormalBounds;
 
         private Page(PetOfficeRuntimeLease lease, PetOfficeWindowPreferenceController preferences) {
