@@ -18,13 +18,17 @@ import java.nio.file.StandardOpenOption;
 public final class HookToggleStateStore {
 
     private static final Logger LOG = Logger.getInstance(HookToggleStateStore.class);
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().serializeNulls().create();
     private static final String STATE_FILE_NAME = ".ccgui-hooks-state.json";
 
+    private final Path userHome;
     private final Path stateFile;
+    private final Path legacyFile;
 
-    public HookToggleStateStore(Path providerDirectory) {
-        this.stateFile = providerDirectory.toAbsolutePath().normalize().resolve(STATE_FILE_NAME);
+    public HookToggleStateStore(Path userHome, Path providerDirectory) {
+        this.userHome = userHome.toAbsolutePath().normalize();
+        this.stateFile = HookLocalStorage.directory(this.userHome, "state", providerDirectory).resolve(STATE_FILE_NAME);
+        this.legacyFile = providerDirectory.toAbsolutePath().normalize().resolve(STATE_FILE_NAME);
     }
 
     public Path getStateFile() {
@@ -41,14 +45,15 @@ public final class HookToggleStateStore {
     }
 
     public JsonObject readStrict() throws IOException {
-        if (!Files.exists(stateFile)) {
+        Path readable = Files.exists(stateFile, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? stateFile : legacyFile;
+        if (!Files.exists(readable, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             return emptyState();
         }
-        if (!Files.isRegularFile(stateFile) || Files.isSymbolicLink(stateFile)) {
+        if (!Files.isRegularFile(readable) || Files.isSymbolicLink(readable)) {
             throw new IOException("Invalid Hook toggle state file");
         }
         try {
-            JsonObject state = JsonParser.parseString(Files.readString(stateFile, StandardCharsets.UTF_8))
+            JsonObject state = JsonParser.parseString(Files.readString(readable, StandardCharsets.UTF_8))
                     .getAsJsonObject();
             if (!state.has("schemaVersion") || state.get("schemaVersion").getAsInt() != 1
                     || !state.has("disabledClaude") || !state.get("disabledClaude").isJsonArray()
@@ -62,11 +67,12 @@ public final class HookToggleStateStore {
     }
 
     public void write(JsonObject state) throws IOException {
-        Files.createDirectories(stateFile.getParent());
+        HookLocalStorage.prepare(userHome, stateFile.getParent());
         Path temporary = Files.createTempFile(stateFile.getParent(), ".ccgui-hooks-state-", ".tmp");
         try {
             Files.writeString(temporary, GSON.toJson(state), StandardCharsets.UTF_8,
                     StandardOpenOption.TRUNCATE_EXISTING);
+            HookLocalStorage.restrictFile(temporary);
             try {
                 Files.move(temporary, stateFile, StandardCopyOption.ATOMIC_MOVE,
                         StandardCopyOption.REPLACE_EXISTING);

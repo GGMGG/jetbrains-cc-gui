@@ -37,10 +37,13 @@ public final class HookMutationService {
     private static final long MAX_SOURCE_BYTES = 512L * 1024L;
     private static final Pattern SOURCE_CONTROL_CHARACTERS = Pattern.compile("[\\u0000\\u0008\\u000b\\u000c\\u000e-\\u001f]");
 
+    static final int MAX_BACKUPS = 20;
+    private final Path userHome;
     private final HookPathPolicy pathPolicy;
 
     public HookMutationService(Path userHome) {
-        this.pathPolicy = new HookPathPolicy(userHome.toAbsolutePath().normalize());
+        this.userHome = userHome.toAbsolutePath().normalize();
+        this.pathPolicy = new HookPathPolicy(this.userHome);
     }
 
     public JsonObject read(String projectRoot, String location) {
@@ -85,10 +88,10 @@ public final class HookMutationService {
                 return failure(formatError);
             }
             Path lockDirectory = backupDirectory(target);
-            Files.createDirectories(lockDirectory);
+            HookLocalStorage.prepare(userHome, lockDirectory);
             Path lockPath = lockDirectory.resolve(".ccgui-hooks.lock");
             try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE,
-                    StandardOpenOption.WRITE)) {
+                    StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
                 FileLock lock;
                 try {
                     lock = channel.tryLock();
@@ -104,6 +107,7 @@ public final class HookMutationService {
                     }
                     Path backup = createBackup(target);
                     replaceAtomically(target, content);
+                    pruneBackups(target);
                     JsonObject result = success();
                     result.addProperty("location", target.toString());
                     result.addProperty("revision", revision(target));
@@ -123,6 +127,9 @@ public final class HookMutationService {
         try {
             Path project = normalizeProject(projectRoot);
             Path target = validateTarget(project, location);
+            if (target != null) {
+                HookLocalStorage.prepare(userHome, backupDirectory(target));
+            }
             Path backup = validateBackup(target, backupPath);
             if (target == null || backup == null || !Files.isRegularFile(backup)) {
                 return failure("INVALID_BACKUP_PATH");
@@ -180,22 +187,24 @@ public final class HookMutationService {
         }
     }
 
-    private static Path validateBackup(Path target, String backupPath) {
+    private Path validateBackup(Path target, String backupPath) {
         if (target == null || backupPath == null || backupPath.isBlank()) {
             return null;
         }
         Path backupDirectory = backupDirectory(target).toAbsolutePath().normalize();
         Path backup = Paths.get(backupPath).toAbsolutePath().normalize();
-        return backup.startsWith(backupDirectory) ? backup : null;
+        return backupDirectory.equals(backup.getParent()) && backup.getFileName().toString().endsWith(".bak")
+                && Files.isRegularFile(backup, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? backup : null;
     }
 
-    private static Path createBackup(Path target) throws IOException {
+    private Path createBackup(Path target) throws IOException {
         Path backupDirectory = backupDirectory(target);
-        Files.createDirectories(backupDirectory);
+        HookLocalStorage.prepare(userHome, backupDirectory);
         String name = System.currentTimeMillis() + "-" + UUID.randomUUID() + "-"
                 + target.getFileName() + ".bak";
         Path backup = backupDirectory.resolve(name);
-        Files.copy(target, backup, StandardCopyOption.COPY_ATTRIBUTES);
+        Files.copy(target, backup);
+        HookLocalStorage.restrictFile(backup);
         return backup;
     }
 
@@ -217,19 +226,22 @@ public final class HookMutationService {
         }
     }
 
-    private static Path backupDirectory(Path target) {
-        Path current = target.getParent();
-        while (current != null) {
-            Path fileName = current.getFileName();
-            if (fileName != null && "hooks".equalsIgnoreCase(fileName.toString())) {
-                Path providerDirectory = current.getParent();
-                if (providerDirectory != null) {
-                    return providerDirectory.resolve(".ccgui-hooks-backups");
-                }
+    private Path backupDirectory(Path target) {
+        return HookLocalStorage.directory(userHome, "backups", target);
+    }
+
+    private void pruneBackups(Path target) {
+        try (var files = Files.list(backupDirectory(target))) {
+            var backups = files.filter(path -> Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> path.getFileName().toString().endsWith(".bak"))
+                    .sorted(java.util.Comparator.comparing((Path path) -> path.getFileName().toString()).reversed())
+                    .toList();
+            for (int index = MAX_BACKUPS; index < backups.size(); index++) {
+                Files.deleteIfExists(backups.get(index));
             }
-            current = current.getParent();
+        } catch (IOException error) {
+            LOG.debug("[HookMutation] Backup retention could not complete", error);
         }
-        return target.getParent().resolve(".ccgui-hooks-backups");
     }
 
     private static void copySecurityAttributes(Path source, Path target) {

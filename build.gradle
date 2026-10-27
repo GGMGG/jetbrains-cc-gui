@@ -148,6 +148,8 @@ dependencies {
 }
 
 intellijPlatform {
+    // Match the disabled instrumentation tasks when resolving test artifacts.
+    instrumentCode = false
     pluginVerification {
         // Keep local verification focused on binary/internal API compatibility
         // issues that match Marketplace rejection criteria.
@@ -190,6 +192,11 @@ sourceSets {
             }
         }
     }
+}
+
+tasks.withType(Test).configureEach {
+    // Configuration fixtures must never inherit the host CLI data directory.
+    environment 'CODEX_HOME', ''
 }
 
 tasks.withType(JavaCompile).configureEach {

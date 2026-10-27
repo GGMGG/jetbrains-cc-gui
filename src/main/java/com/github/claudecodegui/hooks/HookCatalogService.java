@@ -193,7 +193,8 @@ public final class HookCatalogService {
         JsonObject object = value.getAsJsonObject();
         String command = primitiveString(object, "command");
         JsonArray issues = new JsonArray();
-        if (command == null || command.isBlank()) {
+        if (("command".equals(primitiveString(object, "type")) || !object.has("type"))
+                && (command == null || command.isBlank())) {
             issues.add("COMMAND_MISSING");
         }
         if (!object.has("type")) {
@@ -297,7 +298,7 @@ public final class HookCatalogService {
     ) {
         JsonArray entries;
         try {
-            entries = new HookToggleStateStore(settingsPath.getParent()).readStrict()
+            entries = new HookToggleStateStore(userHome, settingsPath.getParent()).readStrict()
                     .getAsJsonArray("disabledClaude");
         } catch (IOException e) {
             addSourceIssue(source, "TOGGLE_STATE_INVALID");
@@ -347,7 +348,7 @@ public final class HookCatalogService {
     ) {
         JsonArray entries;
         try {
-            entries = new HookToggleStateStore(directory.getParent()).readStrict()
+            entries = new HookToggleStateStore(userHome, directory.getParent()).readStrict()
                     .getAsJsonArray("disabledScripts");
         } catch (IOException e) {
             addSourceIssue(source, "TOGGLE_STATE_INVALID");

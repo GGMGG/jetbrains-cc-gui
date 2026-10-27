@@ -24,6 +24,44 @@ public class HookMutationServiceTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void projectBackupsStayPrivateEvenWhenAnAncestorIsNamedHooks() throws Exception {
+        Path home = temporaryFolder.newFolder("home").toPath();
+        Path project = Files.createDirectories(temporaryFolder.getRoot().toPath().resolve("hooks/team/project"));
+        Path settings = Files.createDirectories(project.resolve(".claude")).resolve("settings.json");
+        String original = "{\"env\":{\"PRIVATE_FIXTURE\":\"private value\"},\"hooks\":{}}";
+        Files.writeString(settings, original);
+        HookMutationService service = new HookMutationService(home);
+        String revision = service.read(project.toString(), settings.toString()).get("revision").getAsString();
+
+        JsonObject saved = service.write(project.toString(), settings.toString(), revision, "{\"hooks\":{}}");
+
+        assertTrue(saved.get("success").getAsBoolean());
+        Path backup = Path.of(saved.get("backupPath").getAsString());
+        assertTrue(backup.startsWith(home.resolve(".cc-gui/hooks")));
+        assertFalse(backup.startsWith(project));
+        assertEquals(original, Files.readString(backup));
+        assertFalse(Files.exists(project.resolve(".claude/.ccgui-hooks-backups")));
+        assertFalse(Files.exists(temporaryFolder.getRoot().toPath().resolve(".ccgui-hooks-backups")));
+    }
+
+    @Test
+    public void retainsOnlyTheMostRecentTwentyBackupsPerSource() throws Exception {
+        Path home = temporaryFolder.getRoot().toPath();
+        Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
+        Files.writeString(settings, "{}");
+        HookMutationService service = new HookMutationService(home);
+        String revision = service.read(null, settings.toString()).get("revision").getAsString();
+        for (int i = 0; i < HookMutationService.MAX_BACKUPS + 3; i++) {
+            JsonObject saved = service.write(null, settings.toString(), revision, "{\"fixture\":" + i + "}");
+            assertTrue(saved.get("success").getAsBoolean());
+            revision = saved.get("revision").getAsString();
+        }
+        try (var files = Files.list(HookLocalStorage.directory(home, "backups", settings))) {
+            assertEquals(HookMutationService.MAX_BACKUPS, files.filter(path -> path.toString().endsWith(".bak")).count());
+        }
+    }
+
+    @Test
     public void writesClaudeSettingsWithBackupAndRejectsStaleRevision() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
         Path settings = Files.createDirectories(home.resolve(".claude"))
@@ -33,7 +71,7 @@ public class HookMutationServiceTest {
 
         JsonObject source = service.read(null, settings.toString());
         assertTrue(source.get("lastModified").getAsLong() > 0);
-        assertEquals(settings.getParent().resolve(".ccgui-hooks-backups").toAbsolutePath().normalize(),
+        assertEquals(HookLocalStorage.directory(home, "backups", settings),
                 Path.of(source.get("backupDirectory").getAsString()).toAbsolutePath().normalize());
         String revision = source.get("revision").getAsString();
         String updated = "{\n  \"hooks\": {},\n  \"env\": {\"TOKEN\": \"keep\"}\n}\n";

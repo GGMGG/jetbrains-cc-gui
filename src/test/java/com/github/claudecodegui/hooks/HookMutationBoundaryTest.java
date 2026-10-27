@@ -109,8 +109,8 @@ public class HookMutationBoundaryTest {
         assertEquals(original, Files.readString(Path.of(recovered.get("backupPath").getAsString())));
     }
 
-    private static long backupCount(Path source) throws Exception {
-        Path directory = source.getParent().resolve(".ccgui-hooks-backups");
+    private long backupCount(Path source) throws Exception {
+        Path directory = HookLocalStorage.directory(temporaryFolder.getRoot().toPath(), "backups", source);
         if (!Files.isDirectory(directory)) {
             return 0;
         }

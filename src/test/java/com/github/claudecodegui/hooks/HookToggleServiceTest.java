@@ -24,6 +24,54 @@ public class HookToggleServiceTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void matcherlessWrappedHookKeepsItsStructureAndUnrelatedSettingsBytes() throws Exception {
+        Path home = temporaryFolder.getRoot().toPath();
+        Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
+        String prefix = "{\r\n    \"nullable\": null,\r\n    \"url\": \"https://example.test/?a=1&b=<tag>\",\r\n    \"hooks\": ";
+        String suffix = ",\r\n    \"custom\": { \"hooks\": \"escaped \\\" value }\", \"unicode\": \"\\u4f60\" }\r\n}\r\n";
+        Files.writeString(settings, prefix + "{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo ready\",\"custom\":null}]}]}" + suffix);
+        HookCatalogService catalog = new HookCatalogService(home);
+        HookToggleService toggle = new HookToggleService(home);
+        JsonObject active = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
+        assertTrue(toggle.toggle(null, request(active, false)).get("success").getAsBoolean());
+        JsonObject disabled = findDisabled(catalog.scan(null).getAsJsonArray("items"));
+        assertNotNull(disabled);
+        assertTrue(toggle.toggle(null, request(disabled, true)).get("success").getAsBoolean());
+
+        String restored = Files.readString(settings);
+        assertTrue(restored.startsWith(prefix));
+        assertTrue(restored.endsWith(suffix));
+        assertFalse(restored.replace("\r\n", "").contains("\n"));
+        JsonArray stop = JsonParser.parseString(restored).getAsJsonObject().getAsJsonObject("hooks").getAsJsonArray("Stop");
+        assertEquals(1, stop.size());
+        JsonObject group = stop.get(0).getAsJsonObject();
+        assertFalse(group.has("matcher"));
+        assertFalse(group.has("command"));
+        JsonArray nested = group.getAsJsonArray("hooks");
+        assertEquals(1, nested.size());
+        assertTrue(nested.get(0).getAsJsonObject().get("custom").isJsonNull());
+    }
+
+    @Test
+    public void nonCommandClaudeHandlersDoNotRequireCommandFields() throws Exception {
+        Path home = temporaryFolder.getRoot().toPath();
+        Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
+        Files.writeString(settings, """
+                {"hooks":{"Stop":[{"hooks":[
+                  {"type":"prompt","prompt":"Review the result"},
+                  {"type":"agent","prompt":"Check completion"},
+                  {"type":"http","url":"http://localhost:8000/hook"},
+                  {"type":"mcp_tool","server":"local","tool":"review"}
+                ]}]}}
+                """);
+        JsonArray items = new HookCatalogService(home).scan(null).getAsJsonArray("items");
+        assertEquals(4, items.size());
+        for (var item : items) {
+            assertEquals(0, item.getAsJsonObject().getAsJsonArray("validationIssues").size());
+        }
+    }
+
+    @Test
     public void togglesClaudeHookAndRestoresItFromManagedState() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
         Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
@@ -88,7 +136,7 @@ public class HookToggleServiceTest {
         JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
         HookToggleService service = new HookToggleService(home);
         assertTrue(service.toggle(null, request(item, false)).get("success").getAsBoolean());
-        Path statePath = provider.resolve(".ccgui-hooks-state.json");
+        Path statePath = new HookToggleStateStore(home, provider).getStateFile();
         JsonObject state = JsonParser.parseString(Files.readString(statePath)).getAsJsonObject();
         state.getAsJsonArray("disabledScripts").get(0).getAsJsonObject().addProperty("revision", legacyRevision);
         Files.writeString(statePath, state.toString());
@@ -111,7 +159,7 @@ public class HookToggleServiceTest {
         HookToggleService service = new HookToggleService(home);
         assertTrue(service.toggle(null, request(item, false)).get("success").getAsBoolean());
         JsonObject disabled = findDisabled(catalog.scan(null).getAsJsonArray("items"));
-        JsonObject state = JsonParser.parseString(Files.readString(provider.resolve(".ccgui-hooks-state.json")))
+        JsonObject state = JsonParser.parseString(Files.readString(new HookToggleStateStore(home, provider).getStateFile()))
                 .getAsJsonObject();
         Path quarantine = Path.of(state.getAsJsonArray("disabledScripts").get(0).getAsJsonObject()
                 .get("quarantineLocation").getAsString());

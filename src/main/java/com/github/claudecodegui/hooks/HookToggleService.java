@@ -1,7 +1,5 @@
 package com.github.claudecodegui.hooks;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -22,6 +20,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.DosFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -29,7 +28,6 @@ import java.util.regex.Pattern;
 public final class HookToggleService {
 
     private static final Logger LOG = Logger.getInstance(HookToggleService.class);
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Pattern CONTROL_CHARACTERS = Pattern.compile("[\\u0000-\\u001f]");
     private static final String MANAGED_TOGGLE = "ccgui-managed";
     private static final String NATIVE_TOGGLE = "native";
@@ -78,7 +76,8 @@ public final class HookToggleService {
             } else {
                 return failure(request, "UNSUPPORTED_HOOK_PROVIDER");
             }
-            return withLock(lockDirectory, request, () -> {
+            Path privateLock = HookLocalStorage.directory(userHome, "locks", lockDirectory);
+            return withLock(privateLock, request, () -> {
                 String expectedRevision = requiredString(request, "expectedRevision");
                 boolean enabled = request.get("enabled").getAsBoolean();
                 if (codexConfig) {
@@ -156,7 +155,7 @@ public final class HookToggleService {
             if (root.has("hooks") && !root.get("hooks").isJsonNull() && !root.get("hooks").isJsonObject()) {
                 return failure(request, "HOOKS_NOT_OBJECT");
             }
-            HookToggleStateStore store = new HookToggleStateStore(target.getParent());
+            HookToggleStateStore store = new HookToggleStateStore(userHome, target.getParent());
             JsonObject state = store.readStrict();
             JsonArray disabled = state.getAsJsonArray("disabledClaude");
             JsonObject mutation;
@@ -167,7 +166,7 @@ public final class HookToggleService {
                 }
                 restoreClaudeHook(root, entry);
                 mutation = mutationService.write(projectRoot, target.toString(), expectedRevision,
-                        GSON.toJson(root));
+                        HookJsonSource.replaceHooks(original, root.getAsJsonObject("hooks")));
                 if (!mutation.get("success").getAsBoolean()) {
                     return mutation;
                 }
@@ -203,7 +202,7 @@ public final class HookToggleService {
                 entry.add("hook", match.hook.deepCopy());
                 removeClaudeHook(match);
                 mutation = mutationService.write(projectRoot, target.toString(), expectedRevision,
-                        GSON.toJson(root));
+                        HookJsonSource.replaceHooks(original, root.getAsJsonObject("hooks")));
                 if (!mutation.get("success").getAsBoolean()) {
                     return mutation;
                 }
@@ -247,7 +246,7 @@ public final class HookToggleService {
         Path movedFrom = null;
         Path movedTo = null;
         try {
-            HookToggleStateStore store = new HookToggleStateStore(script.providerDirectory);
+            HookToggleStateStore store = new HookToggleStateStore(userHome, script.providerDirectory);
             JsonObject state = store.readStrict();
             JsonArray disabled = state.getAsJsonArray("disabledScripts");
             JsonObject entry = findDisabledScript(disabled, script.original.toString(), sourceId);
@@ -404,7 +403,7 @@ public final class HookToggleService {
         int index = entry.get("index").getAsInt();
         JsonObject hooks = root.has("hooks") && root.get("hooks").isJsonObject()
                 ? root.getAsJsonObject("hooks") : new JsonObject();
-        if (!root.has("hooks")) {
+        if (!root.has("hooks") || root.get("hooks").isJsonNull()) {
             root.add("hooks", hooks);
         }
         JsonArray eventArray = hooks.has(event) && hooks.get(event).isJsonArray()
@@ -412,11 +411,11 @@ public final class HookToggleService {
         if (!hooks.has(event)) {
             hooks.add(event, eventArray);
         }
-        if (entry.has("wrapped") && entry.get("wrapped").getAsBoolean() && matcher != null) {
+        if (entry.has("wrapped") && entry.get("wrapped").getAsBoolean()) {
             int parentIndex = entry.has("parentIndex") ? entry.get("parentIndex").getAsInt() : -1;
             if (parentIndex >= 0 && parentIndex < eventArray.size()) {
                 JsonElement parent = eventArray.get(parentIndex);
-                if (parent.isJsonObject() && matcher.equals(stringValue(parent.getAsJsonObject(), "matcher"))
+                if (parent.isJsonObject() && Objects.equals(matcher, stringValue(parent.getAsJsonObject(), "matcher"))
                         && parent.getAsJsonObject().has("hooks")
                         && parent.getAsJsonObject().get("hooks").isJsonArray()) {
                     insert(parent.getAsJsonObject().getAsJsonArray("hooks"), index, hook);
@@ -424,7 +423,7 @@ public final class HookToggleService {
                 }
             }
             for (JsonElement element : eventArray) {
-                if (element.isJsonObject() && matcher.equals(stringValue(element.getAsJsonObject(), "matcher"))
+                if (element.isJsonObject() && Objects.equals(matcher, stringValue(element.getAsJsonObject(), "matcher"))
                         && element.getAsJsonObject().has("hooks")
                         && element.getAsJsonObject().get("hooks").isJsonArray()) {
                     JsonArray nested = element.getAsJsonObject().getAsJsonArray("hooks");
@@ -433,11 +432,13 @@ public final class HookToggleService {
                 }
             }
             JsonObject wrapper = new JsonObject();
-            wrapper.addProperty("matcher", matcher);
+            if (matcher != null) {
+                wrapper.addProperty("matcher", matcher);
+            }
             JsonArray nested = new JsonArray();
             nested.add(hook);
             wrapper.add("hooks", nested);
-            insert(eventArray, index, wrapper);
+            insert(eventArray, parentIndex, wrapper);
             return;
         }
         insert(eventArray, index, hook);
@@ -554,13 +555,13 @@ public final class HookToggleService {
         HookMutationService.copyDosAttributes(attributes, target);
     }
 
-    private static JsonObject withLock(
+    private JsonObject withLock(
             Path directory,
             JsonObject request,
             ToggleOperation operation
     ) {
         try {
-            Files.createDirectories(directory);
+            HookLocalStorage.prepare(userHome, directory);
             Path lockPath = directory.resolve(".ccgui-hooks-toggle.lock");
             if (Files.isSymbolicLink(lockPath)) {
                 return failure(request, "HOOK_TOGGLE_LOCK_FAILED");
