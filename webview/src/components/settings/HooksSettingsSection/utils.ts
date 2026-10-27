@@ -54,3 +54,16 @@ export function matchesHookQuery(item: HookItem, query: string): boolean {
     item.rawLocation,
   ].some((value) => value?.toLocaleLowerCase().includes(normalized));
 }
+
+const OPERATION_MESSAGES: Record<string, string> = {
+  BRIDGE_UNAVAILABLE: 'bridgeUnavailable',
+  HOOK_SOURCE_TIMEOUT: 'sourceTimeout',
+  HOOK_MUTATION_TIMEOUT: 'mutationTimeout',
+  HOOK_MUTATION_CONFIRMED_LATE: 'mutationConfirmedLate',
+  HOOK_TOGGLE_TIMEOUT: 'mutationTimeout',
+};
+
+export function hookOperationMessage(error: string, translate: (key: string) => string): string {
+  const key = OPERATION_MESSAGES[error];
+  return key ? translate(`settings.hooks.${key}`) : error;
+}

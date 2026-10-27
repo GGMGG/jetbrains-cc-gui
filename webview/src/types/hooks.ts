@@ -9,10 +9,12 @@ export interface HookItem {
   matcher?: string;
   command: string;
   enabled: boolean;
+  executionStateKnown?: boolean;
   toggleSupported: boolean;
   managedToggleSupported?: boolean;
   toggleMode?: 'ccgui-managed' | 'native';
   managedKey?: string;
+  nativeStateRevision?: string;
   toggleReason?: string;
   editSupported?: boolean;
   rawLocation: string;
@@ -60,6 +62,7 @@ export interface HookCatalog {
 }
 
 export interface HookSourcePayload {
+  requestId?: string;
   success: boolean;
   location?: string;
   revision?: string;

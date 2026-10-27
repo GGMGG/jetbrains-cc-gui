@@ -156,6 +156,42 @@ describe('HooksSettingsSection', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('retains CRLF when textarea input normalizes newlines', () => {
+    const management = createManagement({ editor: {
+      item: claudeItem, content: 'first\r\nsecond\r\n', revision: '1',
+      backupDirectory: null, lastModified: null,
+    } });
+    render(<HooksSettingsSection management={management} />);
+    fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'first\nchanged\n' } });
+    fireEvent.click(screen.getByText('settings.hooks.reviewChanges'));
+    fireEvent.click(screen.getByRole('button', { name: /settings.hooks.save/ }));
+    expect(management.saveHookSource).toHaveBeenCalledWith('first\r\nchanged\r\n');
+  });
+
+  it('prevents editing during a pending save and keeps the submitted draft', () => {
+    const management = createManagement({ editor: {
+      item: claudeItem, content: 'original', revision: '1', backupDirectory: null, lastModified: null,
+    } });
+    const { rerender } = render(<HooksSettingsSection management={management} />);
+    fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'submitted draft' } });
+    rerender(<HooksSettingsSection management={{ ...management, mutationLoading: true }} />);
+    const textarea = screen.getByLabelText('settings.hooks.sourceEditor') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(true);
+    fireEvent.change(textarea, { target: { value: 'must not replace draft' } });
+    expect(textarea.value).toBe('submitted draft');
+  });
+
+  it('explains shared project changes and unverified script execution', () => {
+    const script: HookItem = { ...claudeItem, provider: 'codemoss', scope: 'PROJECT',
+      executionStateKnown: false, toggleSupported: false, managedToggleSupported: false };
+    render(<HooksSettingsSection management={createManagement({ catalog: { ...catalog, items: [script] } })} />);
+    expect(screen.getByText('settings.hooks.sharedProjectWarning')).toBeTruthy();
+    expect(screen.getByText('settings.hooks.executionUnknown')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'settings.hooks.disable' })).toBeNull();
+  });
+
   it('keeps save disabled when review shows no source changes', () => {
     const management = createManagement({
       editor: {

@@ -193,12 +193,18 @@ const HookRow = memo(function HookRow({ item, toggleLoading, onEdit, onToggle }:
                 {t('settings.hooks.validationWarning')}
               </span>
             )}
+            {item.executionStateKnown === false && (
+              <span className={styles.readOnlyBadge}>{t('settings.hooks.executionUnknown')}</span>
+            )}
             {!editSupported && <span className={styles.readOnlyBadge}>{t('settings.hooks.readOnly')}</span>}
           </span>
           <span className={styles.rowSummary} title={summary}>
             <code>{item.command || t('settings.hooks.noCommand')}</code>
             {item.matcher && <><span aria-hidden="true">·</span><span>{item.matcher}</span></>}
           </span>
+          {item.provider === 'codex' && item.toggleSupported && (
+            <span className={styles.rowSummary}>{t('settings.hooks.nativeToggleHint')}</span>
+          )}
         </span>
         <span
           className={`codicon ${editSupported ? 'codicon-chevron-right' : 'codicon-lock'} ${styles.rowIndicator}`}

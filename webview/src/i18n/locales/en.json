@@ -82,7 +82,12 @@
       "tooltipReset": "Resets: {{value}} (local time)",
       "clickToSwitch": "Click period label to switch window",
       "worstHint": "Dot shows worst window ({{color}})",
-      "paceColors": { "green": "green", "yellow": "yellow", "red": "red", "neutral": "unknown" },
+      "paceColors": {
+        "green": "green",
+        "yellow": "yellow",
+        "red": "red",
+        "neutral": "unknown"
+      },
       "stale": "Data may be outdated (refresh failed)"
     },
     "noMatchingFiles": "No matching files",
@@ -898,7 +903,7 @@
     "skillsDesc": "Manage and configure skill modules",
     "hooks": {
       "title": "Hooks",
-      "description": "Inspect, toggle, and safely edit Codex, Claude Code, and Codemoss hooks.",
+      "description": "Inspect and edit hook sources, and change supported enable preferences.",
       "refresh": "Refresh",
       "provider": "Provider",
       "scope": "Scope",
@@ -918,7 +923,7 @@
       "enable": "Enable hook",
       "disable": "Disable hook",
       "managedToggleHint": "CCGUI-managed toggle. The original configuration is preserved and can be restored.",
-      "nativeToggleHint": "Toggle this hook through the provider's native enabled field.",
+      "nativeToggleHint": "Changes your Codex user preference. Trust, feature settings, and policy still control execution.",
       "toggleFailed": "Hook toggle failed",
       "loading": "Scanning hook locations...",
       "empty": "No hooks were discovered.",
@@ -980,13 +985,23 @@
         "CODEX_HOOK_ENTRY_NOT_TABLE": "Codex hook entries must be tables",
         "CODEX_ENABLED_INVALID": "Codex hook enabled field is missing or invalid",
         "CODEX_MATCHER_INVALID": "Codex hook matcher field is invalid",
-        "CODEX_COMMANDS_INVALID": "Codex hook commands array is missing or invalid",
+        "CODEX_COMMANDS_INVALID": "Hook handler is missing a valid command or MCP tool",
         "CODEX_HOOKS_FEATURE_DISABLED": "The Codex hooks feature is not enabled",
         "FILE_LIMIT_REACHED": "File limit reached",
         "SCAN_FAILED": "Scan failed",
         "READ_FAILED": "Read failed",
-        "PREVIEW_TRUNCATED": "Preview truncated"
-      }
+        "PREVIEW_TRUNCATED": "Preview truncated",
+        "CODEX_EVENT_UNSUPPORTED": "Event is not supported by the verified Codex schema",
+        "CODEX_HANDLER_UNSUPPORTED": "Handler type is not supported by the verified Codex schema",
+        "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook file fields are invalid",
+        "CODEX_STATE_INLINE_UNSUPPORTED": "Inline state cannot be safely edited; use a state table"
+      },
+      "executionUnknown": "Execution status unknown",
+      "sharedProjectWarning": "Project configuration may be committed and affect other users. Review the file diff before sharing.",
+      "bridgeUnavailable": "The IDE connection is unavailable. Reopen the settings page and try again.",
+      "sourceTimeout": "Reading timed out. Reload the source before editing.",
+      "mutationTimeout": "Confirmation timed out. Refresh before retrying because the change may have been saved.",
+      "mutationConfirmedLate": "The delayed save was confirmed. Reload the source to synchronize; your draft was retained."
     },
     "other": {
       "title": "Other Settings",

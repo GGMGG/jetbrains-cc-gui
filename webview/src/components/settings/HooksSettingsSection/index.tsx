@@ -6,7 +6,8 @@ import type { UseHookManagementReturn } from '../hooks';
 import HookEditorDialog from './HookEditorDialog';
 import { HookGroup, HookToolbar, type ProviderFilter, type ScopeFilter } from './HookList';
 import styles from './style.module.less';
-import { isHookItem, matchesHookQuery, PROVIDER_ORDER, targetLocation } from './utils';
+import { hookOperationMessage, isHookItem, matchesHookQuery, PROVIDER_ORDER, targetLocation } from './utils';
+import { preserveHookLineEndings } from '../hooks/hookSourceDiff';
 
 interface HooksSettingsSectionProps {
   management: UseHookManagementReturn;
@@ -140,8 +141,10 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
     && source.validationIssues.length > 0).length;
 
   const changeDraft = useCallback((nextDraft: string) => {
-    setDraft(nextDraft);
-  }, []);
+    if (!mutationLoading) {
+      setDraft(preserveHookLineEndings(nextDraft, activeEditor?.content ?? ''));
+    }
+  }, [activeEditor?.content, mutationLoading]);
 
   return (
     <section className={styles.container}>
@@ -165,7 +168,13 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
       {toggleError && (
         <div className={styles.pageNotice} role="alert">
           <span className="codicon codicon-error" aria-hidden="true" />
-          <span>{t('settings.hooks.toggleFailed')}: {toggleError}</span>
+          <span>{t('settings.hooks.toggleFailed')}: {hookOperationMessage(toggleError, t)}</span>
+        </div>
+      )}
+      {filteredItems.some(item => item.scope === 'PROJECT') && (
+        <div className={styles.pageNotice} role="status">
+          <span className="codicon codicon-warning" aria-hidden="true" />
+          <span>{t('settings.hooks.sharedProjectWarning')}</span>
         </div>
       )}
       {sourceIssueCount > 0 && (

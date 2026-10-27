@@ -6,6 +6,7 @@ import { buildHookSourceDiff } from '../hooks/hookSourceDiff';
 import styles from './style.module.less';
 import {
   formatTimestamp,
+  hookOperationMessage,
   isHookItem,
   issueLabel,
   PROVIDER_LABELS,
@@ -110,6 +111,9 @@ export default function HookEditorDialog({
           <code>{targetLocation(selected)}</code>
         </div>
 
+        {selected.scope === 'PROJECT' && (
+          <div className={styles.inlineNotice} role="status">{t('settings.hooks.sharedProjectWarning')}</div>
+        )}
         {validationSummary.length > 0 && (
           <div className={styles.inlineNotice} role="alert">
             <span className="codicon codicon-warning" aria-hidden="true" />
@@ -129,7 +133,7 @@ export default function HookEditorDialog({
               value={draft}
               aria-label={t('settings.hooks.sourceEditor')}
               onChange={(event) => onDraftChange(event.target.value)}
-              disabled={activeEditor?.content == null}
+              disabled={activeEditor?.content == null || mutationLoading}
               spellCheck={false}
             />
             {showDiff && (
@@ -182,7 +186,7 @@ export default function HookEditorDialog({
         </details>
 
         {sourceError && (
-          <div className={styles.inlineNotice} role="alert">{t('settings.hooks.sourceLoadFailed')}: {sourceError}</div>
+          <div className={styles.inlineNotice} role="alert">{t('settings.hooks.sourceLoadFailed')}: {hookOperationMessage(sourceError, t)}</div>
         )}
         {mutationError === 'HOOK_REVISION_CONFLICT' ? (
           <div className={styles.conflictNotice} role="alert">
@@ -203,7 +207,7 @@ export default function HookEditorDialog({
             </div>
           </div>
         ) : mutationError && (
-          <div className={styles.inlineNotice} role="alert">{t('settings.hooks.saveFailed')}: {mutationError}</div>
+          <div className={styles.inlineNotice} role="alert">{t('settings.hooks.saveFailed')}: {hookOperationMessage(mutationError, t)}</div>
         )}
 
         <footer className={styles.modalFooter}>

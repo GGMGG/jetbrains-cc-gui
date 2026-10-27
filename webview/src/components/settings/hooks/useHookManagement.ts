@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type {
   HookCatalog,
   HookEditorTarget,
@@ -8,7 +8,7 @@ import type {
   HookToggleResult,
 } from '../../../types/hooks';
 import { EMPTY_HOOK_CATALOG } from '../../../types/hooks';
-import { sendBridgeEvent, sendToJava } from '../../../utils/bridge';
+import { sendBridgeEvent } from '../../../utils/bridge';
 
 const REQUEST_TIMEOUT_MS = 5000;
 const TOGGLE_TIMEOUT_MS = 5000;
@@ -64,26 +64,44 @@ export function useHookManagement(): UseHookManagementReturn {
   const sourceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleRequestRef = useRef<string | null>(null);
-  const toggleRequestSequenceRef = useRef(0);
+
+  const sourceRequestRef = useRef<string | null>(null);
+  const mutationRequestRef = useRef<{ requestId: string; location: string } | null>(null);
+  const mutationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSequenceRef = useRef(0);
+  const requestPrefix = useId();
+  const expiredMutations = useRef(new Map<string, string>());
+  const expiredToggles = useRef(new Set<string>());
+
+  const rememberMutation = useCallback(() => {
+    const pending = mutationRequestRef.current;
+    if (pending) {
+      expiredMutations.current.set(pending.requestId, pending.location);
+      if (expiredMutations.current.size > 20) expiredMutations.current.delete(expiredMutations.current.keys().next().value!);
+    }
+    mutationRequestRef.current = null;
+    if (mutationTimeoutRef.current) clearTimeout(mutationTimeoutRef.current);
+    mutationTimeoutRef.current = null;
+  }, []);
 
   useEffect(() => () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
+    for (const timer of [timeoutRef.current, sourceTimeoutRef.current, toggleTimeoutRef.current, mutationTimeoutRef.current]) {
+      if (timer) clearTimeout(timer);
     }
-    if (sourceTimeoutRef.current) {
-      clearTimeout(sourceTimeoutRef.current);
-    }
-    if (toggleTimeoutRef.current) {
-      clearTimeout(toggleTimeoutRef.current);
-    }
+    sourceRequestRef.current = null;
+    mutationRequestRef.current = null;
+    toggleRequestRef.current = null;
+    expiredMutations.current.clear();
+    expiredToggles.current.clear();
   }, []);
 
   const loadHooks = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
     setHooksLoading(true);
-    window.sendToJava?.('get_hooks:');
+    if (!sendBridgeEvent('get_hooks', '')) {
+      setHooksLoading(false);
+      return;
+    }
     timeoutRef.current = setTimeout(() => {
       setHooksLoading(false);
       timeoutRef.current = null;
@@ -91,61 +109,51 @@ export function useHookManagement(): UseHookManagementReturn {
   }, []);
 
   const updateHooks = useCallback((nextCatalog: HookCatalog) => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
     setCatalog({ ...nextCatalog, capabilities: nextCatalog.capabilities ?? [] });
     setHooksLoading(false);
   }, []);
 
-  const loadHookSource = useCallback((item: HookEditorTarget) => {
-    if (sourceTimeoutRef.current) {
-      clearTimeout(sourceTimeoutRef.current);
-    }
+  const requestSource = useCallback((item: HookEditorTarget) => {
+    if (sourceTimeoutRef.current) clearTimeout(sourceTimeoutRef.current);
+    const requestId = `${requestPrefix}-source-${++requestSequenceRef.current}`;
+    sourceRequestRef.current = requestId;
     setSourceLoading(true);
+    setSourceError(null);
+    if (!sendBridgeEvent('get_hook_source', JSON.stringify({ location: targetLocation(item), requestId }))) {
+      sourceRequestRef.current = null;
+      setSourceLoading(false);
+      setSourceError('BRIDGE_UNAVAILABLE');
+      return;
+    }
+    sourceTimeoutRef.current = setTimeout(() => {
+      sourceRequestRef.current = null;
+      sourceTimeoutRef.current = null;
+      setSourceLoading(false);
+      setSourceError('HOOK_SOURCE_TIMEOUT');
+    }, REQUEST_TIMEOUT_MS);
+  }, [requestPrefix]);
+
+  const loadHookSource = useCallback((item: HookEditorTarget) => {
+    rememberMutation();
     setMutationLoading(false);
     setLastBackupPath(null);
-    setSourceError(null);
     setMutationError(null);
-    setEditor({
-      item,
-      content: null,
-      revision: item.revision,
-      backupDirectory: null,
-      lastModified: item.lastModified ?? null,
-    });
-    sendToJava('get_hook_source', { location: targetLocation(item) });
-    sourceTimeoutRef.current = setTimeout(() => {
-      setSourceLoading(false);
-      sourceTimeoutRef.current = null;
-    }, REQUEST_TIMEOUT_MS);
-  }, []);
+    setEditor({ item, content: null, revision: item.revision, backupDirectory: null, lastModified: item.lastModified ?? null });
+    requestSource(item);
+  }, [rememberMutation, requestSource]);
 
   const reloadHookSource = useCallback(() => {
-    if (!editor) {
-      return;
-    }
-    if (sourceTimeoutRef.current) {
-      clearTimeout(sourceTimeoutRef.current);
-    }
-    setSourceLoading(true);
-    setSourceError(null);
-    sendToJava('get_hook_source', { location: targetLocation(editor.item) });
-    sourceTimeoutRef.current = setTimeout(() => {
-      setSourceLoading(false);
-      sourceTimeoutRef.current = null;
-    }, REQUEST_TIMEOUT_MS);
-  }, [editor]);
+    if (editor && !mutationRequestRef.current) requestSource(editor.item);
+  }, [editor, requestSource]);
 
   const updateHookSource = useCallback((payload: HookSourcePayload) => {
-    if (payload.location && editor && payload.location !== targetLocation(editor.item)) {
-      return;
-    }
-    if (sourceTimeoutRef.current) {
-      clearTimeout(sourceTimeoutRef.current);
-      sourceTimeoutRef.current = null;
-    }
+    if (!payload.requestId || payload.requestId !== sourceRequestRef.current) return;
+    if (payload.location && editor && payload.location !== targetLocation(editor.item)) return;
+    if (sourceTimeoutRef.current) clearTimeout(sourceTimeoutRef.current);
+    sourceTimeoutRef.current = null;
+    sourceRequestRef.current = null;
     setSourceLoading(false);
     if (!payload.success || !payload.location || payload.content === undefined || !payload.revision) {
       setSourceError(payload.errorCode ?? 'READ_FAILED');
@@ -153,86 +161,87 @@ export function useHookManagement(): UseHookManagementReturn {
     }
     setSourceError(null);
     setMutationError(null);
-    setEditor((current) => current
-      ? {
-        ...current,
-        content: payload.content as string,
-        revision: payload.revision as string,
-        backupDirectory: payload.backupDirectory ?? current.backupDirectory,
-        lastModified: payload.lastModified ?? current.lastModified,
-      }
-      : current);
+    setEditor(current => current ? {
+      ...current,
+      content: payload.content!,
+      revision: payload.revision!,
+      backupDirectory: payload.backupDirectory ?? current.backupDirectory,
+      lastModified: payload.lastModified ?? current.lastModified,
+    } : current);
   }, [editor]);
+
+  const mutateSource = useCallback((command: string, location: string, fields: Record<string, string>) => {
+    if (mutationRequestRef.current) return;
+    const requestId = `${requestPrefix}-mutation-${++requestSequenceRef.current}`;
+    mutationRequestRef.current = { requestId, location };
+    setMutationLoading(true);
+    setSourceError(null);
+    setMutationError(null);
+    if (!sendBridgeEvent(command, JSON.stringify({ ...fields, requestId }))) {
+      mutationRequestRef.current = null;
+      setMutationLoading(false);
+      setMutationError('BRIDGE_UNAVAILABLE');
+      return;
+    }
+    mutationTimeoutRef.current = setTimeout(() => {
+      rememberMutation();
+      setMutationLoading(false);
+      setMutationError('HOOK_MUTATION_TIMEOUT');
+    }, REQUEST_TIMEOUT_MS);
+  }, [rememberMutation, requestPrefix]);
 
   const saveHookSource = useCallback((content: string) => {
-    if (!editor || editor.content === null) {
-      return;
-    }
-    setMutationLoading(true);
-    setSourceError(null);
-    setMutationError(null);
-    sendToJava('save_hook_source', {
-      location: targetLocation(editor.item),
-      expectedRevision: editor.revision,
-      content,
-    });
-  }, [editor]);
+    if (!editor || editor.content === null || sourceRequestRef.current) return;
+    const location = targetLocation(editor.item);
+    mutateSource('save_hook_source', location, { location, expectedRevision: editor.revision, content });
+  }, [editor, mutateSource]);
 
   const restoreHookSource = useCallback(() => {
-    if (!editor || !lastBackupPath) {
-      return;
-    }
-    setMutationLoading(true);
-    setSourceError(null);
-    setMutationError(null);
-    sendToJava('restore_hook_source', {
-      location: targetLocation(editor.item),
-      expectedRevision: editor.revision,
-      backupPath: lastBackupPath,
-    });
-  }, [editor, lastBackupPath]);
+    if (!editor || !lastBackupPath || sourceRequestRef.current) return;
+    const location = targetLocation(editor.item);
+    mutateSource('restore_hook_source', location, { location, expectedRevision: editor.revision, backupPath: lastBackupPath });
+  }, [editor, lastBackupPath, mutateSource]);
 
   const updateHookMutationResult = useCallback((payload: HookMutationResult) => {
-    if (payload.location && editor && payload.location !== targetLocation(editor.item)) {
+    const pending = mutationRequestRef.current;
+    if (!payload.requestId || payload.requestId !== pending?.requestId) {
+      const location = payload.requestId ? expiredMutations.current.get(payload.requestId) : undefined;
+      if (location) {
+        expiredMutations.current.delete(payload.requestId!);
+        if (payload.success) {
+          loadHooks();
+          if (!pending && editor && targetLocation(editor.item) === location) setMutationError('HOOK_MUTATION_CONFIRMED_LATE');
+        }
+      }
       return;
     }
+    if (payload.location && payload.location !== pending.location) return;
+    if (mutationTimeoutRef.current) clearTimeout(mutationTimeoutRef.current);
+    mutationTimeoutRef.current = null;
+    mutationRequestRef.current = null;
     setMutationLoading(false);
     if (!payload.success) {
       setMutationError(payload.errorCode ?? 'UNKNOWN_ERROR');
       return;
     }
-    if (payload.success && editor && payload.revision) {
-      setEditor({
-        ...editor,
-        revision: payload.revision,
-        content: payload.content ?? editor.content,
-        lastModified: payload.lastModified ?? editor.lastModified,
-      });
+    if (editor && payload.revision) {
+      setEditor({ ...editor, revision: payload.revision, content: payload.content ?? editor.content,
+        lastModified: payload.lastModified ?? editor.lastModified });
       setLastBackupPath(payload.backupPath ?? null);
       loadHooks();
     }
   }, [editor, loadHooks]);
 
   const toggleHook = useCallback((item: HookItem, enabled: boolean) => {
-    if ((!item.toggleSupported && !item.managedToggleSupported) || toggleLoadingId !== null) {
-      return;
-    }
+    if ((!item.toggleSupported && !item.managedToggleSupported) || toggleRequestRef.current !== null) return;
     setToggleLoadingId(item.sourceId);
     setToggleError(null);
-    const requestId = `hook-toggle-${++toggleRequestSequenceRef.current}`;
+    const requestId = `${requestPrefix}-toggle-${++requestSequenceRef.current}`;
     toggleRequestRef.current = requestId;
     const sent = sendBridgeEvent('toggle_hook', JSON.stringify({
-      requestId,
-      provider: item.provider,
-      scope: item.scope,
-      event: item.event,
-      matcher: item.matcher,
-      sourceId: item.sourceId,
-      managedKey: item.managedKey,
-      format: item.format,
-      location: item.rawLocation,
-      expectedRevision: item.revision,
-      enabled,
+      requestId, provider: item.provider, scope: item.scope, event: item.event, matcher: item.matcher,
+      sourceId: item.sourceId, managedKey: item.managedKey, nativeStateRevision: item.nativeStateRevision,
+      format: item.format, location: item.rawLocation, expectedRevision: item.revision, enabled,
     }));
     if (!sent) {
       setToggleLoadingId(null);
@@ -240,25 +249,23 @@ export function useHookManagement(): UseHookManagementReturn {
       setToggleError('BRIDGE_UNAVAILABLE');
       return;
     }
-    if (toggleTimeoutRef.current) {
-      clearTimeout(toggleTimeoutRef.current);
-    }
     toggleTimeoutRef.current = setTimeout(() => {
+      expiredToggles.current.add(requestId);
+      if (expiredToggles.current.size > 20) expiredToggles.current.delete(expiredToggles.current.values().next().value!);
       setToggleLoadingId(null);
       setToggleError('HOOK_TOGGLE_TIMEOUT');
       toggleRequestRef.current = null;
       toggleTimeoutRef.current = null;
     }, TOGGLE_TIMEOUT_MS);
-  }, [toggleLoadingId]);
+  }, [requestPrefix]);
 
   const updateHookToggleResult = useCallback((payload: HookToggleResult) => {
     if (!payload.requestId || payload.requestId !== toggleRequestRef.current) {
+      if (payload.requestId && expiredToggles.current.delete(payload.requestId) && payload.success) loadHooks();
       return;
     }
-    if (toggleTimeoutRef.current) {
-      clearTimeout(toggleTimeoutRef.current);
-      toggleTimeoutRef.current = null;
-    }
+    if (toggleTimeoutRef.current) clearTimeout(toggleTimeoutRef.current);
+    toggleTimeoutRef.current = null;
     setToggleLoadingId(null);
     toggleRequestRef.current = null;
     if (!payload.success) {

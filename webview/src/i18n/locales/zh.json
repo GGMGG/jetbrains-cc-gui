@@ -82,7 +82,12 @@
       "tooltipReset": "重置时间：{{value}}（本地时间）",
       "clickToSwitch": "点击周期标签切换额度窗口",
       "worstHint": "圆点表示消耗节奏最紧张的窗口（{{color}}）",
-      "paceColors": { "green": "绿色", "yellow": "黄色", "red": "红色", "neutral": "未知" },
+      "paceColors": {
+        "green": "绿色",
+        "yellow": "黄色",
+        "red": "红色",
+        "neutral": "未知"
+      },
       "stale": "刷新失败，当前展示的额度可能已过期"
     },
     "noMatchingFiles": "无匹配文件",
@@ -901,10 +906,10 @@
       "enable": "启用 Hook",
       "disable": "禁用 Hook",
       "managedToggleHint": "由 CCGUI 托管的开关，会保留原始配置并支持恢复。",
-      "nativeToggleHint": "通过 Provider 原生 enabled 字段启停此 Hook。",
+      "nativeToggleHint": "修改 Codex 用户级启用偏好；实际执行仍受信任、功能开关和策略控制。",
       "toggleFailed": "Hook 启停失败",
       "title": "Hooks 管理",
-      "description": "查看、启停并安全编辑 Codex、Claude Code 和 Codemoss Hooks。",
+      "description": "查看和编辑 Hook 源文件，并调整已支持的启用偏好。",
       "refresh": "刷新",
       "provider": "Provider",
       "scope": "范围",
@@ -979,13 +984,23 @@
         "CODEX_HOOK_ENTRY_NOT_TABLE": "Codex Hook 条目必须是配置表",
         "CODEX_ENABLED_INVALID": "Codex Hook enabled 字段缺失或无效",
         "CODEX_MATCHER_INVALID": "Codex Hook matcher 字段无效",
-        "CODEX_COMMANDS_INVALID": "Codex Hook commands 数组缺失或无效",
+        "CODEX_COMMANDS_INVALID": "Hook 处理器缺少有效命令或 MCP 工具",
         "CODEX_HOOKS_FEATURE_DISABLED": "Codex hooks 功能开关未启用",
         "FILE_LIMIT_REACHED": "达到文件数量上限",
         "SCAN_FAILED": "扫描失败",
         "READ_FAILED": "读取失败",
-        "PREVIEW_TRUNCATED": "预览已截断"
-      }
+        "PREVIEW_TRUNCATED": "预览已截断",
+        "CODEX_EVENT_UNSUPPORTED": "已校验的 Codex 格式不支持此事件",
+        "CODEX_HANDLER_UNSUPPORTED": "已校验的 Codex 格式不支持此处理器类型",
+        "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook 文件字段无效",
+        "CODEX_STATE_INLINE_UNSUPPORTED": "无法安全编辑内联状态，请使用状态配置表"
+      },
+      "executionUnknown": "执行状态未知",
+      "sharedProjectWarning": "项目配置可能被提交并影响其他用户。分享前请检查文件差异。",
+      "bridgeUnavailable": "与 IDE 的连接不可用，请重新打开设置页后重试。",
+      "sourceTimeout": "读取超时，请重新加载源文件后再编辑。",
+      "mutationTimeout": "等待确认超时；修改可能已经保存，请刷新后再重试。",
+      "mutationConfirmedLate": "已收到延迟的保存确认。草稿已保留，请重新加载源文件以同步。"
     },
     "skillsDesc": "管理和配置技能模块",
     "other": {
