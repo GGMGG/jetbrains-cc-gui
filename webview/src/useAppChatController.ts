@@ -18,6 +18,7 @@ import {
   CONTEXT_COMMANDS,
 } from './hooks/useMessageSender';
 import { parseCodexCommand } from './hooks/codexCommandDispatcher';
+import { useCodexQuestionResponses } from './hooks/useCodexQuestionResponses';
 import { useCodexTurnActivity } from './hooks/useCodexTurnActivity';
 import { useCodexCompactionStatus } from './hooks/useCodexCompactionStatus';
 import type { Attachment, ChatInputBoxHandle, PermissionMode } from './components/ChatInputBox/types';
@@ -315,6 +316,10 @@ export const useAppChatController = ({
     clearQueue,
     reorder: reorderMessageQueue,
   } = useMessageQueue({ isLoading: loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending, onExecute: hookHandleSubmit });
+
+  const onCodexQuestionError = useCallback((message: string) => addToast(message, 'error'), [addToast]);
+  useCodexQuestionResponses({ provider: currentProvider, threadId: currentSessionId,
+    enqueue: enqueueMessage, onError: onCodexQuestionError });
 
   // Point the session-transition indirection at the real clearQueue.
   useEffect(() => {

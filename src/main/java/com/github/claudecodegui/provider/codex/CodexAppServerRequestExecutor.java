@@ -139,6 +139,7 @@ class CodexAppServerRequestExecutor {
                 result.messageCount = result.messages.size();
                 if (wasAborted.get()) {
                     result.success = false;
+                    result.cancelled = true;
                     result.error = "User interrupted";
                     return result;
                 }
@@ -154,12 +155,14 @@ class CodexAppServerRequestExecutor {
                     }
                 } else if (wasAborted.get()) {
                     result.success = false;
+                    result.cancelled = true;
                     result.error = "User interrupted";
                 }
                 return result;
             } catch (Exception e) {
                 if (wasAborted.get()) {
                     result.success = false;
+                    result.cancelled = true;
                     result.error = "User interrupted";
                     return result;
                 }
@@ -207,11 +210,17 @@ class CodexAppServerRequestExecutor {
      */
     JsonObject sendControlCommand(DaemonBridge daemon, String method, JsonObject params, long timeoutMs) {
         AtomicReference<String> daemonCode = new AtomicReference<>();
+        AtomicReference<JsonObject> responseRef = new AtomicReference<>();
+        AtomicReference<String> errorRef = new AtomicReference<>();
         try {
-            CompletableFuture<Boolean> future = daemon.sendCommand(method, params, controlCallback(daemonCode));
+            CompletableFuture<Boolean> future = daemon.sendCommand(method, params, controlCallback(daemonCode, responseRef, errorRef));
             Boolean success = future.get(timeoutMs, TimeUnit.MILLISECONDS);
             if (!Boolean.TRUE.equals(success)) {
-                return controlFailure(method, method + " was rejected by the daemon", daemonCode.get());
+                return controlFailure(method, errorRef.get() == null ? method + " was rejected by the daemon" : errorRef.get(), daemonCode.get());
+            }
+            JsonObject response = responseRef.get();
+            if (response != null && response.has("result") && response.get("result").isJsonObject()) {
+                return response.getAsJsonObject("result").deepCopy();
             }
             return new JsonObject();
         } catch (TimeoutException e) {
@@ -255,7 +264,8 @@ class CodexAppServerRequestExecutor {
         return error;
     }
 
-    private DaemonBridge.DaemonOutputCallback controlCallback(AtomicReference<String> daemonCode) {
+    private DaemonBridge.DaemonOutputCallback controlCallback(AtomicReference<String> daemonCode,
+                                                            AtomicReference<JsonObject> responseRef, AtomicReference<String> errorRef) {
         return new DaemonBridge.DaemonOutputCallback() {
             @Override
             public void onLine(String line) {
@@ -269,11 +279,13 @@ class CodexAppServerRequestExecutor {
 
             @Override
             public void onError(String error) {
+                errorRef.set(error);
                 CodexAppServerRequestExecutor.this.log.warn("[CodexDaemonExecutor] control error: " + error);
             }
 
             @Override
             public void onResult(JsonObject response) {
+                responseRef.set(response == null ? null : response.deepCopy());
                 if (response != null && response.has("code") && response.get("code").isJsonPrimitive()) {
                     daemonCode.set(response.get("code").getAsString());
                 }
