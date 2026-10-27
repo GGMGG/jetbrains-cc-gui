@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { CodexAppServerService } from './codex-appserver-service.js';
-import { startPeerWithStreams, THREAD_ID } from './testing/codex-stdio-peer.js';
+import { startPeerWithStreams, THREAD_ID, CHILD_THREAD_ID } from './testing/codex-stdio-peer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -85,6 +85,173 @@ function makeService({
 function eventsOf(events, kind) {
   return events.filter((event) => event.kind === kind);
 }
+
+test('idle deletion refuses an active turn and its queued successor without interrupting either', async () => {
+  const { service, dispatchCounts } = makeService({ scenario: 'never-respond' });
+  const first = service.enqueueOperation({ kind: 'send', markerPayload: { input: [] } });
+  let second;
+  try {
+    await waitFor(() => first.nativeTurnId, 1000, 'active turn before deletion');
+    second = service.enqueueOperation({ kind: 'compact', threadId: first.threadId });
+    await assert.rejects(service.releaseThread(first.threadId, { onlyIfIdle: true }), { code: 'SESSION_RUNNING' });
+    assert.equal(first.settled, false);
+    assert.equal(second.settled, false);
+    assert.equal(service.queue.includes(second), true);
+    assert.equal(dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    assert.equal(service.idleReleaseInProgress, false);
+  } finally {
+    await service.resetRuntime();
+    await Promise.all([first.promise, second?.promise]);
+  }
+});
+
+test('idle deletion preserves a child question after its parent turn has completed', async () => {
+  const { service, events, dispatchCounts } = makeService({ scenario: 'child-interaction' });
+  try {
+    const send = service.send({ input: [], clientMessageId: 'idle-delete-child' });
+    await waitFor(() => eventsOf(events, 'interactionRequested').length === 1, 3000, 'child question');
+    const request = eventsOf(events, 'interactionRequested')[0];
+    assert.equal((await send).outcome, 'completed');
+    assert.equal(service.busy, false);
+    await assert.rejects(service.releaseThread(service.rootThreadId, { onlyIfIdle: true }), { code: 'SESSION_RUNNING' });
+    assert.equal(service.pendingInteractions.size, 1);
+    assert.equal(dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    assert.equal(service.respondInteraction(request.payload.rpcId, { decision: 'decline' }), true);
+    await service.releaseThread(service.rootThreadId, { onlyIfIdle: true });
+  } finally { await service.resetRuntime(); }
+});
+
+test('idle deletion preserves a running verified child after its approval and parent have completed', async () => {
+  const { service, events, getPeer, getClient, dispatchCounts } = makeService({ scenario: 'child-interaction' });
+  try {
+    await service.ensureRuntime();
+    const peer = getPeer();
+    const notify = peer.notify.bind(peer);
+    let childTerminal;
+    peer.notify = notification => {
+      if (notification.method === 'turn/completed' && notification.params.threadId === CHILD_THREAD_ID) {
+        childTerminal = notification;
+        return;
+      }
+      return notify(notification);
+    };
+    const send = service.send({ input: [], clientMessageId: 'idle-delete-running-child' });
+    await waitFor(() => eventsOf(events, 'interactionRequested').length === 1, 3000, 'child approval');
+    const request = eventsOf(events, 'interactionRequested')[0];
+    assert.equal((await send).outcome, 'completed');
+    notify({ method: 'turn/started', params: { threadId: CHILD_THREAD_ID,
+      turn: { id: 'turn-child-0001', status: 'inProgress' } } });
+    await waitFor(() => service.threads.get(CHILD_THREAD_ID)?.state === 'running');
+    assert.equal(service.respondInteraction(request.payload.rpcId, { decision: 'accept' }), true);
+    await waitFor(() => childTerminal, 1000, 'child continues after approval');
+    const child = service.threads.get(CHILD_THREAD_ID);
+    assert.equal(child.relationVerified, true);
+    assert.equal(child.rootThreadId, THREAD_ID);
+    assert.equal(service.busy, false);
+    assert.equal(service.pendingInteractions.size, 0);
+    assert.equal(service.operations.size, 0);
+    const client = getClient();
+    await assert.rejects(service.releaseThread(THREAD_ID, { onlyIfIdle: true }), { code: 'SESSION_RUNNING' });
+    assert.equal(client.alive, true);
+    assert.equal(child.state, 'running');
+    assert.equal(service.idleReleaseInProgress, false);
+    assert.equal(dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    notify(childTerminal);
+    await waitFor(() => child.state === 'idle');
+    assert.deepEqual(await service.releaseThread(THREAD_ID, { onlyIfIdle: true }), { released: THREAD_ID });
+    assert.equal(client.alive, false);
+  } finally { await service.resetRuntime(); }
+});
+
+test('idle deletion waits for every native child to finish', async () => {
+  const { service, getPeer, getClient } = makeService();
+  try {
+    await service.preconnect({ threadId: THREAD_ID });
+    const peer = getPeer();
+    for (const threadId of [CHILD_THREAD_ID, 'second-native-child']) {
+      peer.notify({ method: 'turn/started', params: { threadId, turn: { id: `${threadId}-turn`, status: 'inProgress' } } });
+    }
+    await waitFor(() => service.threads.get('second-native-child')?.state === 'running');
+    peer.notify({ method: 'turn/completed', params: { threadId: CHILD_THREAD_ID,
+      turn: { id: `${CHILD_THREAD_ID}-turn`, status: 'completed' } } });
+    await waitFor(() => service.threads.get(CHILD_THREAD_ID)?.state === 'idle');
+    await assert.rejects(service.releaseThread(THREAD_ID, { onlyIfIdle: true }), { code: 'SESSION_RUNNING' });
+    assert.equal(getClient().alive, true);
+    peer.notify({ method: 'turn/completed', params: { threadId: 'second-native-child',
+      turn: { id: 'second-native-child-turn', status: 'completed' } } });
+    await waitFor(() => service.threads.get('second-native-child')?.state === 'idle');
+    assert.deepEqual(await service.releaseThread(THREAD_ID, { onlyIfIdle: true }), { released: THREAD_ID });
+  } finally { await service.resetRuntime(); }
+});
+
+test('idle deletion protects an in-flight resume on an already ready runtime', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let releaseResume;
+  let connecting;
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    const gate = new Promise(resolve => { releaseResume = resolve; });
+    client.request = (method, params, options) => method === 'thread/resume'
+      ? gate.then(() => request(method, params, options)) : request(method, params, options);
+    connecting = service.preconnect({ threadId: THREAD_ID });
+    await waitFor(() => service.threadResumes.size === 1);
+    await assert.rejects(service.releaseThread(THREAD_ID, { onlyIfIdle: true }), { code: 'SESSION_RUNNING' });
+    assert.equal(client.alive, true);
+    assert.equal(service.idleReleaseInProgress, false);
+    releaseResume();
+    await connecting;
+    assert.equal(dispatchCounts.get('thread/resume'), 1);
+    await service.releaseThread(THREAD_ID, { onlyIfIdle: true });
+  } finally {
+    releaseResume?.();
+    await connecting?.catch(() => {});
+    await service.resetRuntime();
+  }
+});
+
+test('an idle deletion retires its owner before new sends or preconnects can revive it', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  try {
+    await service.preconnect({ threadId: THREAD_ID });
+    const client = getClient();
+    const releasing = service.releaseThread(THREAD_ID, { onlyIfIdle: true });
+    assert.throws(() => service.enqueueOperation({ kind: 'send', markerPayload: { input: [] } }), { code: 'THREAD_RELEASING' });
+    await assert.rejects(service.preconnect({ threadId: THREAD_ID }), { code: 'THREAD_RELEASING' });
+    assert.deepEqual(await releasing, { released: THREAD_ID });
+    await assert.rejects(service.ensureRuntime(), { code: 'THREAD_RELEASING' });
+    assert.equal(client.alive, false);
+    assert.equal(service.client, null);
+    assert.equal(service.state, 'stopped');
+    assert.equal(dispatchCounts.get('initialize'), 1);
+    assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+  } finally { await service.resetRuntime(); }
+});
+
+test('an initializing owner is protected until its preconnect has completed', async () => {
+  const { service, dispatchCounts } = makeService();
+  try {
+    const connecting = service.preconnect({ threadId: THREAD_ID });
+    await assert.rejects(service.releaseThread(THREAD_ID, { onlyIfIdle: true }), { code: 'SESSION_RUNNING' });
+    await connecting;
+    await service.releaseThread(THREAD_ID, { onlyIfIdle: true });
+    assert.equal(dispatchCounts.get('initialize'), 1);
+  } finally { await service.resetRuntime(); }
+});
+
+test('a failed idle runtime can be released without starting a replacement child', async () => {
+  const { service, dispatchCounts } = makeService({ scenario: 'disconnect-mid-turn' });
+  try {
+    assert.equal((await service.send({ input: [] })).outcome, 'failed');
+    await waitFor(() => service.state === 'failed', 1000, 'failed runtime');
+    await service.releaseThread(service.rootThreadId, { onlyIfIdle: true });
+    assert.equal(service.client, null);
+    assert.equal(service.state, 'stopped');
+    assert.equal(dispatchCounts.get('initialize'), 1);
+    assert.equal(dispatchCounts.get('turn/start'), 1);
+  } finally { await service.resetRuntime(); }
+});
 
 async function asyncQuestionFixture() {
   const fixture = makeService({ scenario: 'never-respond' });

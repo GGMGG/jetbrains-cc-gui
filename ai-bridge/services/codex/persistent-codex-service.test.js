@@ -613,6 +613,34 @@ function peerCommandPrefix(scenario) {
   return [process.execPath, peerScript, '--scenario', scenario];
 }
 
+test('a refused idle deletion keeps the persistent owner and its question answerable', async () => {
+  const data = { channelId: 'idle-delete-active-owner', cwd: testCwd,
+    codexCommandPrefix: peerCommandPrefix('reverse-approval'), message: 'keep this turn alive' };
+  const sending = codexSendPersistent(data, { titleDependencies: { enabled: async () => false } });
+  let request;
+  const deadline = Date.now() + 5000;
+  while (!request && Date.now() < deadline) {
+    request = codexEvents().find(event => event.channelId === data.channelId && event.kind === 'interactionRequested');
+    if (!request) await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(request, 'native question reached the persistent channel');
+  const before = getCodexRuntimeSnapshot().sessions[0];
+  assert.ok(before);
+  await assert.rejects(codexReleaseThreadPersistent({ ...data, threadId: request.threadId, onlyIfIdle: true }),
+    { code: 'SESSION_RUNNING' });
+  const after = getCodexRuntimeSnapshot().sessions[0];
+  assert.ok(after, 'a busy refusal must not retire the registered owner');
+  assert.equal(after.sessionKey, before.sessionKey);
+  assert.equal(after.runtimePid, before.runtimePid);
+  assert.equal(after.runtimeGeneration, before.runtimeGeneration);
+  const response = await codexRespondInteractionPersistent({ ...data, rpcId: request.payload.rpcId,
+    result: { decision: 'accept' } });
+  assert.equal(response.replied, true);
+  assert.equal((await sending).outcome, 'completed');
+  await codexReleaseThreadPersistent({ ...data, threadId: request.threadId, onlyIfIdle: true });
+  assert.equal(getCodexRuntimeSnapshot().sessionCount, 0);
+});
+
 function codexEvents() {
   return processLevelLines
     .flatMap((line) => line.split('\n'))
