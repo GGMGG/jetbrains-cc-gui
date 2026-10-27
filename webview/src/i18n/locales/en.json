@@ -1637,6 +1637,9 @@
     "errorRetry": "Retry"
   },
   "mcp": {
+    "nativeToolCount": "{{count}} tools",
+    "nativeRuntime": {"notStarted": "Not started", "starting": "Connecting", "connected": "Connected", "authenticationRequired": "Authentication required", "failed": "Connection failed", "cancelled": "Cancelled", "disabled": "Disabled", "unknown": "Connection status unknown"},
+    "nativeAuth": {"unsupported": "OAuth not applicable", "notLoggedIn": "OAuth not logged in", "bearerToken": "Token authentication", "oAuth": "OAuth logged in", "unknown": "Authentication status unknown"},
     "title": "MCP Servers",
     "whatIsMcp": "What is MCP?",
     "refreshStatus": "Refresh server status",

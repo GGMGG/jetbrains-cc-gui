@@ -1642,6 +1642,9 @@
     "errorRetry": "重试"
   },
   "mcp": {
+    "nativeToolCount": "{{count}} 个工具",
+    "nativeRuntime": {"notStarted": "尚未启动", "starting": "连接中", "connected": "已连接", "authenticationRequired": "需要认证", "failed": "连接失败", "cancelled": "已取消", "disabled": "已禁用", "unknown": "连接状态未知"},
+    "nativeAuth": {"unsupported": "OAuth 不适用", "notLoggedIn": "OAuth 尚未登录", "bearerToken": "令牌认证", "oAuth": "OAuth 已登录", "unknown": "认证状态未知"},
     "title": "MCP 服务器",
     "whatIsMcp": "什么是 MCP?",
     "refreshStatus": "刷新服务器状态",
