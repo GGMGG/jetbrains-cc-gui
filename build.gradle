@@ -201,6 +201,11 @@ tasks.withType(JavaCompile).configureEach {
     options.release.set(17)
 }
 
+tasks.named('test', Test) {
+    // Keep native configuration fixtures inside their temporary home directories.
+    environment 'CODEX_HOME', ''
+}
+
 // Ensure plugin.xml is patched with the correct since/until build and change notes
 patchPluginXml {
     // plugin compatibility range
