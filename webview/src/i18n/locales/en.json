@@ -1725,6 +1725,11 @@
     "codexDeliveryUnconfirmed": "Codex has not confirmed your choice yet ({{error}}). It may still take effect, so do not answer again; if the conversation does not continue, click Stop and send your message again."
   },
   "askUserQuestion": {
+    "configWarning": "Codex reported a configuration warning. Review the details.",
+    "configWarningTitle": "Codex configuration warning",
+    "apiDeprecationWarning": "Codex reported an API compatibility notice. Review the details.",
+    "apiDeprecationTitle": "Codex API compatibility notice",
+    "warningDetails": "View details",
     "title": "Claude has some questions for you",
     "progress": "Question {{current}} / {{total}}",
     "multiSelectHint": "You can select multiple options",
@@ -1738,7 +1743,9 @@
     "timeoutWarning": "Please answer soon, dialog will close in {{seconds}} seconds",
     "expand": "Expand",
     "collapse": "Collapse",
-    "clickToAnswer": "Click to answer"
+    "clickToAnswer": "Click to answer",
+    "recordTitle": "Codex questions",
+    "recordAnswer": "Your answer"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
@@ -1870,6 +1877,9 @@
     "errorRetry": "Retry"
   },
   "mcp": {
+    "nativeToolCount": "{{count}} tools",
+    "nativeRuntime": {"notStarted": "Not started", "starting": "Connecting", "connected": "Connected", "authenticationRequired": "Authentication required", "failed": "Connection failed", "cancelled": "Cancelled", "disabled": "Disabled", "unknown": "Connection status unknown"},
+    "nativeAuth": {"unsupported": "OAuth not applicable", "notLoggedIn": "OAuth not logged in", "bearerToken": "Token authentication", "oAuth": "OAuth logged in", "unknown": "Authentication status unknown"},
     "title": "MCP Servers",
     "whatIsMcp": "What is MCP?",
     "refreshStatus": "Refresh server status",
