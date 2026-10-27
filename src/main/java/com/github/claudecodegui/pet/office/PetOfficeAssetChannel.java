@@ -79,12 +79,10 @@ final class PetOfficeAssetChannel implements AutoCloseable {
             socket.setTcpNoDelay(true);
             deadline = deadlines.schedule(() -> closeSocket(socket), 2, TimeUnit.SECONDS);
             JsonObject hello = PetOfficeIpcFrameCodec.read(socket.getInputStream());
-            fields(hello, "schemaVersion", "leaderEpoch", "type", "requestId", "connectionEpoch", "instanceId", "authProof");
+            fields(hello, "schemaVersion", "leaderEpoch", "type", "requestId", "connectionEpoch", "instanceId");
             String requester = PetOfficeIpcFrameCodec.identifier(hello, "instanceId", false);
             validate(hello, "HELLO");
-            if (!PetOfficeIpcAuthentication.verify(endpoint, "client", requester, string(hello, "connectionEpoch", 128), string(hello, "requestId", 128), hello)) {
-                throw new IOException("OFFICE_IPC_AUTH_FAILED");
-            }
+            PetOfficeIpcHandshake.server(socket, endpoint, hello);
             JsonObject welcome = envelope(hello, "WELCOME");
             welcome.addProperty("authProof", PetOfficeIpcAuthentication.proof(endpoint, "server", requester,
                     string(hello, "connectionEpoch", 128), string(hello, "requestId", 128)));
@@ -200,9 +198,7 @@ final class PetOfficeAssetChannel implements AutoCloseable {
                 hello.addProperty("requestId", UUID.randomUUID().toString());
                 hello.addProperty("type", "HELLO");
                 hello.addProperty("instanceId", requester);
-                hello.addProperty("authProof", PetOfficeIpcAuthentication.proof(endpoint, "client", requester,
-                        string(hello, "connectionEpoch", 128), string(hello, "requestId", 128)));
-                PetOfficeIpcFrameCodec.write(socket.getOutputStream(), hello);
+                PetOfficeIpcHandshake.client(socket, endpoint, hello);
                 JsonObject welcome = PetOfficeIpcFrameCodec.read(socket.getInputStream());
                 fields(welcome, "schemaVersion", "leaderEpoch", "requestId", "connectionEpoch", "type", "authProof");
                 correlate(hello, welcome, "WELCOME");
