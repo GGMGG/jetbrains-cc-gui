@@ -119,9 +119,6 @@ final class PetOfficeIpcClient implements AutoCloseable {
         packet.addProperty("connectionEpoch", epoch);
         packet.addProperty("requestId", requestId);
         packet.addProperty("type", type);
-        if (type.equals("HELLO")) {
-            packet.addProperty("authProof", PetOfficeIpcAuthentication.proof(endpoint, "client", instanceId, epoch, requestId));
-        }
         ScheduledFuture<?> deadline = null;
         Object token = new Object();
         try {
@@ -133,7 +130,11 @@ final class PetOfficeIpcClient implements AutoCloseable {
                     closeSocket();
                 }
             }, 5000, TimeUnit.MILLISECONDS);
-            PetOfficeIpcFrameCodec.write(socket.getOutputStream(), packet);
+            if (type.equals("HELLO")) {
+                PetOfficeIpcHandshake.client(socket, endpoint, packet);
+            } else {
+                PetOfficeIpcFrameCodec.write(socket.getOutputStream(), packet);
+            }
             JsonObject reply = PetOfficeIpcFrameCodec.read(socket.getInputStream());
             if (type.equals("HELLO") && "WELCOME".equals(PetOfficeIpcFrameCodec.string(reply, "type", 32))) {
                 PetOfficeIpcFrameCodec.fields(reply, "schemaVersion", "leaderEpoch", "connectionEpoch", "requestId", "type", "result", "authProof");
