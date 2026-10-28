@@ -1,5 +1,6 @@
 package com.github.claudecodegui.provider.codex;
 
+import com.github.claudecodegui.clawbot.ClawBotConversationPreview;
 import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.MessageParser;
@@ -290,6 +291,68 @@ public class CodexSDKBridgeHistoryTest {
             assertTrue(contentBlocks.get(0).getAsJsonObject().get("src").getAsString().startsWith("data:image/png;base64,"));
         } finally {
             Files.deleteIfExists(imagePath);
+            deleteDirectory(sessionsDir);
+        }
+    }
+
+    @Test
+    public void recentNativePreviewStopsAfterOneTurnEvenWhenOlderPagesExist() throws IOException {
+        Path sessionsDir = Files.createTempDirectory("codex-native-recent-preview");
+        java.util.concurrent.atomic.AtomicInteger requests = new java.util.concurrent.atomic.AtomicInteger();
+        com.github.claudecodegui.settings.CodemossSettingsService settings = new com.github.claudecodegui.settings.CodemossSettingsService() {
+            @Override
+            public String getCodexRuntimeAccessMode() {
+                return CODEX_RUNTIME_ACCESS_CLI_LOGIN;
+            }
+        };
+        try {
+            CodexSDKBridge bridge = new CodexSDKBridge(sessionsDir, settings, () -> null, "preview-owner") {
+                @Override
+                public java.util.concurrent.CompletableFuture<JsonObject> readCodexNative(
+                        String method, String channelId, String cwd, String threadId, JsonObject params) {
+                    assertEquals("codex.readHistoryPage", method);
+                    assertEquals("current-host", channelId);
+                    assertEquals("preview-thread", threadId);
+                    assertEquals(1, params.get("limit").getAsInt());
+                    requests.incrementAndGet();
+                    return java.util.concurrent.CompletableFuture.completedFuture(JsonParser.parseString("""
+                            {"thread":{"id":"preview-thread"},"readMode":"paged","cursor":"older-page","messages":[
+                              {"type":"user","raw":{"message":{"content":[{"type":"text","text":"native question"}]}}},
+                              {"type":"assistant","raw":{"message":{"content":[{"type":"text","text":"native answer"}]}}}]}
+                            """).getAsJsonObject());
+                }
+            };
+            ClaudeSession session = new ClaudeSession(null, null, bridge, null);
+            session.setProvider("codex");
+            session.getState().setSessionId("preview-thread");
+            session.getState().setCwd("/workspace");
+            session.getState().setChannelId("current-host");
+            String preview = ClawBotConversationPreview.capture(session);
+            assertEquals(1, requests.get());
+            assertTrue(preview, preview.contains("native question"));
+            assertTrue(preview, preview.contains("native answer"));
+            assertTrue(session.getMessages().isEmpty());
+        } finally {
+            deleteDirectory(sessionsDir);
+        }
+    }
+
+    @Test
+    public void previewReadsPersistedHistoryWithoutAnActiveRuntime() throws IOException {
+        Path sessionsDir = Files.createTempDirectory("codex-sdk-recent-preview");
+        try {
+            writeSessionFile(sessionsDir, "preview-session",
+                    line("2026-10-28T10:00:00Z", "event_msg", "{\"type\":\"user_message\",\"message\":\"recent question\"}"),
+                    line("2026-10-28T10:01:00Z", "response_item",
+                            "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"recent answer\"}]}"));
+            CodexSDKBridge bridge = new CodexSDKBridge(sessionsDir);
+            List<JsonObject> messages = bridge.getRecentSessionMessages("preview-session", sessionsDir.toString(), null, () -> false);
+            assertEquals(2, messages.size());
+            assertEquals("recent question", messages.get(0).get("content").getAsString());
+            assertEquals("recent answer", messages.get(1).get("content").getAsString());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> bridge.getRecentSessionMessages("preview-session", sessionsDir.toString(), null, () -> true));
+        } finally {
             deleteDirectory(sessionsDir);
         }
     }

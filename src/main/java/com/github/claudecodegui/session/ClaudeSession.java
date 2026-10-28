@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Session management for Claude conversations.
@@ -271,6 +272,17 @@ public class ClaudeSession {
                     }
 
                     @Override
+                    public List<JsonObject> getProviderSessionMessages(
+                            String provider,
+                            String sessionId,
+                            String cwd,
+                            BooleanSupplier cancellation
+                    ) {
+                        return providerRouter.getSessionMessages(provider, sessionId, cwd,
+                                ClaudeSession.this.state.getChannelId(), cancellation);
+                    }
+
+                    @Override
                     public JsonObject getLatestClaudeUserMessage(String sessionId, String cwd) {
                         return claudeSDKBridge.getLatestClaudeUserMessage(sessionId, cwd);
                     }
@@ -278,6 +290,18 @@ public class ClaudeSession {
                     @Override
                     public JsonObject getProviderSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit) {
                         return claudeSDKBridge.getSessionMessagesPage(sessionId, cwd, beforeTurn, limit);
+                    }
+
+                    @Override
+                    public JsonObject getProviderSessionMessagesPage(
+                            String sessionId,
+                            String cwd,
+                            Integer beforeTurn,
+                            int limit,
+                            BooleanSupplier cancellation
+                    ) {
+                        return claudeSDKBridge.getSessionMessagesPage(
+                                sessionId, cwd, beforeTurn, limit, cancellation);
                     }
                 }
         );
@@ -371,6 +395,37 @@ public class ClaudeSession {
 
     public List<Message> getMessages() {
         return state.getMessages();
+    }
+
+    /** Read-only preview history: never replace live messages, change execution state or notify the Webview. */
+    public List<Message> readRecentHistoryMessages(BooleanSupplier cancellation) {
+        String provider;
+        String persistedSessionId;
+        String cwd;
+        String channelId;
+        synchronized (state.getMessageStateLock()) {
+            provider = state.getProvider();
+            persistedSessionId = state.getSessionId();
+            cwd = state.getCwd();
+            channelId = state.getChannelId();
+        }
+        if (cancellation.getAsBoolean()) {
+            throw new java.util.concurrent.CancellationException("Preview history was cancelled");
+        }
+        if (persistedSessionId == null || persistedSessionId.isBlank()) {
+            return List.of();
+        }
+        List<Message> messages = new java.util.ArrayList<>();
+        for (JsonObject raw : providerRouter.getRecentSessionMessages(provider, persistedSessionId, cwd, channelId, cancellation)) {
+            if (cancellation.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException("Preview history was cancelled");
+            }
+            Message parsed = messageParser.parseServerMessage(raw);
+            if (parsed != null) {
+                messages.add(parsed);
+            }
+        }
+        return messages;
     }
 
     /**
@@ -923,6 +978,12 @@ public class ClaudeSession {
      */
     public CompletableFuture<Void> loadFromServer() {
         return messageOrchestrator.loadFromServer();
+    }
+
+    /** Load history with cancellation support for automatic startup restoration. */
+    public CompletableFuture<Void> loadFromServer(
+            SessionMessageOrchestrator.HistoryLoadCancellation cancellation) {
+        return messageOrchestrator.loadFromServer(cancellation);
     }
 
     /**
