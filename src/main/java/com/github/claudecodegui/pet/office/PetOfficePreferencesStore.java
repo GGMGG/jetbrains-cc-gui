@@ -25,7 +25,7 @@ final class PetOfficePreferencesStore {
     record Presentation(boolean effects, boolean attention, boolean ambience, boolean depth) { }
     record Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
                        boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides,
-                       String officeName, Map<String, String> employeeNames) {
+                       String officeName, Map<String, String> employeeNames, PetOfficeOrganization organization) {
         Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
                     boolean showIdle, boolean paused, boolean topmost, int zoom) {
             this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, new Presentation(true, true, true, true));
@@ -41,6 +41,11 @@ final class PetOfficePreferencesStore {
         Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
                     boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides, String officeName) {
             this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, presentation, appearanceOverrides, officeName, Map.of());
+        }
+        Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
+                    boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides,
+                    String officeName, Map<String, String> employeeNames) {
+            this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, presentation, appearanceOverrides, officeName, employeeNames, PetOfficeOrganization.empty());
         }
         Preferences {
             var normalized = new ArrayList<>(floors);
@@ -118,8 +123,15 @@ final class PetOfficePreferencesStore {
         if (!value.has("employeeNames")) {
             value.add("employeeNames", new JsonObject());
         }
+        if (!value.has("organization")) {
+            value.add("organization", JSON.toJsonTree(PetOfficeOrganization.empty()));
+        }
         fields(value, "limitMiB", "floors", "floor", "product", "search", "showIdle", "paused", "topmost", "zoom", "presentation",
-                "appearanceOverrides", "officeName", "employeeNames");
+                "appearanceOverrides", "officeName", "employeeNames", "organization");
+        if (!value.get("organization").isJsonObject()) {
+            throw new IOException("OFFICE_PREFERENCES_INVALID");
+        }
+        PetOfficeOrganization.validate(value.getAsJsonObject("organization"));
         if (JSON.toJson(value).getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 48000) {
             throw new IOException("OFFICE_PREFERENCES_INVALID");
         }

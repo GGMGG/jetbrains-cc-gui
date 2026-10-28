@@ -21,7 +21,7 @@ final class PetOfficeJsonCodec {
     static final int MAX_STRING_LENGTH = 64 * 1024;
     private static final int MAX_DEPTH = 32;
     private static final int MAX_SOURCE_KEY_LENGTH = 386;
-    private enum JsonContext { ROOT, PREFERENCES, BINDING_OVERRIDES, OTHER }
+    private enum JsonContext { ROOT, PREFERENCES, ORGANIZATION, BINDING_OVERRIDES, OTHER }
     private PetOfficeJsonCodec() { }
 
     static JsonObject parse(byte[] bytes) throws IOException {
@@ -97,6 +97,12 @@ final class PetOfficeJsonCodec {
             return JsonContext.PREFERENCES;
         }
         if (parent == JsonContext.PREFERENCES && ("appearanceOverrides".equals(name) || "employeeNames".equals(name))) {
+            return JsonContext.BINDING_OVERRIDES;
+        }
+        if (parent == JsonContext.PREFERENCES && "organization".equals(name)) {
+            return JsonContext.ORGANIZATION;
+        }
+        if (parent == JsonContext.ORGANIZATION && "placements".equals(name)) {
             return JsonContext.BINDING_OVERRIDES;
         }
         return JsonContext.OTHER;

@@ -3,9 +3,9 @@ import { editOfficeEmployeeName, parseOfficeEmployeeNames } from './officeEmploy
 import { officePreferenceBytes } from './officePreferenceBudget';
 import type { OfficeSharedPreferences } from './officeSharedStorage';
 
-/** Reclaim both maps together while preserving currently admitted employee bindings. */
+/** Reclaim both maps together while preserving the remembered members of existing groups. */
 export function editOfficeEmployeeMetadata(preferences: OfficeSharedPreferences, key: string, change: { name: string } | { petId: string }, live: ReadonlySet<string>) {
-  const protectedKeys = live;
+  const protectedKeys = new Set([...live, ...Object.keys(preferences.organization.placements).filter(key => preferences.organization.placements[key].group)]);
   let employeeNames = 'name' in change ? editOfficeEmployeeName(preferences.employeeNames, key, change.name, protectedKeys) : preferences.employeeNames;
   let appearanceOverrides = 'petId' in change ? editOfficeAppearanceOverride(preferences.appearanceOverrides, key, change.petId, protectedKeys) : preferences.appearanceOverrides;
   if (officePreferenceBytes(employeeNames) + officePreferenceBytes(appearanceOverrides) > 32002
