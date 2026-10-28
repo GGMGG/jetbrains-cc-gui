@@ -5,6 +5,7 @@ import com.github.claudecodegui.util.PlatformUtils;
 import com.google.gson.JsonObject;
 import org.junit.After;
 import org.junit.Test;
+import org.junit.BeforeClass;
 
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +20,12 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class CodemossSettingsServiceCodexCliLoginTest {
+    @BeforeClass
+    public static void requireIsolatedNativeConfigHome() {
+        String configuredHome = System.getenv("CODEX_HOME");
+        assertTrue("Run configuration fixtures with CODEX_HOME unset or empty", configuredHome == null || configuredHome.isBlank());
+    }
+
     private String originalHomeDir;
 
     @After

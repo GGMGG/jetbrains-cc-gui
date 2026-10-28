@@ -8,6 +8,9 @@ import java.util.List;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Pattern;
 
 public final class ClawBotConversationPreview {
@@ -20,8 +23,46 @@ public final class ClawBotConversationPreview {
     }
 
     public static String capture(ClaudeSession session) {
+        return capture(session, () -> false);
+    }
+
+    /** Explicit selection can read recent history, independently of startup history restoration. */
+    public static String capture(ClaudeSession session, BooleanSupplier cancellation) {
+        String epoch = session.getRuntimeSessionEpoch();
+        String sessionId = session.getSessionId();
+        String provider = session.getProvider();
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(2500);
+        BooleanSupplier stale = () -> cancellation.getAsBoolean() || Thread.currentThread().isInterrupted()
+                || !Objects.equals(epoch, session.getRuntimeSessionEpoch()) || !Objects.equals(sessionId, session.getSessionId())
+                || !Objects.equals(provider, session.getProvider());
+        if (stale.getAsBoolean()) {
+            throw new CancellationException("Preview target changed");
+        }
         synchronized (session.getState().getMessageStateLock()) {
-            return format(session.getMessages(), session.isBusy() || session.isLoading());
+            Preview memory = latest(session.getMessages(), session.isBusy() || session.isLoading(), false);
+            if (memory.hasQuestion() || session.getSessionId() == null || session.getSessionId().isBlank()) {
+                return memory.text();
+            }
+        }
+        List<ClaudeSession.Message> history = List.of();
+        boolean unavailable = false;
+        try {
+            history = session.readRecentHistoryMessages(() -> stale.getAsBoolean() || System.nanoTime() >= deadline);
+            unavailable = System.nanoTime() >= deadline;
+        } catch (RuntimeException error) {
+            unavailable = true;
+        }
+        synchronized (session.getState().getMessageStateLock()) {
+            if (stale.getAsBoolean()) {
+                throw new CancellationException("Preview target changed");
+            }
+            boolean busy = session.isBusy() || session.isLoading();
+            Preview memory = latest(session.getMessages(), busy, false);
+            if (memory.hasQuestion()) {
+                return memory.text();
+            }
+            return unavailable ? "【会话进度】\n\n" + state(busy) + "\n\n最近对话暂时无法读取，请稍后重试。"
+                    : latest(history, busy, true).text();
         }
     }
 
@@ -53,9 +94,19 @@ public final class ClawBotConversationPreview {
     }
 
     static String format(List<ClaudeSession.Message> messages, boolean busy) {
+        return latest(messages, busy, false).text();
+    }
+
+    private record Preview(boolean hasQuestion, String text) { }
+
+    private static String state(boolean busy) {
+        return busy ? "处理中，最终回复尚未完成。" : "当前空闲。";
+    }
+
+    private static Preview latest(List<ClaudeSession.Message> messages, boolean busy, boolean history) {
         String question = "";
         String answer = "";
-        for (int index = messages.size() - 1; index >= Math.max(0, messages.size() - 256); index--) {
+        for (int index = messages.size() - 1; index >= 0; index--) {
             ClaudeSession.Message message = messages.get(index);
             if (message.type != ClaudeSession.Message.Type.USER && message.type != ClaudeSession.Message.Type.ASSISTANT) {
                 continue;
@@ -77,12 +128,12 @@ public final class ClawBotConversationPreview {
                 answer = visible;
             }
         }
-        String state = busy ? "处理中，最终回复尚未完成。" : "当前空闲。";
+        String state = state(busy);
         if (question.isEmpty()) {
-            return "【会话进度】\n\n" + state + "\n\n当前内存中没有可预览的一问一答；未读取磁盘历史。";
+            return new Preview(false, "【会话进度】\n\n" + state + "\n\n该会话暂无可预览的一问一答。");
         }
-        return "【会话进度】\n\n" + state + "\n\n最近提问：\n" + question + "\n\n"
-                + (answer.isEmpty() ? "该问题暂无可预览的回复。" : (busy ? "当前回复片段：\n" : "最近回复：\n") + answer);
+        return new Preview(true, "【会话进度】\n\n" + state + "\n\n最近提问：\n" + question + "\n\n"
+                + (answer.isEmpty() ? "该问题暂无可预览的回复。" : (busy && !history ? "当前回复片段：\n" : "最近回复：\n") + answer));
     }
 
     private static String visibleText(ClaudeSession.Message message, int maxLength) {
