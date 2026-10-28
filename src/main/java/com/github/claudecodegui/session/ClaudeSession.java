@@ -397,6 +397,37 @@ public class ClaudeSession {
         return state.getMessages();
     }
 
+    /** Read-only preview history: never replace live messages, change execution state or notify the Webview. */
+    public List<Message> readRecentHistoryMessages(BooleanSupplier cancellation) {
+        String provider;
+        String persistedSessionId;
+        String cwd;
+        String channelId;
+        synchronized (state.getMessageStateLock()) {
+            provider = state.getProvider();
+            persistedSessionId = state.getSessionId();
+            cwd = state.getCwd();
+            channelId = state.getChannelId();
+        }
+        if (cancellation.getAsBoolean()) {
+            throw new java.util.concurrent.CancellationException("Preview history was cancelled");
+        }
+        if (persistedSessionId == null || persistedSessionId.isBlank()) {
+            return List.of();
+        }
+        List<Message> messages = new java.util.ArrayList<>();
+        for (JsonObject raw : providerRouter.getRecentSessionMessages(provider, persistedSessionId, cwd, channelId, cancellation)) {
+            if (cancellation.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException("Preview history was cancelled");
+            }
+            Message parsed = messageParser.parseServerMessage(raw);
+            if (parsed != null) {
+                messages.add(parsed);
+            }
+        }
+        return messages;
+    }
+
     /**
      * Return a deep snapshot that can safely cross asynchronous transport boundaries.
      *

@@ -173,6 +173,24 @@ public class SessionProviderRouter {
         return claudeSDKBridge.getSessionMessages(sessionId, cwd, cancellation);
     }
 
+    /** Reads only the latest display turn where pagination is available, without starting provider work. */
+    public List<JsonObject> getRecentSessionMessages(String provider, String sessionId, String cwd, String channelId, BooleanSupplier cancellation) {
+        if ("codex".equals(provider)) {
+            return codexSDKBridge.getRecentSessionMessages(sessionId, cwd, channelId, cancellation);
+        }
+        if ("claude".equals(provider)) {
+            JsonObject page = claudeSDKBridge.getSessionMessagesPage(sessionId, cwd, null, 1, cancellation);
+            if (page != null && page.has("messages") && page.get("messages").isJsonArray()) {
+                List<JsonObject> messages = new java.util.ArrayList<>();
+                for (var message : page.getAsJsonArray("messages")) {
+                    messages.add(message.getAsJsonObject());
+                }
+                return messages;
+            }
+        }
+        return getSessionMessages(provider, sessionId, cwd, channelId, cancellation);
+    }
+
     public Map<String, MarkerCliBridge> getCliBridges() {
         return cliBridges;
     }
