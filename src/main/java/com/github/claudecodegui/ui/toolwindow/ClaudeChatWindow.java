@@ -19,11 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import com.intellij.util.concurrency.AppExecutorUtil;
-import java.util.concurrent.atomic.AtomicReference;
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.handler.history.HistoryHandler;
 import com.github.claudecodegui.handler.core.MessageDispatcher;
@@ -135,6 +131,7 @@ public class ClaudeChatWindow {
     private volatile ScheduledFuture<?> clawBotInboundPollTask;
     private final AtomicBoolean clawBotTurnActive = new AtomicBoolean();
     private final AtomicBoolean clawBotControlActive = new AtomicBoolean();
+    private final AtomicBoolean clawBotPreviewActive = new AtomicBoolean();
     private volatile ScheduledFuture<?> clawBotRegistrationTask;
     private final ClawBotIdeExecutionJournal clawBotExecutionJournal;
     private volatile ClawBotPendingReply clawBotPendingReply;
@@ -3705,7 +3702,7 @@ public class ClaudeChatWindow {
     }
 
     private void pollClawBotPreview() {
-        if (disposed || project.isDisposed()) {
+        if (disposed || project.isDisposed() || clawBotPreviewActive.get()) {
             return;
         }
         ClawBotIdeClient client = clawBotClient;
@@ -3719,9 +3716,28 @@ public class ClaudeChatWindow {
                     || !client.matchesTarget(permissionServiceKey, preview, clawBotGeneration(current), current.getProvider())) {
                 return;
             }
-            String text = ClawBotConversationPreview.capture(current);
-            if (session == current && client.matchesTarget(permissionServiceKey, preview, clawBotGeneration(current), current.getProvider())) {
-                client.replyToPreview(permissionServiceKey, preview.messageId(), text);
+            if (!clawBotPreviewActive.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                AppExecutorUtil.getAppExecutorService().execute(() -> {
+                    try {
+                        String text = ClawBotConversationPreview.capture(current,
+                                () -> disposed || project.isDisposed() || session != current || clawBotClient != client
+                                        || !client.matchesTarget(permissionServiceKey, preview, clawBotGeneration(current), current.getProvider()));
+                        if (!disposed && !project.isDisposed() && session == current && clawBotClient == client
+                                && client.matchesTarget(permissionServiceKey, preview, clawBotGeneration(current), current.getProvider())) {
+                            client.replyToPreview(permissionServiceKey, preview.messageId(), text);
+                        }
+                    } catch (IOException | RuntimeException error) {
+                        LOG.debug("[ClawBot] Preview unavailable");
+                    } finally {
+                        clawBotPreviewActive.set(false);
+                    }
+                });
+            } catch (RuntimeException error) {
+                clawBotPreviewActive.set(false);
+                throw error;
             }
         } catch (IOException | RuntimeException error) {
             LOG.debug("[ClawBot] Preview unavailable");
