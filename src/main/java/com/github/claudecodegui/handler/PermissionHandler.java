@@ -1,5 +1,6 @@
 package com.github.claudecodegui.handler;
 
+import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.SessionExecutionOwnership;
 import com.github.claudecodegui.session.SessionExecutionState;
 import com.github.claudecodegui.session.SessionInteractionScope;
@@ -764,7 +765,7 @@ public class PermissionHandler extends BaseMessageHandler {
 
     private void bindExecutionInteraction(SessionExecutionState.WaitReason reason, CompletableFuture<?> future) {
         try {
-            com.github.claudecodegui.session.ClaudeSession owner = context.getSession();
+            ClaudeSession owner = context.getSession();
             if (owner != null) {
                 SessionExecutionOwnership execution =
                         SessionInteractionScope.resolve(owner.getState().currentExecutionOwnership());
