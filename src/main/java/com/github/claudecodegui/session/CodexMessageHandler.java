@@ -126,7 +126,7 @@ public class CodexMessageHandler implements MessageCallback {
     @Override
     public void onMessage(String type, String content) {
         synchronized (state.getMessageStateLock()) {
-            if (!ownsCurrentTurn()) {
+            if (!ownsBindingAndTurn()) {
                 return;
             }
             // [FIX] Handle multiple message types
@@ -184,7 +184,7 @@ public class CodexMessageHandler implements MessageCallback {
     @Override
     public void onError(String error) {
         synchronized (state.getMessageStateLock()) {
-            if (!ownsCurrentTurn()) {
+            if (!ownsBindingAndTurn()) {
                 return;
             }
             state.getExecutionState().finish(executionTurn, SessionExecutionState.Outcome.FAILED);
@@ -262,10 +262,6 @@ public class CodexMessageHandler implements MessageCallback {
     }
 
     // ===== Private methods =====
-
-    private boolean ownsCurrentTurn() {
-        return ownsBindingAndTurn();
-    }
 
     private boolean ownsBindingAndTurn() {
         return state.isCurrentTurn(turnOwner) && runtimeSessionEpoch.equals(state.getRuntimeSessionEpoch())
