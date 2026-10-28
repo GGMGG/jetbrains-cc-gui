@@ -39,26 +39,32 @@ public class PetOfficeIpcFrameCodecTest {
     }
 
     @Test
-    public void onlyThePreferenceAppearanceMapAdmitsLongSessionKeysAndMoreThan32Entries() throws Exception {
+    public void onlyThePreferenceBindingMapsAdmitLongSessionKeysAndMoreThan32Entries() throws Exception {
+        for (String field : new String[]{"appearanceOverrides", "employeeNames"}) {
+            assertTypedBindingMap(field);
+        }
+    }
+
+    private static void assertTypedBindingMap(String field) throws Exception {
         var overrides = new com.google.gson.JsonObject();
         String longestKey = "i".repeat(128) + "/" + "t".repeat(128) + "/" + "b".repeat(128);
         overrides.addProperty(longestKey, "builtin");
         for (int index = 1; index < 256; index++) {
             overrides.addProperty("ide/tab/binding-" + index, "builtin");
         }
-        String admitted = "{\"preferences\":{\"appearanceOverrides\":" + overrides + "}}";
+        String admitted = "{\"preferences\":{\"" + field + "\":" + overrides + "}}";
         assertEquals(256, PetOfficeIpcFrameCodec.parse(admitted.getBytes(StandardCharsets.UTF_8))
-                .getAsJsonObject("preferences").getAsJsonObject("appearanceOverrides").size());
-        String duplicate = "{\"preferences\":{\"appearanceOverrides\":{\"" + longestKey + "\":\"builtin\",\"" + longestKey + "\":\"builtin\"}}}";
+                .getAsJsonObject("preferences").getAsJsonObject(field).size());
+        String duplicate = "{\"preferences\":{\"" + field + "\":{\"" + longestKey + "\":\"builtin\",\"" + longestKey + "\":\"builtin\"}}}";
         assertThrows(IOException.class, () -> PetOfficeIpcFrameCodec.parse(duplicate.getBytes(StandardCharsets.UTF_8)));
-        for (String rejected : new String[]{overrides.toString(), "{\"appearanceOverrides\":" + overrides + "}",
-                "{\"nested\":{\"preferences\":{\"appearanceOverrides\":" + overrides + "}}}"}) {
+        for (String rejected : new String[]{overrides.toString(), "{\"" + field + "\":" + overrides + "}",
+                "{\"nested\":{\"preferences\":{\"" + field + "\":" + overrides + "}}}"}) {
             assertThrows(IOException.class, () -> PetOfficeIpcFrameCodec.parse(rejected.getBytes(StandardCharsets.UTF_8)));
         }
         overrides.addProperty("ide/tab/overflow", "builtin");
-        String tooMany = "{\"preferences\":{\"appearanceOverrides\":" + overrides + "}}";
+        String tooMany = "{\"preferences\":{\"" + field + "\":" + overrides + "}}";
         assertThrows(IOException.class, () -> PetOfficeIpcFrameCodec.parse(tooMany.getBytes(StandardCharsets.UTF_8)));
-        String tooLong = "{\"preferences\":{\"appearanceOverrides\":{\"" + longestKey + "x\":\"builtin\"}}}";
+        String tooLong = "{\"preferences\":{\"" + field + "\":{\"" + longestKey + "x\":\"builtin\"}}}";
         assertThrows(IOException.class, () -> PetOfficeIpcFrameCodec.parse(tooLong.getBytes(StandardCharsets.UTF_8)));
     }
 }

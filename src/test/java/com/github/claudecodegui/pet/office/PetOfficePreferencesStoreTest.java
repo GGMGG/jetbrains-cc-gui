@@ -14,6 +14,68 @@ import static org.junit.Assert.*;
 public class PetOfficePreferencesStoreTest {
     @Rule public final TemporaryFolder temporary = new TemporaryFolder();
 
+    @Test public void employeeNamesSurviveTakeoverAndBoundsUpdatesWithoutLeakingToAnotherBinding() throws Exception {
+        var root = PetOfficeTestRoot.create(temporary);
+        var store = new PetOfficePreferencesStore(root);
+        var json = new Gson();
+        var legacy = json.toJsonTree(PetOfficePreferencesStore.defaults()).getAsJsonObject();
+        legacy.getAsJsonObject("preferences").remove("employeeNames");
+        try (var lease = PetOfficeRuntimeLease.tryAcquire(root).orElseThrow()) {
+            new PetOfficePrivateFiles(root, PetOfficePreferencesStore.limits()).writePrivate(PetOfficePreferencesStore.FILE, legacy, lease);
+            var restored = store.read();
+            assertFalse(restored.recovered());
+            assertTrue(restored.state().preferences().employeeNames().isEmpty());
+            var p = restored.state().preferences();
+            var names = new java.util.HashMap<String, String>();
+            names.put("ide/tab/old", "夜幕架构师 🐾"); names.put("ide/tab/new", "<研发 & QA>");
+            names.put("i".repeat(128) + "/" + "t".repeat(128) + "/" + "b".repeat(128), "Full-length identity");
+            for (int index = 0; index < 40; index++) {
+                names.put("11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/binding-" + index, "Employee " + index);
+            }
+            var named = new PetOfficePreferencesStore.Preferences(p.limitMiB(), p.floors(), p.floor(), p.product(), p.search(),
+                    p.showIdle(), p.paused(), p.topmost(), p.zoom(), p.presentation(), p.appearanceOverrides(), p.officeName(), names);
+            var patched = PetOfficeWindowPreferences.changed(named, new PetOfficeWindowPreferences.Patch(
+                    restored.state().revision(), p.officeName(), !p.topmost(), p.zoom()));
+            assertEquals(named.employeeNames(), patched.employeeNames());
+            names.clear();
+            var saved = store.update(restored.state().revision(), named, null, lease);
+            var moved = store.update(saved.revision(), null, new PetOfficePreferencesStore.Bounds(50, 60, 1000, 700, true), lease);
+            assertEquals(named, moved.preferences());
+            assertEquals(named, new PetOfficePreferencesStore(root).read().state().preferences());
+            assertFalse(named.employeeNames().containsKey("other/tab/old"));
+        }
+        assertEquals("夜幕架构师 🐾", new PetOfficePreferencesStore(root).read().state().preferences().employeeNames().get("ide/tab/old"));
+    }
+
+    @Test public void invalidEmployeeNamesCannotReplaceTheSavedRecord() throws Exception {
+        var root = PetOfficeTestRoot.create(temporary);
+        var store = new PetOfficePreferencesStore(root);
+        var json = new Gson();
+        try (var lease = PetOfficeRuntimeLease.tryAcquire(root).orElseThrow()) {
+            var original = store.read().state();
+            for (String invalid : new String[]{"null", "[]", "{\"ide/tab\":\"Name\"}", "{\"ide/tab/..\":\"Name\"}",
+                    "{\"ide/tab/key\":null}", "{\"ide/tab/key\":true}", "{\"ide/tab/key\":\"\"}", "{\"ide/tab/key\":\"   \"}"}) {
+                var raw = json.toJsonTree(original.preferences()).getAsJsonObject();
+                raw.add("employeeNames", com.google.gson.JsonParser.parseString(invalid));
+                assertThrows(IOException.class, () -> PetOfficePreferencesStore.preferences(raw));
+            }
+            for (String invalid : new String[]{"x".repeat(25), "🐾".repeat(25), "line\nbreak", "control\u0085", "rtl\u202e", "\ud800"}) {
+                var raw = json.toJsonTree(original.preferences()).getAsJsonObject();
+                var names = new com.google.gson.JsonObject(); names.addProperty("ide/tab/key", invalid); raw.add("employeeNames", names);
+                assertThrows(IOException.class, () -> PetOfficePreferencesStore.preferences(raw));
+            }
+            var p = original.preferences();
+            var invalid = new PetOfficePreferencesStore.Preferences(p.limitMiB(), p.floors(), p.floor(), p.product(), p.search(),
+                    p.showIdle(), p.paused(), p.topmost(), p.zoom(), p.presentation(), p.appearanceOverrides(), p.officeName(), java.util.Map.of("ide/tab/key", "x".repeat(25)));
+            assertThrows(IOException.class, () -> store.update(original.revision(), invalid, null, lease));
+            assertEquals(original, store.read().state());
+            var raw = json.toJsonTree(original.preferences()).getAsJsonObject();
+            var names = new com.google.gson.JsonObject(); names.addProperty("ide/tab/key", "🐾".repeat(24)); raw.add("employeeNames", names);
+            store.update(original.revision(), PetOfficePreferencesStore.preferences(raw), null, lease);
+            assertEquals("🐾".repeat(24), new PetOfficePreferencesStore(root).read().state().preferences().employeeNames().get("ide/tab/key"));
+        }
+    }
+
     @Test public void officeNameSurvivesTakeoverAndBoundsUpdatesWithLegacyDefaultsAndWindowTitles() throws Exception {
         var root = PetOfficeTestRoot.create(temporary);
         var store = new PetOfficePreferencesStore(root);
@@ -96,13 +158,15 @@ public class PetOfficePreferencesStoreTest {
     }
 
     @Test public void aValidatedBackupRecoversPreferencesWithoutRestoringModeOrAcknowledgements() throws Exception {
-        var root = PetOfficeTestRoot.create(temporary); var store = new PetOfficePreferencesStore(root);
+        var root = PetOfficeTestRoot.create(temporary); var store = new PetOfficePreferencesStore(root); var modes = new PetOfficeModeStore(root);
         try (var lease = PetOfficeRuntimeLease.tryAcquire(root).orElseThrow()) {
+            var entering = modes.beginEnter("owner", lease); assertTrue(modes.commitOffice(entering, lease));
             store.update("initial", limit(64), null, lease);
             Files.writeString(root.resolve(PetOfficePreferencesStore.FILE), "{\"schemaVersion\":99}");
             var recovered = store.read(); assertTrue(recovered.recovered()); assertEquals(50, recovered.state().preferences().limitMiB());
             var next = store.update(recovered.state().revision(), limit(96), null, lease);
             assertNotEquals(recovered.state().revision(), next.revision()); assertFalse(store.read().recovered());
+            assertEquals(PetOfficeModeStore.Mode.OFFICE, modes.read().mode());
         }
     }
 

@@ -1,4 +1,5 @@
 import { keys, object, text } from './officeLiveModel';
+import { officePreferenceBytes } from './officePreferenceBudget';
 
 export interface OfficePetChoice { id: string; label: string }
 export type OfficeAppearanceOverrides = Record<string, string>;
@@ -12,7 +13,7 @@ export function validOfficePetId(value: unknown): value is string {
 /** Overrides use the complete admitted binding identity; a reused tab cannot inherit another binding's choice. */
 export function parseOfficeAppearanceOverrides(raw: unknown): OfficeAppearanceOverrides {
   const value = object(raw), entries = Object.entries(value);
-  if (entries.length > 256 || new TextEncoder().encode(JSON.stringify(value)).length > 32000) throw new Error('sharedPreferencesError');
+  if (entries.length > 256 || officePreferenceBytes(value) > 32000) throw new Error('sharedPreferencesError');
   for (const [key, petId] of entries) {
     const parts = key.split('/');
     if (parts.length !== 3 || parts.some(part => !IDENTITY.test(part) || part === '.' || part === '..') || !validOfficePetId(petId)) throw new Error('sharedPreferencesError');

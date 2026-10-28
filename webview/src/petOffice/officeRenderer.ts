@@ -8,6 +8,7 @@ import type { OfficeCamera } from './officeCamera';
 import { drawOfficeAmbience, drawOfficeTaskFeedback } from './officeSceneEffects';
 import type { OfficeScenePresentation } from './officeSceneEffects';
 import type { OfficeActorMotion } from './officeTransitions';
+import { drawOfficeNameplate } from './officeNameplates';
 
 export const OFFICE_SCENE_WIDTH = 1160;
 export const OFFICE_SCENE_HEIGHT = 1040;
@@ -44,6 +45,7 @@ function position(seat: number): { x: number; y: number } {
   const slot = seat % OFFICE_FLOOR_CAPACITY;
   return { x: 194 + (slot % COLUMNS) * 256, y: 280 + Math.floor(slot / COLUMNS) * ROW_GAP };
 }
+
 
 function box(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, color: string, radius = 0): void {
   ctx.fillStyle = color;
@@ -212,8 +214,10 @@ function drawVectorActors(ctx: CanvasRenderingContext2D, sources: readonly Offic
     const { scale, half, x, y, label } = seat;
     const previous = OFFICE_ART_SEATS[theme][source.seat % OFFICE_FLOOR_CAPACITY - 4];
     const previousLabel = previous?.label ?? 0;
-    const actorHeight = Math.min(144 * scale, previous ? y - previousLabel - 30 : 144 * scale);
-    const regionTop = Math.max(y - 165 * scale, previous ? previousLabel + 23 : 0);
+    const named = presentation?.employeeNames !== undefined;
+    const actorHeight = Math.min(144 * scale, previous ? y - previousLabel - (named ? 34 + 46 * scale : 30) : 144 * scale);
+    const nameplateY = y - actorHeight - 23 * scale;
+    const regionTop = Math.max(named ? nameplateY - 28 * scale : y - 165 * scale, previous ? previousLabel + 23 : 0);
     const region = { sourceKey: source.sourceKey, x: x - half, y: regionTop, width: half * 2, height: label + 22 - regionTop };
     const actor = typeof visual === 'function' ? visual(source) : visual;
     const motion = actor?.motion;
@@ -248,6 +252,8 @@ function drawVectorActors(ctx: CanvasRenderingContext2D, sources: readonly Offic
     ctx.fillStyle = '#bdd2d6'; ctx.font = `${9 * scale}px "Segoe UI", "Microsoft YaHei", sans-serif`;
     ctx.fillText(fit(`${source.tabLabel} · ${source.product}`), x, label + 17);
     ctx.fillStyle = phaseColor(source.phase); ctx.beginPath(); ctx.arc(x + width / 2 - 7 * scale, label + 8.5, 2.5 * scale, 0, Math.PI * 2); ctx.fill();
+    if (named) drawOfficeNameplate(ctx, presentation.employeeNames?.[source.sourceKey] || source.tabLabel, x, nameplateY, scale,
+      half * 2 / scale - 12, theme, time, presentation.nameplateMotion ?? false, source.seat, source.sourceKey === selected);
     if (presentation) drawOfficeTaskFeedback(ctx, source.sourceKey, x, y, scale, presentation.effectTime, presentation);
     regions.push(region);
   }
@@ -315,7 +321,10 @@ export function drawOfficeScene(
     label = `${source.tabLabel} · ${source.product}`; while (ctx.measureText(label).width > 188 && label.length > 2) label = label.slice(0, -2) + '…';
     ctx.fillText(label, x, y + 60);
     ctx.fillStyle = phaseColor(source.phase); ctx.beginPath(); ctx.arc(x - 92, y - 107, 5, 0, Math.PI * 2); ctx.fill();
-    regions.push({ sourceKey: source.sourceKey, x: x - 108, y: y - 142, width: 216, height: 208 });
+    const named = presentation?.employeeNames !== undefined;
+    if (named) drawOfficeNameplate(ctx, presentation.employeeNames?.[source.sourceKey] || source.tabLabel, x, y - 158, 1,
+      202, theme, time, presentation.nameplateMotion ?? false, source.seat, selectedSource);
+    regions.push({ sourceKey: source.sourceKey, x: x - 108, y: y - (named ? 186 : 142), width: 216, height: named ? 252 : 208 });
     if (presentation) drawOfficeTaskFeedback(ctx, source.sourceKey, x, y - 15, 1, presentation.effectTime, presentation);
   }
   return regions;

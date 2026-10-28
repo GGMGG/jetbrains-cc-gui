@@ -374,6 +374,10 @@ body:has(.office-live) { background: #111820; }
 .office-appearance-control .ant-btn { flex-shrink: 0; width: 24px; padding: 0; }
 .office-appearance-control .ant-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .office-appearance-control > small { grid-column: 1 / -1; }
+.office-employee-name-input > .ant-input-affix-wrapper { flex: 1; min-width: 0; }
+.office-employee-name-input .ant-btn:not(.ant-btn-icon-only) { width: auto; padding: 0 7px; }
+.office-employee-name-count { color: var(--office-muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
 .office-live .office-selection:has(.office-appearance-control) { flex-shrink: 0; height: auto; min-height: 0; max-height: min(330px, 45dvh); overflow-y: auto; }
 
 .office-feedback-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }

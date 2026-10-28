@@ -21,7 +21,7 @@ final class PetOfficeJsonCodec {
     static final int MAX_STRING_LENGTH = 64 * 1024;
     private static final int MAX_DEPTH = 32;
     private static final int MAX_SOURCE_KEY_LENGTH = 386;
-    private enum JsonContext { ROOT, PREFERENCES, APPEARANCE_OVERRIDES, OTHER }
+    private enum JsonContext { ROOT, PREFERENCES, BINDING_OVERRIDES, OTHER }
     private PetOfficeJsonCodec() { }
 
     static JsonObject parse(byte[] bytes) throws IOException {
@@ -49,7 +49,7 @@ final class PetOfficeJsonCodec {
             case BEGIN_OBJECT:
                 JsonObject object = new JsonObject();
                 Set<String> fields = new HashSet<>();
-                boolean overrides = context == JsonContext.APPEARANCE_OVERRIDES;
+                boolean overrides = context == JsonContext.BINDING_OVERRIDES;
                 int maxNameLength = overrides ? MAX_SOURCE_KEY_LENGTH : 64;
                 int maxFields = overrides ? PetOfficeSessionRegistry.MAX_SOURCES : 32;
                 reader.beginObject();
@@ -96,8 +96,8 @@ final class PetOfficeJsonCodec {
         if (parent == JsonContext.ROOT && "preferences".equals(name)) {
             return JsonContext.PREFERENCES;
         }
-        if (parent == JsonContext.PREFERENCES && "appearanceOverrides".equals(name)) {
-            return JsonContext.APPEARANCE_OVERRIDES;
+        if (parent == JsonContext.PREFERENCES && ("appearanceOverrides".equals(name) || "employeeNames".equals(name))) {
+            return JsonContext.BINDING_OVERRIDES;
         }
         return JsonContext.OTHER;
     }
