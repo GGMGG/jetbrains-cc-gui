@@ -9,9 +9,15 @@ import com.google.gson.JsonParser;
 import org.junit.Test;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 public class ClawBotConversationPreviewTest {
 
@@ -95,10 +101,124 @@ public class ClawBotConversationPreviewTest {
     }
 
     @Test
-    public void emptyMemoryDoesNotPretendToLoadHistory() {
-        assertTrue(ClawBotConversationPreview.format(List.of(), false).contains("未读取磁盘历史"));
+    public void emptyConversationDoesNotInventAQuestion() {
+        assertTrue(ClawBotConversationPreview.format(List.of(), false).contains("暂无可预览"));
         assertTrue(ClawBotConversationPreview.format(List.of(new Message(Message.Type.ASSISTANT, "orphan answer")), false)
-                .contains("没有可预览"));
+                .contains("暂无可预览"));
+    }
+
+    @Test
+    public void restoredSessionReadsRecentHistoryWithoutChangingLiveMessagesOrState() {
+        ClaudeSession session = restored(cancellation -> List.of(new Message(Message.Type.USER, "persisted question"),
+                new Message(Message.Type.ASSISTANT, "persisted answer")));
+        String preview = ClawBotConversationPreview.capture(session);
+        assertTrue(preview.contains("persisted question"));
+        assertTrue(preview.contains("persisted answer"));
+        assertTrue(session.getMessages().isEmpty());
+        assertFalse(session.isLoading());
+        assertFalse(session.isBusy());
+        assertEquals("stored-session", session.getSessionId());
+        assertFalse(preview.contains("未读取磁盘历史"));
+    }
+
+    @Test
+    public void currentQuestionNeverLoadsOrBorrowsAnOlderPersistedAnswer() {
+        ClaudeSession session = restored(cancellation -> { throw new AssertionError("History must not be read"); });
+        session.getState().addMessage(new Message(Message.Type.USER, "current question"));
+        session.getState().setBusy(true);
+        String preview = ClawBotConversationPreview.capture(session);
+        assertTrue(preview.contains("current question"));
+        assertTrue(preview.contains("暂无可预览的回复"));
+        assertTrue(preview.contains("处理中"));
+    }
+
+    @Test
+    public void recentQuestionSurvivesMoreThan256ToolRecords() {
+        List<Message> messages = new ArrayList<>();
+        messages.add(new Message(Message.Type.USER, "long running question"));
+        for (int index = 0; index < 300; index++) {
+            messages.add(new Message(Message.Type.USER, "[tool_result]"));
+        }
+        messages.add(new Message(Message.Type.ASSISTANT, "latest public answer"));
+        String preview = ClawBotConversationPreview.format(messages, false);
+        assertTrue(preview.contains("long running question"));
+        assertTrue(preview.contains("latest public answer"));
+        assertFalse(preview.contains("tool_result"));
+    }
+
+    @Test
+    public void historyReadRunsOutsideMessageLockAndNewLiveTurnWins() {
+        ClaudeSession[] holder = new ClaudeSession[1];
+        holder[0] = restored(cancellation -> {
+            ClaudeSession current = holder[0];
+            assertFalse(Thread.holdsLock(current.getState().getMessageStateLock()));
+            current.getState().addMessage(new Message(Message.Type.USER, "new live question"));
+            current.getState().setBusy(true);
+            return List.of(new Message(Message.Type.USER, "old disk question"), new Message(Message.Type.ASSISTANT, "old disk answer"));
+        });
+        String preview = ClawBotConversationPreview.capture(holder[0]);
+        assertTrue(preview.contains("new live question"));
+        assertFalse(preview.contains("old disk"));
+    }
+
+    @Test
+    public void failedReadDoesNotMasqueradeAsEmptyHistoryOrExposeItsError() {
+        ClaudeSession session = restored(cancellation -> { throw new IllegalStateException("private path or provider error"); });
+        String preview = ClawBotConversationPreview.capture(session);
+        assertTrue(preview.contains("暂时无法读取"));
+        assertFalse(preview.contains("private"));
+        assertFalse(preview.contains("暂无可预览的一问一答"));
+    }
+
+    @Test
+    public void changedTargetDiscardsTheOldHistory() {
+        ClaudeSession[] holder = new ClaudeSession[1];
+        holder[0] = restored(cancellation -> {
+            holder[0].getState().setSessionId("another-session");
+            return List.of(new Message(Message.Type.USER, "stale question"), new Message(Message.Type.ASSISTANT, "stale answer"));
+        });
+        assertThrows(CancellationException.class, () -> ClawBotConversationPreview.capture(holder[0]));
+    }
+
+    @Test
+    public void cancelledSelectionDoesNotStartHistoryRead() {
+        ClaudeSession session = restored(cancellation -> { throw new AssertionError("History must not be read"); });
+        assertThrows(CancellationException.class, () -> ClawBotConversationPreview.capture(session, () -> true));
+    }
+
+    @Test
+    public void historyAnswerIsNotPresentedAsTheCurrentlyRunningReply() {
+        ClaudeSession session = restored(cancellation -> List.of(new Message(Message.Type.USER, "previous question"),
+                new Message(Message.Type.ASSISTANT, "previous answer")));
+        session.getState().setBusy(true);
+        String preview = ClawBotConversationPreview.capture(session);
+        assertTrue(preview.contains("处理中"));
+        assertTrue(preview.contains("最近回复：\nprevious answer"));
+        assertFalse(preview.contains("当前回复片段"));
+    }
+
+    @Test(timeout = 5000)
+    public void slowHistoryReadHonorsThePreviewDeadline() {
+        ClaudeSession session = restored(cancellation -> {
+            while (!cancellation.getAsBoolean()) {
+                java.util.concurrent.locks.LockSupport.parkNanos(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(5));
+            }
+            throw new CancellationException("Preview read deadline");
+        });
+        String preview = ClawBotConversationPreview.capture(session);
+        assertTrue(preview.contains("暂时无法读取"));
+        assertTrue(session.getMessages().isEmpty());
+    }
+
+    private static ClaudeSession restored(Function<BooleanSupplier, List<Message>> history) {
+        ClaudeSession session = new ClaudeSession(null, null, null, null) {
+            @Override
+            public List<Message> readRecentHistoryMessages(BooleanSupplier cancellation) {
+                return history.apply(cancellation);
+            }
+        };
+        session.getState().setSessionId("stored-session");
+        return session;
     }
 
     @Test
