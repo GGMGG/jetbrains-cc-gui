@@ -70,6 +70,7 @@ const App = () => {
     findToolResult, getToolResultRaw, subagents, allSubagents, globalTodos,
     filteredFileChanges, rewindableMessages,
     subagentHistoryCtxValue, sessionIdCtxValue,
+    startupHistoryLoadState,
     chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
     handleUndoFile, onDiscardAll, handleKeepAll,
     handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,
@@ -125,6 +126,7 @@ const App = () => {
           filteredFileChanges={filteredFileChanges}
           subagentHistoryCtxValue={subagentHistoryCtxValue}
           sessionIdCtxValue={sessionIdCtxValue}
+          startupHistoryLoadState={startupHistoryLoadState}
           chatInputRef={chatInputRef}
           messagesContainerRef={messagesContainerRef}
           messagesEndRef={messagesEndRef}
