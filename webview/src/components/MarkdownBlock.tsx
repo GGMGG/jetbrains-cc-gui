@@ -697,6 +697,8 @@ const BlockSection = memo(function BlockSection({
   containerRef,
 }: BlockSectionProps) {
   const renderedSource = useStreamingHighlightSource(source, isStreamingTail);
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const focusedCopyRef = useRef<{ button: HTMLButtonElement; index: number } | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
@@ -742,6 +744,16 @@ const BlockSection = memo(function BlockSection({
     if (rescued && containerRef.current) {
       restoreRangeOffsets(containerRef.current, rescued);
     }
+    const focusedCopy = focusedCopyRef.current;
+    if (focusedCopy && !focusedCopy.button.isConnected) {
+      focusedCopyRef.current = null;
+      // Replacing innerHTML removes focus without a blur event. Only restore
+      // that lost focus; an explicit blur or move to another control wins.
+      if (document.activeElement === document.body) {
+        sectionRef.current?.querySelectorAll<HTMLButtonElement>('.copy-code-btn')[focusedCopy.index]
+          ?.focus({ preventScroll: true });
+      }
+    }
   }, [html, containerRef, rescued]);
 
   const copyLatestCode = async (event: React.MouseEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement>) => {
@@ -763,7 +775,22 @@ const BlockSection = memo(function BlockSection({
     }
   };
 
-  return <div className="md-block" onClick={copyLatestCode} onKeyDown={copyLatestCode} dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div
+      ref={sectionRef}
+      className="md-block"
+      onClick={copyLatestCode}
+      onKeyDown={copyLatestCode}
+      onFocusCapture={(event) => {
+        const button = event.target;
+        focusedCopyRef.current = button instanceof HTMLButtonElement && button.matches('.copy-code-btn')
+          ? { button, index: Array.from(event.currentTarget.querySelectorAll('.copy-code-btn')).indexOf(button) }
+          : null;
+      }}
+      onBlurCapture={() => { focusedCopyRef.current = null; }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 });
 
 // Copy icon SVG (hoisted to module scope to avoid recreation on each render)
