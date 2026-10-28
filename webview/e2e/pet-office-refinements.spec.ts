@@ -366,7 +366,7 @@ test('employee names persist per binding, render above Pets, survive save failur
   const scene = liveSceneFixture(['RUNNING', 'THINKING']);
   const keys = scene.snapshot.sources.map(source => `${source.sourceKey.instanceId}/${source.sourceKey.contentHandleId}/${source.sourceKey.bindingEpoch}`);
   let page = await open(context, host.saved, 'zh');
-  await recordEmployeeNameplates(page); await publish(page, scene);
+  await recordEmployeeNameplates(page); await publish(page, scene); keepOfficeAlive(page, scene);
   await page.locator('.office-session').nth(0).click();
   const firstName = '黑骑·代码魔神';
   let input = page.getByRole('textbox', { name: '员工名称', exact: true });
@@ -382,7 +382,7 @@ test('employee names persist per binding, render above Pets, survive save failur
   await search.fill('代码魔神'); await expect(page.locator('.office-session')).toHaveCount(1); await search.fill('');
   await expect.poll(() => host.saved.preferences.search).toBe('');
   await page.close(); page = await open(context, host.saved, 'zh');
-  await recordEmployeeNameplates(page); await publish(page, scene);
+  await recordEmployeeNameplates(page); await publish(page, scene); keepOfficeAlive(page, scene);
   await page.locator('.office-session').nth(0).click();
   input = page.getByRole('textbox', { name: '员工名称', exact: true });
   await expect(input).toHaveValue(firstName);
