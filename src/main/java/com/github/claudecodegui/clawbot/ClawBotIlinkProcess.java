@@ -238,8 +238,16 @@ final class ClawBotIlinkProcess implements AutoCloseable {
         stop(current);
     }
 
-    private static void stop(Process target) {
-        if (target != null) { target.destroyForcibly(); }
+    private void stop(Process target) {
+        if (target == null) { return; }
+        synchronized (lifecycle) {
+            if (process == target) {
+                process = null;
+                writer = null;
+                if (ready != null) { ready.completeExceptionally(new IOException("CLAWBOT_ILINK_PROCESS_STOPPED")); }
+            }
+        }
+        target.destroyForcibly();
     }
 
     private static Thread daemon(Runnable task, String name) {
