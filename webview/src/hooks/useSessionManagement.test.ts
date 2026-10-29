@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { useSessionManagement } from './useSessionManagement.js';
 import type { HistoryData } from '../types/index.js';
-import { receiveCodexStorageResponse } from '../components/settings/AiDataStorageSection/codexStorageBridge';
+import { receiveCodexStorageResponse, type CodexMaintenanceOperation } from '../components/settings/AiDataStorageSection/codexStorageBridge';
 
 describe('useSessionManagement', () => {
   const t = ((key: string) => key) as any;
@@ -46,6 +46,12 @@ describe('useSessionManagement', () => {
         createdAt: 'now', updatedAt: 'now', result: { deletedSessionIds: request.sessionIds, metadataStatus: 'COMPLETE' },
       } })));
   }
+  /** Delete payloads now carry provider and requestId alongside the targets. */
+  const sentRequests = (type: 'delete_session' | 'delete_sessions') => vi.mocked(window.sendToJava!).mock.calls
+    .map(([payload]) => String(payload))
+    .filter(payload => payload.startsWith(`${type}:`))
+    .map(payload => JSON.parse(payload.slice(type.length + 1)) as Record<string, unknown>);
+  const sentRequest = (type: 'delete_session' | 'delete_sessions') => sentRequests(type).at(-1)!;
 
   it('starts a clean session transition for a direct new session', () => {
     const mocks = createMocks();
@@ -203,7 +209,7 @@ describe('useSessionManagement', () => {
     await confirmCodexDeletion();
     expect(historyData.sessions).toEqual([]);
     expect(historyData.total).toBe(0);
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_session:history-1');
+    expect(sentRequest('delete_session')).toMatchObject({ sessionId: 'history-1', provider: 'claude' });
     expect(window.sendToJava).toHaveBeenCalledWith(expect.stringMatching(/^delete_ai_storage_sessions:/));
   });
 
@@ -242,6 +248,7 @@ describe('useSessionManagement', () => {
         loading: false,
         historyData,
         currentSessionId: null,
+        currentProvider: 'codex',
         ...mocks,
         t,
       })
@@ -253,7 +260,7 @@ describe('useSessionManagement', () => {
 
     expect(historyData.sessions?.map(session => session.sessionId)).toEqual(['history-2']);
     expect(window.sendToJava).toHaveBeenCalledTimes(2);
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_sessions:["history-1"]');
+    expect(sentRequest('delete_sessions')).toMatchObject({ sessionIds: ['history-1'], provider: 'claude' });
     await confirmCodexDeletion();
     expect(historyData.sessions).toEqual([]);
     expect(historyData.total).toBe(0);
@@ -274,7 +281,7 @@ describe('useSessionManagement', () => {
       action: 'delete_ai_storage_sessions', success: false, error: 'SESSION_RUNNING' })));
     expect(mocks.setHistoryData).not.toHaveBeenCalled();
     expect(mocks.setCurrentSessionId).not.toHaveBeenCalled();
-    expect(mocks.addToast).toHaveBeenCalledWith('settings.codexStorage.errors.SESSION_RUNNING', 'error');
+    expect(mocks.addToast).toHaveBeenCalledWith('settings.codexStorage.errors.SESSION_RUNNING', 'warning');
     expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
   });
 
@@ -296,7 +303,7 @@ describe('useSessionManagement', () => {
       result.current.deleteHistorySessions(['history-1', 'history-2', 'history-1']);
     });
 
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_sessions:["history-1","history-2"]');
+    expect(sentRequest('delete_sessions').sessionIds).toEqual(['history-1', 'history-2']);
     expect(mocks.addToast).toHaveBeenCalledWith('history.sessionDeleted', 'success');
   });
 
@@ -410,13 +417,182 @@ describe('useSessionManagement', () => {
       result.current.deleteHistorySessions(['history-1', 'history-2']);
     });
 
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_sessions:["history-1"]');
+    expect(sentRequest('delete_sessions')).toMatchObject({ sessionIds: ['history-1'], provider: 'claude' });
     await confirmCodexDeletion();
     expect(window.sendToJava).toHaveBeenCalledWith('create_new_session:');
     expect(mocks.addToast).not.toHaveBeenCalledWith('history.sessionDeleted', 'success');
     expect(window.__pendingSessionTransitionToast).toEqual({
       message: 'history.sessionDeleted',
       type: 'success',
+    });
+  });
+
+  describe('Codex deletion waits for the backend outcome', () => {
+    const codexHistory = () => ({
+      success: true,
+      sessions: [
+        { sessionId: 'history-1', title: 'History One', provider: 'codex', messageCount: 3, lastTimestamp: Date.now() },
+        { sessionId: 'history-2', title: 'History Two', provider: 'codex', messageCount: 5, lastTimestamp: Date.now() },
+      ],
+      total: 8,
+    } as unknown as HistoryData);
+
+    const renderCodex = (currentSessionId: string | null) => {
+      const mocks = createMocks();
+      const hook = renderHook(() => useSessionManagement({
+        messages: [],
+        loading: false,
+        historyData: codexHistory(),
+        currentSessionId,
+        currentProvider: 'codex',
+        ...mocks,
+        t,
+      }));
+      return { ...hook, mocks };
+    };
+
+    const deliverResult = (result: Record<string, unknown>) => act(() => {
+      window.onHistoryDeleteResult?.(JSON.stringify(result));
+    });
+
+    const sentStorageRequest = () => {
+      const payload = vi.mocked(window.sendToJava!).mock.calls.map(([value]) => value)
+        .filter(value => value.startsWith('delete_ai_storage_sessions:')).at(-1)!;
+      return JSON.parse(payload.slice(payload.indexOf(':') + 1)) as {
+        requestId: string; operationId: string; sessionIds: string[]; origin: string;
+      };
+    };
+    const storageOutcome = (fields: Partial<CodexMaintenanceOperation> = {}) => {
+      const request = sentStorageRequest();
+      return JSON.stringify({ requestId: request.requestId, action: 'delete_ai_storage_sessions', success: true,
+        data: { operationId: request.operationId, kind: 'DELETE_SESSIONS', state: 'COMPLETED', targets: request.sessionIds,
+          createdAt: 'now', updatedAt: 'now', result: { deletedSessionIds: request.sessionIds, metadataStatus: 'COMPLETE' },
+          ...fields } });
+    };
+    const deliverStorageResult = async (fields: Partial<CodexMaintenanceOperation> = {}) => {
+      await act(async () => receiveCodexStorageResponse(storageOutcome(fields)));
+    };
+
+    it('keeps the current session open until its files are confirmed deleted', async () => {
+      const { result, mocks } = renderCodex('history-2');
+      act(() => { result.current.deleteHistorySession('history-2'); });
+      expect(sentStorageRequest()).toMatchObject({ sessionIds: ['history-2'], origin: 'history' });
+      expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
+      expect(window.__sessionTransitioning).toBe(false);
+      expect(mocks.addToast).not.toHaveBeenCalled();
+
+      await deliverStorageResult();
+      expect(window.sendToJava).toHaveBeenCalledWith('create_new_session:');
+      expect(window.__sessionTransitioning).toBe(true);
+      expect(window.__pendingSessionTransitionToast).toEqual({ message: 'history.sessionDeleted', type: 'success' });
+    });
+
+    it('explains a refusal and never force-releases the protected session', async () => {
+      const { result, mocks } = renderCodex('history-1');
+      act(() => { result.current.deleteHistorySessions(['history-1', 'history-2']); });
+      await deliverStorageResult({ state: 'FAILED_CLEAN', result: undefined, error: 'SESSION_RUNNING' });
+      expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
+      expect(window.__sessionTransitioning).toBe(false);
+      expect(mocks.addToast).toHaveBeenCalledWith('settings.codexStorage.errors.SESSION_RUNNING', 'warning');
+      expect(mocks.addToast).not.toHaveBeenCalledWith('history.sessionDeleted', 'success');
+    });
+
+    it('leaves a confirmed deleted session and defers a transaction warning until transition', async () => {
+      const { result, mocks } = renderCodex('history-1');
+      act(() => { result.current.deleteHistorySessions(['history-1', 'history-2']); });
+      await deliverStorageResult({ state: 'COMPLETED_WITH_WARNINGS', result: {
+        deletedSessionIds: ['history-1', 'history-2'], metadataStatus: 'COMPLETE', warning: 'METADATA_CLEANUP_FAILED',
+      } });
+      expect(window.sendToJava).toHaveBeenCalledWith('create_new_session:');
+      expect(window.__pendingSessionTransitionToast).toEqual({
+        message: 'settings.codexStorage.errors.METADATA_CLEANUP_FAILED', type: 'warning',
+      });
+      expect(mocks.addToast).not.toHaveBeenCalled();
+    });
+
+    it('stays on the current session when deletion fails', async () => {
+      const { result, mocks } = renderCodex('history-1');
+      act(() => { result.current.deleteHistorySession('history-1'); });
+      await deliverStorageResult({ state: 'FAILED_CLEAN', result: undefined, error: 'STORAGE_OPERATION_FAILED' });
+      expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
+      expect(mocks.addToast).toHaveBeenCalledWith('settings.codexStorage.errors.STORAGE_OPERATION_FAILED', 'error');
+    });
+
+    it('announces a confirmed deletion of another session without leaving the current one', async () => {
+      const { result, mocks } = renderCodex('history-1');
+      act(() => { result.current.deleteHistorySessions(['history-2']); });
+      await deliverStorageResult();
+      expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
+      expect(mocks.addToast).toHaveBeenCalledWith('history.sessionDeleted', 'success');
+    });
+
+    it('keeps a newly selected session when an earlier deletion receipt arrives before rerender', async () => {
+      const mocks = createMocks();
+      const currentSessionIdRef = { current: 'history-1' as string | null };
+      const { result } = renderHook(() => useSessionManagement({
+        messages: [], loading: false, historyData: codexHistory(), currentSessionId: 'history-1',
+        currentSessionIdRef, currentProvider: 'codex', ...mocks, t,
+      }));
+      act(() => { result.current.deleteHistorySession('history-1'); });
+      currentSessionIdRef.current = 'history-2';
+      await deliverStorageResult();
+      expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
+      expect(mocks.setCurrentSessionId).not.toHaveBeenCalled();
+      expect(mocks.addToast).toHaveBeenCalledWith('history.sessionDeleted', 'success');
+    });
+
+    it('ignores unreadable, foreign and repeated storage results', async () => {
+      const { result, mocks } = renderCodex('history-1');
+      act(() => { result.current.deleteHistorySession('history-1'); });
+      const outcome = storageOutcome();
+      await act(async () => {
+        receiveCodexStorageResponse('not json');
+        receiveCodexStorageResponse(JSON.stringify({ ...JSON.parse(outcome), requestId: 'another-request' }));
+      });
+      expect(window.sendToJava).not.toHaveBeenCalledWith('create_new_session:');
+      await act(async () => {
+        receiveCodexStorageResponse(outcome);
+        receiveCodexStorageResponse(outcome);
+      });
+      expect(vi.mocked(window.sendToJava!).mock.calls.filter(([payload]) => payload === 'create_new_session:'))
+        .toHaveLength(1);
+      expect(mocks.addToast).not.toHaveBeenCalled();
+    });
+
+    it('does not remove rows when the bridge refuses the request', async () => {
+      const { result, mocks } = renderCodex('history-1');
+      window.sendToJava = vi.fn(() => { throw new Error('page replaced'); });
+      await act(async () => { result.current.deleteHistorySession('history-2'); });
+      expect(mocks.setHistoryData).not.toHaveBeenCalled();
+      expect(mocks.addToast).toHaveBeenCalledWith('settings.codexStorage.errors.STORAGE_BRIDGE_UNAVAILABLE', 'error');
+    });
+
+    it('does not announce non-Codex deletions twice but still reports their failures', () => {
+      const mocks = createMocks();
+      const { result } = renderHook(() => useSessionManagement({
+        messages: [], loading: false, historyData: null, currentSessionId: 'claude-1',
+        currentProvider: 'claude', ...mocks, t,
+      }));
+
+      act(() => { result.current.deleteHistorySession('claude-1'); });
+      expect(sentRequest('delete_session')).toMatchObject({ sessionId: 'claude-1', provider: 'claude' });
+      mocks.addToast.mockClear();
+      deliverResult({ requestId: sentRequest('delete_session').requestId, provider: 'claude',
+        sessionIds: ['claude-1'], deletedSessionIds: ['claude-1'], success: true });
+      expect(mocks.addToast).not.toHaveBeenCalled();
+
+      act(() => { result.current.deleteHistorySession('claude-2'); });
+      mocks.addToast.mockClear();
+      deliverResult({ requestId: sentRequest('delete_session').requestId, provider: 'claude',
+        sessionIds: ['claude-2'], deletedSessionIds: [], success: false, errorCode: 'DELETE_FAILED' });
+      expect(mocks.addToast).toHaveBeenCalledWith('history.deleteFailed', 'error');
+    });
+
+    it('unregisters its result callback on unmount', () => {
+      const { unmount } = renderCodex('history-1');
+      expect(window.onHistoryDeleteResult).toBeTypeOf('function');
+      unmount();
+      expect(window.onHistoryDeleteResult).toBeUndefined();
     });
   });
 

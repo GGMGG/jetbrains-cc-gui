@@ -16,7 +16,10 @@ interface HistoryCallbacks {
   onConvertToCliSession: (sessionId: string) => void;
 }
 
-interface AppChatAreaProps extends ChatScreenProps, HistoryCallbacks {}
+interface AppChatAreaProps extends ChatScreenProps, HistoryCallbacks {
+  /** A native Codex turn is still active after the visible stream ended. */
+  codexTurnActive?: boolean;
+}
 
 /**
  * Main chat area extracted from App.tsx — the chat screen (kept mounted while
@@ -36,8 +39,12 @@ export const AppChatArea = (props: AppChatAreaProps) => {
     onToggleFavorite,
     onUpdateTitle,
     onConvertToCliSession,
+    codexTurnActive,
     ...chatScreenProps
   } = props;
+  // Same notion of busy as the send queue: deleting must wait for every native phase.
+  const currentSessionBusy = loading || streamingActive || Boolean(codexTurnActive)
+    || Boolean(props.codexPlanExecutionPending) || Boolean(props.codexCompactionPending);
 
   return (
     <>
@@ -55,7 +62,7 @@ export const AppChatArea = (props: AppChatAreaProps) => {
           historyData={historyData}
           currentProvider={props.currentProvider}
           currentSessionId={currentSessionId}
-          currentSessionBusy={loading || streamingActive}
+          currentSessionBusy={currentSessionBusy}
           onLoadSession={onLoadSession}
           onDeleteSession={onDeleteSession}
           onDeleteSessions={onDeleteSessions}

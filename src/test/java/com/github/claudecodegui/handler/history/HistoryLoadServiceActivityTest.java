@@ -57,6 +57,39 @@ public class HistoryLoadServiceActivityTest {
         assertTrue(rows[1].get("running").getAsBoolean());
     }
 
+    @Test
+    public void foreignWritersAreDistinguishedFromTheLocalTurn() {
+        ClaudeSession session = currentSession("codex");
+        session.getState().beginTurn();
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public boolean hasCodexThreadOwner(String id) {
+                return !"idle".equals(id);
+            }
+
+            @Override
+            public boolean ownsCodexThread(String id) {
+                return "current".equals(id);
+            }
+        };
+        var rows = rows(HistoryLoadService.enhanceHistoryWithActivity(HISTORY, "codex", session, bridge));
+        assertTrue(rows[0].get("running").getAsBoolean());
+        assertFalse("a local turn is not a foreign writer", rows[0].has("ownedElsewhere"));
+        assertTrue(rows[1].get("ownedElsewhere").getAsBoolean());
+        assertFalse(rows[2].has("ownedElsewhere"));
+    }
+
+    @Test
+    public void malformedRowsAreSkippedAndUnreadableHistoryIsReturnedUnchanged() {
+        String history = "{\"sessions\":[\"text\",{\"title\":\"no id\"},{\"sessionId\":\"idle\",\"running\":\"yes\"}]}";
+        var rows = JsonParser.parseString(HistoryLoadService.enhanceHistoryWithActivity(history, "codex", null, null))
+                .getAsJsonObject().getAsJsonArray("sessions");
+        assertFalse(rows.get(1).getAsJsonObject().has("running"));
+        assertFalse(rows.get(2).getAsJsonObject().get("running").getAsBoolean());
+        assertEquals("not json", HistoryLoadService.enhanceHistoryWithActivity("not json", "codex", null, null));
+        assertEquals("", HistoryLoadService.enhanceHistoryWithActivity("", "codex", null, null));
+    }
+
     private static JsonObject[] rows(String json) {
         return JsonParser.parseString(json).getAsJsonObject().getAsJsonArray("sessions").asList()
                 .stream().map(value -> value.getAsJsonObject()).toArray(JsonObject[]::new);

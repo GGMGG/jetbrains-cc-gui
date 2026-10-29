@@ -297,6 +297,270 @@ public class HistoryDeleteServiceTest {
     }
 
     @Test
+    public void deleteRequestsCarryTheirProviderAndCorrelationId() {
+        HistoryDeleteRequest single = HistoryDeleteRequest.parse(
+                "{\"sessionId\":\"thread-1\",\"provider\":\"codex\",\"requestId\":\"delete-1\"}", "claude");
+        assertEquals(List.of("thread-1"), single.sessionIds());
+        assertEquals("codex", single.provider());
+        assertEquals("delete-1", single.requestId());
+
+        HistoryDeleteRequest batch = HistoryDeleteRequest.parse(
+                "{\"sessionIds\":[\"a\",\"b\"],\"provider\":\"codex\",\"requestId\":\"delete-2\"}", "claude");
+        assertEquals(List.of("a", "b"), batch.sessionIds());
+        assertEquals("codex", batch.provider());
+
+        HistoryDeleteRequest legacyId = HistoryDeleteRequest.parse("thread-1", "claude");
+        assertEquals(List.of("thread-1"), legacyId.sessionIds());
+        assertEquals("claude", legacyId.provider());
+        assertEquals(null, legacyId.requestId());
+        assertEquals(List.of("a"), HistoryDeleteRequest.parse("[\"a\"]", "codex").sessionIds());
+
+        HistoryDeleteRequest hostile = HistoryDeleteRequest.parse(
+                "{\"sessionId\":\"../etc\",\"provider\":\"Codex;rm\",\"requestId\":\"a'b\"}", "claude");
+        assertTrue(hostile.sessionIds().isEmpty());
+        assertEquals("claude", hostile.provider());
+        assertEquals(null, hostile.requestId());
+        assertTrue(HistoryDeleteRequest.parse("../etc", "claude").sessionIds().isEmpty());
+    }
+
+    @Test
+    public void refusedCodexDeletionIsReportedWithoutRunningTheDeletionStep() throws Exception {
+        HandlerContext context = new HandlerContext(null, null, null, null, null);
+        RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+        session.getState().beginTurn();
+        context.setSession(session);
+        RecordingHistoryLoadService historyLoadService = new RecordingHistoryLoadService(context);
+        RecordingDeleteService service = new RecordingDeleteService(context, historyLoadService);
+        AtomicBoolean deleted = new AtomicBoolean();
+
+        service.runGuardedDeletion(request("codex", "session-1"), "deletion", releaseWriters -> {
+            deleted.set(true);
+            return Set.of();
+        });
+
+        assertEquals("SESSION_RUNNING", service.awaitResult());
+        assertEquals(List.of(), service.deletedIds);
+        assertTrue(historyLoadService.awaitReload());
+        assertFalse(deleted.get());
+        assertFalse(session.interrupted);
+    }
+
+    @Test
+    public void successfulDeletionIsReportedOnlyAfterTheDeletionStep() throws Exception {
+        HandlerContext context = new HandlerContext(null, null, null, null, null);
+        RecordingDeleteService service = new RecordingDeleteService(context, new RecordingHistoryLoadService(context));
+        AtomicBoolean deleted = new AtomicBoolean();
+
+        service.runGuardedDeletion(request("claude", "session-1", "session-2"), "batch deletion", releaseWriters -> {
+            deleted.set(true);
+            return Set.of();
+        });
+
+        assertEquals("OK", service.awaitResult());
+        assertTrue(deleted.get());
+        assertEquals(List.of("session-1", "session-2"), service.deletedIds);
+    }
+
+    @Test
+    public void partlyDeletedCodexFilesAreReportedAsAFailureForThoseSessionsOnly() throws Exception {
+        HandlerContext context = new HandlerContext(null, null, null, null, null);
+        RecordingDeleteService service = new RecordingDeleteService(context, new RecordingHistoryLoadService(context));
+
+        service.runGuardedDeletion(request("codex", "gone", "locked"), "batch deletion",
+                releaseWriters -> Set.of("locked"));
+
+        assertEquals("DELETE_FAILED", service.awaitResult());
+        assertEquals(List.of("gone"), service.deletedIds);
+    }
+
+    @Test
+    public void failedDeletionStepRestoresHistoryAndReportsTheFailure() throws Exception {
+        HandlerContext context = new HandlerContext(null, null, null, null, null);
+        RecordingHistoryLoadService historyLoadService = new RecordingHistoryLoadService(context);
+        RecordingDeleteService service = new RecordingDeleteService(context, historyLoadService);
+
+        service.runGuardedDeletion(request("claude", "session-1"), "deletion", releaseWriters -> {
+            throw new java.io.IOException("disk unavailable");
+        });
+
+        assertEquals("DELETE_FAILED", service.awaitResult());
+        assertTrue(historyLoadService.awaitReload());
+    }
+
+    @Test
+    public void requestsWithoutValidIdsAreReportedInsteadOfDropped() throws Exception {
+        HandlerContext context = new HandlerContext(null, null, null, null, null);
+        RecordingHistoryLoadService historyLoadService = new RecordingHistoryLoadService(context);
+        RecordingDeleteService service = new RecordingDeleteService(context, historyLoadService);
+
+        service.handleDeleteSession("{\"sessionId\":\"../x\",\"provider\":\"codex\",\"requestId\":\"r9\"}", "claude");
+
+        assertEquals("DELETE_FAILED", service.awaitResult());
+        assertEquals("r9", service.request.requestId());
+        assertTrue(historyLoadService.awaitReload());
+        assertEquals("codex", historyLoadService.provider);
+    }
+
+    @Test
+    public void codexDeletionHoldsWriterLeasesOnlyWhileTheFilesAreRemoved() throws Exception {
+        AtomicBoolean reserved = new AtomicBoolean();
+        AtomicBoolean heldDuringDeletion = new AtomicBoolean();
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public Runnable reserveCodexThreadsForDeletion(java.util.Collection<String> threadIds) {
+                assertEquals(List.of("idle-thread"), List.copyOf(threadIds));
+                reserved.set(true);
+                return () -> reserved.set(false);
+            }
+        };
+        try {
+            HandlerContext context = new HandlerContext(null, null, bridge, null, null);
+            RecordingDeleteService service = new RecordingDeleteService(context, new RecordingHistoryLoadService(context));
+            AtomicBoolean releasedBeforeMetadata = new AtomicBoolean();
+
+            service.runGuardedDeletion(request("codex", "idle-thread"), "deletion", releaseWriters -> {
+                heldDuringDeletion.set(reserved.get());
+                releaseWriters.run();
+                releasedBeforeMetadata.set(!reserved.get());
+                return Set.of();
+            });
+
+            assertEquals("OK", service.awaitResult());
+            assertTrue("the lease is held while files are deleted", heldDuringDeletion.get());
+            assertTrue("the task can release it before metadata cleanup", releasedBeforeMetadata.get());
+            assertFalse(reserved.get());
+        } finally {
+            bridge.cleanupAllProcesses();
+        }
+    }
+
+    @Test
+    public void aWriterThatAppearsAfterTheIdleReleaseBlocksTheDeletion() throws Exception {
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public Runnable reserveCodexThreadsForDeletion(java.util.Collection<String> threadIds) {
+                return null;
+            }
+        };
+        try {
+            HandlerContext context = new HandlerContext(null, null, bridge, null, null);
+            RecordingDeleteService service = new RecordingDeleteService(context, new RecordingHistoryLoadService(context));
+            AtomicBoolean deleted = new AtomicBoolean();
+
+            service.runGuardedDeletion(request("codex", "resumed-thread"), "deletion", releaseWriters -> {
+                deleted.set(true);
+                return Set.of();
+            });
+
+            assertEquals("SESSION_RUNNING", service.awaitResult());
+            assertFalse(deleted.get());
+        } finally {
+            bridge.cleanupAllProcesses();
+        }
+    }
+
+    @Test
+    public void aTurnStartedDuringTheIdleReleaseBlocksTheDeletionAndFreesTheLease() throws Exception {
+        RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+        AtomicBoolean reservationReleased = new AtomicBoolean();
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public CompletableFuture<JsonObject> releaseIdleCodexThread(String channel, String cwd, String thread) {
+                // The send claims the writer again before the release forgets the channel.
+                session.getState().beginTurn();
+                return CompletableFuture.completedFuture(new JsonObject());
+            }
+
+            @Override
+            public Runnable reserveCodexThreadsForDeletion(java.util.Collection<String> threadIds) {
+                return () -> reservationReleased.set(true);
+            }
+        };
+        try {
+            HandlerContext context = new HandlerContext(null, null, bridge, null, null);
+            context.setSession(session);
+            RecordingDeleteService service = new RecordingDeleteService(context, new RecordingHistoryLoadService(context));
+            AtomicBoolean deleted = new AtomicBoolean();
+
+            service.runGuardedDeletion(request("codex", "session-1"), "deletion", releaseWriters -> {
+                deleted.set(true);
+                return Set.of();
+            });
+
+            assertEquals("SESSION_RUNNING", service.awaitResult());
+            assertFalse(deleted.get());
+            assertTrue(reservationReleased.get());
+        } finally {
+            bridge.cleanupAllProcesses();
+        }
+    }
+
+    @Test
+    public void nativeBusyExceptionIsReportedAsAnInUseSessionAndOtherReleaseFailuresAsFailures() {
+        for (String message : List.of("Codex session has pending work and cannot be deleted", "daemon exited")) {
+            RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+            CodexSDKBridge bridge = new CodexSDKBridge() {
+                @Override
+                public CompletableFuture<JsonObject> releaseIdleCodexThread(String channel, String cwd, String thread) {
+                    return CompletableFuture.failedFuture(new RuntimeException(message));
+                }
+            };
+            try {
+                var failure = assertThrows(CompletionException.class, () -> HistoryDeleteService.quiesceActiveSessionForDeletion(
+                        session, List.of("session-1"), "codex", bridge).join());
+                assertEquals(message.contains("pending work") ? "SESSION_RUNNING" : "DELETE_FAILED",
+                        HistoryDeletionGuard.errorCode(failure));
+                assertFalse(session.interrupted);
+            } finally {
+                bridge.cleanupAllProcesses();
+            }
+        }
+    }
+
+    @Test
+    public void aSlowReleaseTimesOutWithoutCompletingTheBridgeFutureThatCleansTheChannel() {
+        RecordingClaudeSession session = new RecordingClaudeSession("session-1", "codex");
+        CompletableFuture<JsonObject> bridgeRelease = new CompletableFuture<>();
+        CodexSDKBridge bridge = new CodexSDKBridge() {
+            @Override
+            public CompletableFuture<JsonObject> releaseIdleCodexThread(String channel, String cwd, String thread) {
+                return bridgeRelease;
+            }
+        };
+        try {
+            var failure = assertThrows(CompletionException.class, () -> HistoryDeletionGuard.quiesce(
+                    session, List.of("session-1"), "codex", bridge, 50).join());
+
+            assertEquals("DELETE_FAILED", HistoryDeletionGuard.errorCode(failure));
+            assertFalse("the bridge must still run its own completion when the release finishes",
+                    bridgeRelease.isDone());
+        } finally {
+            bridge.cleanupAllProcesses();
+        }
+    }
+
+    @Test
+    public void deletionResultScriptCarriesTheRequestAndItsOutcome() {
+        String script = HistoryDeletionGuard.resultScript(
+                new HistoryDeleteRequest(List.of("a-1", "b-2"), "codex", "delete-7"), List.of("a-1"), "DELETE_FAILED");
+
+        assertTrue(script.startsWith("if (window.onHistoryDeleteResult) { window.onHistoryDeleteResult('"));
+        String json = script.substring(script.indexOf("('") + 2, script.lastIndexOf("')")).replace("\\\"", "\"");
+        JsonObject result = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        assertEquals("delete-7", result.get("requestId").getAsString());
+        assertEquals("codex", result.get("provider").getAsString());
+        assertEquals(2, result.getAsJsonArray("sessionIds").size());
+        assertEquals("a-1", result.getAsJsonArray("deletedSessionIds").get(0).getAsString());
+        assertFalse(result.get("success").getAsBoolean());
+        assertEquals("DELETE_FAILED", result.get("errorCode").getAsString());
+        assertEquals("DELETE_FAILED", HistoryDeletionGuard.errorCode(new IllegalStateException("boom")));
+    }
+
+    private static HistoryDeleteRequest request(String provider, String... sessionIds) {
+        return new HistoryDeleteRequest(List.of(sessionIds), provider, "request-1");
+    }
+
+    @Test
     public void cleanupSessionMetadataRemovesFavoriteAndCustomTitle() throws Exception {
         SessionMetadataBridgeFixture fixture =
                 SessionMetadataBridgeFixture.create(temporaryFolder.newFolder("metadata").toPath());
@@ -447,6 +711,28 @@ public class HistoryDeleteServiceTest {
                 throw new Exception("titles failed");
             }
             return titlesResult;
+        }
+    }
+
+    private static class RecordingDeleteService extends HistoryDeleteService {
+        private final CompletableFuture<String> result = new CompletableFuture<>();
+        private volatile HistoryDeleteRequest request;
+        private volatile List<String> deletedIds;
+
+        private RecordingDeleteService(HandlerContext context, HistoryLoadService historyLoadService) {
+            super(context, null, historyLoadService);
+        }
+
+        @Override
+        void notifyDeleteResult(HistoryDeleteRequest request, java.util.Collection<String> deletedSessionIds,
+                                String errorCode) {
+            this.request = request;
+            this.deletedIds = List.copyOf(deletedSessionIds);
+            result.complete(errorCode == null ? "OK" : errorCode);
+        }
+
+        private String awaitResult() throws Exception {
+            return result.get(5, TimeUnit.SECONDS);
         }
     }
 
