@@ -1525,6 +1525,25 @@ public class CodexSDKBridge extends BaseSDKBridge {
         }
     }
 
+    /** Reads the newest display turn without walking every native page or enriching tool history. */
+    public List<JsonObject> getRecentSessionMessages(String sessionId, String cwd, String channelId, BooleanSupplier cancellation) {
+        checkHistoryCancellation(cancellation);
+        if (this.nativeHistoryEnabled && this.isCodexRuntimeAccessAllowed()) {
+            try {
+                return new CodexNativeHistoryReader(this, channelId, cwd, sessionId).readPage(null, 1, cancellation).messages();
+            } catch (CancellationException cancelled) {
+                throw cancelled;
+            } catch (Exception error) {
+                if (!CodexNativeHistoryReader.permitsOfflineFallback(error.getMessage())) {
+                    throw new IllegalStateException("Recent Codex history is unavailable", error);
+                }
+            }
+        }
+        List<JsonObject> messages = this.getLegacySessionMessages(sessionId, cwd, cancellation);
+        checkHistoryCancellation(cancellation);
+        return messages;
+    }
+
     private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
         try {
             JsonArray historyItems = new JsonArray();
