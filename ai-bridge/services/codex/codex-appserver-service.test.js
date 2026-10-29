@@ -1846,6 +1846,7 @@ test('closing retries preserve their original provider parameters until the idle
     assert.equal((await sending).outcome, 'completed');
     assert.equal(resumes.length, 2);
     assert.equal(resumes[0].modelProvider, 'original-provider');
+    assert.equal(resumes[0].excludeTurns, true, 'Closing recovery must keep paginated history metadata-only');
     assert.deepEqual(resumes[1], resumes[0]);
     await waitFor(() => service.runtimeGeneration === 2 && service.state === 'ready');
     assert.equal(dispatchCounts.get('turn/start'), 1);
