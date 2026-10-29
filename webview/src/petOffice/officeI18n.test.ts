@@ -1,14 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import i18n from './officeI18n';
 import { OFFICE_MARGIN_MODES } from './officeMarginEffects';
+import { officeGroupsEn, officeGroupsZh } from './officeGroupsI18n';
 
 describe('Office Chinese appearance and preview translations', () => {
+  it('covers every simplified group action in both languages', () => {
+    expect(Object.keys(officeGroupsZh).sort()).toEqual(Object.keys(officeGroupsEn).sort());
+    for (const language of ['zh', 'en']) {
+      const t = i18n.getFixedT(language, 'petOffice');
+      for (const key of Object.keys(officeGroupsEn)) {
+        expect(t(key)).not.toBe(key); expect(t(key)).not.toMatch(/\uFFFD/);
+      }
+    }
+  });
   it('provides readable Chinese rather than question marks or untranslated keys', () => {
     const t = i18n.getFixedT('zh', 'petOffice');
     for (const key of ['sessionAppearance', 'inheritAppearance', 'builtinAppearance', 'refreshAppearances', 'sessionAppearanceHint',
       'unavailableAppearance', 'appearanceChoicesError', 'deskPreview', 'deskPreviewHint', 'studioSettings', 'marginEffects', 'enableMarginEffects',
       'marginEffectStyle', 'marginEffectsOff', 'marginModes.aurora', 'marginModes.matrix', 'marginModes.rain', 'marginModes.stars', 'marginModes.snow', 'marginEffectsHint',
-      'officeName', 'applyOfficeName', 'officeNameHint', 'officeNameInvalid', 'officeNameStorageError']) {
+      'officeName', 'applyOfficeName', 'officeNameHint', 'officeNameInvalid', 'officeNameStorageError',
+      'employeeName', 'applyEmployeeName', 'resetEmployeeName', 'employeeNameHint', 'employeeNameInvalid']) {
       const label = t(key, { id: 'duck/spritesheet.png' });
       expect(label).not.toBe(key); expect(label).toMatch(/[\u4e00-\u9fff]/); expect(label).not.toMatch(/\?{2,}|\uFFFD/);
     }

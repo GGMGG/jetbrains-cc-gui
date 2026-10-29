@@ -1,4 +1,5 @@
-import i18n from './officeLocalI18n';
+import i18n from '../i18n/config';
+import { officeGroupsEn, officeGroupsZh } from './officeGroupsI18n';
 
 const en = {
   title: 'Pet Office', subtitle: 'One room. Many conversations.', prototype: 'Prototype · simulated sessions',
@@ -113,6 +114,9 @@ const liveZh = {
   assetStatus: { REMOTE_PENDING: '原 IDE 的 Pet 图片尚未同步，暂时显示内置机器人。', BUILTIN: '内置机器人', READY: '已加载项目 Pet', assetLoading: '正在加载 Pet，暂时显示内置机器人。', ASSET_BUSY: 'Pet 正在同步或数据暂忙，保留已加载图片或显示内置机器人。', ASSET_CAPACITY: '图片缓存已满，显示内置机器人。', ASSET_UNAVAILABLE: 'Pet 暂不可用，请检查文件与设置；迁移或链接的数据目录需要完成迁移兼容验证。', ASSET_RETRY: 'Pet 传输暂不可用，可刷新场景重试。', decodeBudget: '图片超出可用解码预算或单图限制（缓存上限 {{limit}} MiB），暂时显示内置机器人。', transferTimeout: 'Pet 传输超时，可刷新后重试。', invalidImage: 'Pet 图片校验失败，显示内置机器人。', animationUnavailable: '当前环境不支持该动画解码，显示内置机器人。', imageError: 'Pet 图片解码失败，显示内置机器人。' },
 };
 const presentationEn = {
+  employeeName: 'Employee name', applyEmployeeName: 'Apply', resetEmployeeName: 'Reset employee name',
+  employeeNameHint: 'Scene-matched nameplate above the Pet. Leave blank to use the tab label.',
+  employeeNameInvalid: 'Use up to 24 characters without control or direction-changing characters.',
   sessionAppearance: 'Session Pet', inheritAppearance: 'Follow project settings', builtinAppearance: 'Built-in robot', refreshAppearances: 'Refresh Pets',
   sessionAppearanceHint: 'Applies only to this Office session. Other sessions and project defaults stay independent; the choice survives Office takeover.',
   unavailableAppearance: '{{id}} (not currently listed)', appearanceChoicesError: 'Pet choices are unavailable. Refresh to retry; the saved choice is retained.',
@@ -127,6 +131,9 @@ const presentationEn = {
   presentationStorageError: 'Visual settings could not be saved. Change a setting to retry.',
 };
 const presentationZh = {
+  employeeName: '员工名称', applyEmployeeName: '应用', resetEmployeeName: '重置员工名称',
+  employeeNameHint: '头顶铭牌随场景变换；留空使用会话标签。',
+  employeeNameInvalid: '最多 24 个字符，不支持控制字符或方向控制符。',
   sessionAppearance: '当前工位 Pet', inheritAppearance: '跟随项目设置', builtinAppearance: '内置机器人', refreshAppearances: '刷新 Pet',
   sessionAppearanceHint: '仅更换当前会话的 Pet，不影响其他工位和项目设置。选择“跟随项目设置”可恢复。',
   unavailableAppearance: '{{id}}（暂不在列表中）', appearanceChoicesError: 'Pet 列表加载失败，请刷新重试，当前外观仍会保留。',
@@ -140,6 +147,6 @@ const presentationZh = {
   reducedMotionHint: '系统已启用“减少动态效果”，动画保持暂停，任务状态和会话跳转仍可使用。',
   presentationStorageError: '动态设置暂时无法保存，请重新调整以重试。',
 };
-i18n.addResourceBundle('en', 'petOffice', { ...en, ...liveEn, ...presentationEn, phase: { ...en.phase, IDLE: 'Idle' } });
-i18n.addResourceBundle('zh', 'petOffice', { ...zh, ...liveZh, ...presentationZh, phase: { ...zh.phase, IDLE: '空闲' } });
+i18n.addResourceBundle('en', 'petOffice', { ...en, ...liveEn, ...presentationEn, ...officeGroupsEn, phase: { ...en.phase, IDLE: 'Idle' } });
+i18n.addResourceBundle('zh', 'petOffice', { ...zh, ...liveZh, ...presentationZh, ...officeGroupsZh, phase: { ...zh.phase, IDLE: '空闲' } });
 export default i18n;

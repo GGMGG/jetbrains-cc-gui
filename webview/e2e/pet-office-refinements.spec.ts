@@ -8,6 +8,7 @@ import type { OfficeSharedState } from '../src/petOffice/officeSharedStorage';
 declare global { interface Window {
   officeRefinementHost?: (message: string) => Promise<Record<string, unknown>[]>;
   officeTransitionPeak?: number;
+  officePaintedEmployeeNames?: Set<string>;
 } }
 type Fixture = ReturnType<typeof liveSceneFixture>;
 const sequences = new WeakMap<Page, number>();
@@ -15,7 +16,7 @@ const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).dige
 function defaults(): OfficeSharedState {
   return { schemaVersion: 1, revision: 'initial', preferences: { officeName: '', limitMiB: 50, floors: Array.from({ length: 22 }, () => 'loft'), floor: 0,
     product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100,
-    presentation: { effects: true, attention: true, ambience: true, depth: true }, appearanceOverrides: {} },
+    presentation: { effects: true, attention: true, ambience: true, depth: true }, appearanceOverrides: {}, employeeNames: {}, organization: { groups: [], placements: {}, activeGroup: '' } },
   bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
 }
 function packets(pageGeneration: string, type: 'SCENE' | 'ASSET', bytes: Buffer, sequence: number, fields = {}) {
@@ -62,7 +63,7 @@ async function hoverDesk(page: Page, seat: number) {
 async function expectCompactSidebar(page: Page) {
   const summary = (await page.locator('.office-summary').boundingBox())!;
   expect(summary.height).toBeLessThanOrEqual(24);
-  const control = page.locator('.office-appearance-control');
+  const control = page.locator('.office-appearance-control').first();
   const row = (await control.boundingBox())!;
   expect(row.height).toBeLessThanOrEqual(28);
   const centers = await control.locator('label, .ant-select, button').evaluateAll(nodes => nodes.map(node => {
@@ -72,6 +73,383 @@ async function expectCompactSidebar(page: Page) {
   expect(await control.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
+
+async function employeeHost(context: BrowserContext, initial = defaults()) {
+  const host = { saved: initial, rejectNext: false, rejectWait: undefined as Promise<void> | undefined, backgrounds: new Map<string, Buffer>() };
+  const uploads = new Map<string, { key: string; bytes: Buffer[] }>();
+  await context.exposeFunction('officeRefinementHost', async (message: string) => {
+    const request = JSON.parse(message) as { command: string; operation: string; requestId: string; pageGeneration: string; payload: string };
+    const packet = (type: string, fields = {}) => ({ requestId: request.requestId, pageGeneration: request.pageGeneration, type, ...fields });
+    if (request.command !== 'storage') return [];
+    if (request.operation.startsWith('background')) {
+      const payload = JSON.parse(request.payload) as { floor: number; group?: string; transferId: string; data: string };
+      const key = `${payload.group ?? ''}/${payload.floor}`;
+      if (request.operation === 'backgroundRead') {
+        const bytes = host.backgrounds.get(key);
+        return bytes ? [packet('begin', { byteLength: bytes.length, mime: 'image/png', digest: hash(bytes) }),
+          packet('chunk', { index: 0, data: bytes.toString('base64') }), packet('commit')] : [packet('value', { empty: true })];
+      }
+      if (request.operation === 'backgroundBegin') {
+        uploads.set(payload.transferId, { key, bytes: [] });
+      } else if (request.operation === 'backgroundChunk') uploads.get(payload.transferId)!.bytes.push(Buffer.from(payload.data, 'base64'));
+      else if (request.operation === 'backgroundCommit') {
+        const upload = uploads.get(payload.transferId)!;
+        host.backgrounds.set(upload.key, Buffer.concat(upload.bytes)); uploads.delete(payload.transferId);
+      } else if (request.operation === 'backgroundRemove') host.backgrounds.delete(key);
+      else throw new Error('Unexpected background operation');
+      return [packet('value')];
+    }
+    if (request.operation === 'petChoices') return [packet('value', { choices: [{ id: 'builtin', label: 'Robot' }] })];
+    if (request.operation !== 'preferences') throw new Error('Unexpected storage operation');
+    if (host.rejectNext) {
+      host.rejectNext = false; await host.rejectWait;
+      return [packet('error', { code: 'OFFICE_PREFERENCES_UNAVAILABLE' })];
+    }
+    const payload = JSON.parse(request.payload) as { expectedRevision: string; preferences: OfficeSharedState['preferences'] };
+    if (payload.expectedRevision !== host.saved.revision) return [packet('error', { code: 'OFFICE_PREFERENCES_CONFLICT', state: host.saved })];
+    host.saved = { ...host.saved, revision: randomUUID(), preferences: payload.preferences };
+    return [packet('value', { state: host.saved })];
+  });
+  return host;
+}
+
+function keepOfficeAlive(page: Page, scene: Fixture) {
+  let pending = false;
+  const timer = setInterval(() => {
+    if (pending || page.isClosed()) return;
+    pending = true; void publish(page, scene).catch(() => undefined).finally(() => { pending = false; });
+  }, 4000);
+  page.once('close', () => clearInterval(timer));
+}
+
+async function chooseOfficeOption(page: Page, name: string, option: string | RegExp) {
+  const select = page.getByRole('combobox', { name, exact: true });
+  await select.scrollIntoViewIfNeeded(); await select.click();
+  const value = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').filter({
+    hasText: typeof option === 'string' ? new RegExp(`^${option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) : option,
+  });
+  await value.scrollIntoViewIfNeeded({ timeout: 8000 }); await value.click();
+}
+
+test('groups simplify creation, live assignments, renaming and shared scenes across reopening', async ({ context }) => {
+  test.setTimeout(90_000);
+  const host = await employeeHost(context), scene = liveSceneFixture(['RUNNING', 'WAITING_USER', 'THINKING']);
+  let page = await open(context, host.saved, 'zh'); await publish(page, scene); keepOfficeAlive(page, scene);
+  await chooseOfficeOption(page, '场景风格', '霓虹赛博');
+  await page.getByRole('button', { name: '管理分组', exact: true }).click();
+  let dialog = page.getByRole('dialog', { name: '员工分组', exact: true });
+  await expect(dialog.getByRole('tab')).toHaveCount(0);
+  for (const name of ['分组徽记', '办公室场景', '自动归组的项目']) await expect(dialog.getByRole('combobox', { name, exact: true })).toHaveCount(0);
+  await dialog.getByRole('textbox', { name: '分组名称', exact: true }).fill('星舰研发组');
+  await dialog.getByRole('button', { name: '新建分组', exact: true }).click();
+  await expect.poll(() => host.saved.preferences.organization.groups.length).toBe(1);
+  const first = host.saved.preferences.organization.groups[0].id;
+  expect(Object.keys(host.saved.preferences.organization.groups[0]).sort()).toEqual(['id', 'name']);
+  expect(Object.keys(host.saved.preferences.organization.placements)).toHaveLength(0);
+  await dialog.getByRole('textbox', { name: '分组名称', exact: true }).fill('森林实验组');
+  await dialog.getByRole('button', { name: '新建分组', exact: true }).click();
+  await expect.poll(() => host.saved.preferences.organization.groups.length).toBe(2);
+  const second = host.saved.preferences.organization.groups[1].id;
+  await dialog.getByRole('button', { name: '重命名星舰研发组', exact: true }).click();
+  await dialog.getByRole('textbox', { name: '重命名星舰研发组', exact: true }).fill('星舰架构组');
+  await dialog.getByRole('button', { name: '保存名称', exact: true }).click();
+  await expect.poll(() => host.saved.preferences.organization.groups[0].name).toBe('星舰架构组');
+  await chooseOfficeOption(page, 'AI 1的分组', /星舰架构组/);
+  await chooseOfficeOption(page, 'AI 2的分组', /星舰架构组/);
+  await chooseOfficeOption(page, 'AI 3的分组', /森林实验组/);
+  await expect.poll(() => Object.values(host.saved.preferences.organization.placements).filter(p => p.group === first).length).toBe(2);
+  await expect.poll(() => Object.values(host.saved.preferences.organization.placements).filter(p => p.group === second).length).toBe(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('office-simple-group-management.png'), animations: 'disabled' });
+  await dialog.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('button', { name: '进入星舰架构组办公室', exact: true }).click();
+  await expect(page.locator('.office-session')).toHaveCount(2);
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'cyberpunk');
+  await expect(page.getByRole('button', { name: '下一层', exact: true })).toHaveCount(0);
+  const nav = page.locator('.office-group-navigation');
+  expect(await nav.evaluate(node => !!node.closest('.office-scene-panel'))).toBe(true);
+  expect((await nav.boundingBox())!.height).toBeLessThanOrEqual(52);
+  await page.screenshot({ path: test.info().outputPath('office-simple-group-room.png'), animations: 'disabled' });
+  await chooseOfficeOption(page, '场景风格', '森林工坊');
+  await page.getByRole('button', { name: '进入森林实验组办公室', exact: true }).click();
+  await expect(page.locator('.office-session')).toHaveCount(1);
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'forest');
+  await expect.poll(() => host.saved.preferences.organization.activeGroup).toBe(second);
+  await page.close(); page = await open(context, host.saved, 'zh'); await publish(page, scene); keepOfficeAlive(page, scene);
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'forest');
+  await expect(page.locator('.office-session')).toHaveCount(1);
+  await page.getByRole('button', { name: '管理分组', exact: true }).click(); dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: '删除森林实验组', exact: true }).click();
+  await page.locator('.ant-popconfirm .ant-btn-primary').click();
+  await expect.poll(() => host.saved.preferences.organization.groups.length).toBe(1);
+  await expect.poll(() => host.saved.preferences.organization.activeGroup).toBe('');
+  await dialog.getByRole('button', { name: '完成', exact: true }).click();
+  await expect(page.locator('.office-session')).toHaveCount(1);
+  await page.close();
+});
+
+test('groups share the toolbar background across room switches, reopening and reset', async ({ context }) => {
+  test.setTimeout(60_000);
+  const initial = defaults(), scene = liveSceneFixture(['RUNNING']);
+  initial.preferences.floors[0] = 'cyberpunk';
+  initial.preferences.organization = { groups: [{ id: 'a', name: '研发组' }, { id: 'b', name: '设计组' }], activeGroup: 'a', placements: {} };
+  const host = await employeeHost(context, initial); let page = await open(context, host.saved, 'zh');
+  await publish(page, scene); keepOfficeAlive(page, scene);
+  const bytes = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 32;
+    const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#112233'; ctx.fillRect(0, 0, 32, 32);
+    return canvas.toDataURL('image/png').split(',')[1];
+  }), 'base64');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '选择背景', exact: true }).click();
+  await (await chooser).setFiles({ name: 'room.png', mimeType: 'image/png', buffer: bytes });
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'custom');
+  await expect.poll(() => host.backgrounds.has('/0')).toBe(true);
+  expect([...host.backgrounds.keys()]).toEqual(['/0']);
+  await page.getByRole('button', { name: '进入设计组办公室', exact: true }).click();
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'custom');
+  await expect.poll(() => host.saved.preferences.organization.activeGroup).toBe('b');
+  await page.close(); page = await open(context, host.saved, 'zh'); await publish(page, scene); keepOfficeAlive(page, scene);
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'custom');
+  await page.getByRole('button', { name: '恢复默认', exact: true }).click();
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'cyberpunk');
+  expect(host.backgrounds.size).toBe(0);
+  await page.getByRole('button', { name: '进入研发组办公室', exact: true }).click();
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'cyberpunk');
+  await page.getByRole('button', { name: '进入未分组办公室', exact: true }).click();
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'cyberpunk');
+  await page.close();
+});
+
+test('groups show only live employees and remember offline membership without reserving capacity', async ({ context }) => {
+  test.setTimeout(90_000);
+  const initial = defaults(), scene = liveSceneFixture(Array.from({ length: 13 }, () => 'RUNNING'));
+  const keys = scene.snapshot.sources.map(s => [s.sourceKey.instanceId, s.sourceKey.contentHandleId, s.sourceKey.bindingEpoch].join('/'));
+  initial.preferences.organization = { groups: [{ id: 'a', name: '核心小队' }], activeGroup: 'a',
+    placements: Object.fromEntries(keys.slice(0, 12).map((key, seat) => [key, { group: 'a', seat }])) };
+  const host = await employeeHost(context, initial), page = await open(context, host.saved, 'zh');
+  await publish(page, scene); keepOfficeAlive(page, scene);
+  await expect(page.locator('.office-session')).toHaveCount(12);
+  await expect(page.getByRole('button', { name: '下一层', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '管理分组', exact: true }).click();
+  let dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('list', { name: '在线员工', exact: true }).getByRole('listitem')).toHaveCount(13);
+  await dialog.getByRole('combobox', { name: 'AI 13的分组', exact: true }).click();
+  await expect(page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').filter({ hasText: '核心小队' })).toHaveClass(/disabled/);
+  await page.keyboard.press('Escape');
+  const first = scene.snapshot.sources[0], appearance = scene.appearances[keys[0]];
+  scene.snapshot.sources = scene.snapshot.sources.slice(1); delete scene.appearances[keys[0]]; await publish(page, scene);
+  await expect(dialog.getByRole('list', { name: '在线员工', exact: true }).getByRole('listitem')).toHaveCount(12);
+  await expect(dialog.getByRole('combobox', { name: 'AI 1的分组', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0);
+  await chooseOfficeOption(page, 'AI 13的分组', /核心小队/);
+  await expect.poll(() => host.saved.preferences.organization.placements[keys[12]]?.group).toBe('a');
+  expect(host.saved.preferences.organization.placements[keys[0]].group).toBe('a');
+  await dialog.getByRole('button', { name: '完成', exact: true }).click();
+  scene.snapshot.sources.unshift(first); scene.appearances[keys[0]] = appearance; await publish(page, scene);
+  await expect(page.locator('.office-session')).toHaveCount(12);
+  await page.getByRole('button', { name: '进入未分组办公室', exact: true }).click();
+  await expect(page.locator('.office-session')).toHaveCount(1);
+  await expect(page.locator('.office-session')).toContainText('AI 1');
+  scene.snapshot.sources = scene.snapshot.sources.filter(s => s.sourceKey.contentHandleId !== 'tab-1');
+  delete scene.appearances[keys[1]]; await publish(page, scene);
+  await expect(page.locator('.office-session')).toHaveCount(0);
+  await page.getByRole('button', { name: '进入核心小队办公室', exact: true }).click();
+  await expect(page.locator('.office-session')).toHaveCount(12);
+  await page.locator('.office-session').filter({ hasText: 'AI 13' }).click();
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 1');
+  await publish(page, scene);
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 1');
+  await page.getByRole('button', { name: '管理分组', exact: true }).click(); dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('list', { name: '在线员工', exact: true }).getByRole('listitem')).toHaveCount(12);
+  await page.screenshot({ path: test.info().outputPath('office-simple-group-employees.png'), animations: 'disabled' });
+  await page.close();
+});
+
+test('online fallback desks stay put until explicitly moved to their remembered preference', async ({ context }) => {
+  const initial = defaults(), scene = liveSceneFixture(['RUNNING', 'RUNNING']);
+  const keys = scene.snapshot.sources.map(s => `${s.sourceKey.instanceId}/${s.sourceKey.contentHandleId}/${s.sourceKey.bindingEpoch}`);
+  initial.preferences.organization = { groups: [{ id: 'a', name: '引擎小队' }], activeGroup: 'a',
+    placements: Object.fromEntries(keys.map(key => [key, { group: 'a', seat: 0 }])) };
+  const host = await employeeHost(context, initial), page = await open(context, host.saved, 'zh');
+  await publish(page, scene); keepOfficeAlive(page, scene);
+  await page.locator('.office-session').nth(1).click();
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 2');
+  scene.snapshot.sources = scene.snapshot.sources.slice(1);
+  delete scene.appearances[keys[0]]; await publish(page, scene);
+  await expect(page.locator('.office-session')).toHaveCount(1);
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 2');
+  await chooseOfficeOption(page, '调整工位', '工位 1 · 空工位');
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 1');
+  await publish(page, scene);
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 1');
+  await page.close();
+});
+
+test('group desks swap by selection and dragging, persist and revert when a save fails', async ({ context }) => {
+  test.setTimeout(90_000);
+  const initial = defaults(), scene = liveSceneFixture(['RUNNING', 'THINKING', 'RUNNING']);
+  const keys = scene.snapshot.sources.map(s => `${s.sourceKey.instanceId}/${s.sourceKey.contentHandleId}/${s.sourceKey.bindingEpoch}`);
+  initial.preferences.organization = { groups: [{ id: 'a', name: '引擎小队' },
+    { id: 'b', name: '外部小队' }], activeGroup: 'a',
+  placements: { [keys[0]]: { group: 'a', seat: 0 }, [keys[1]]: { group: 'a', seat: 1 }, [keys[2]]: { group: 'b', seat: 0 } } };
+  const host = await employeeHost(context, initial); let page = await open(context, host.saved, 'zh');
+  await publish(page, scene); keepOfficeAlive(page, scene); await page.locator('.office-session').first().click();
+  await chooseOfficeOption(page, '调整工位', '工位 2 · AI 2');
+  await expect.poll(() => host.saved.preferences.organization.placements[keys[0]].seat).toBe(1);
+  expect(host.saved.preferences.organization.placements[keys[1]].seat).toBe(0);
+  host.rejectNext = true;
+  await chooseOfficeOption(page, '调整工位', '工位 12 · 空工位');
+  await expect(page.getByRole('alert').filter({ hasText: '共享设置保存失败' })).toBeVisible();
+  expect(host.saved.preferences.organization.placements[keys[0]].seat).toBe(1);
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 2');
+  // Mouse drags use the painted camera coordinates, including vacant desks.
+  const drag = async (from: number, to: number) => {
+    const canvas = page.locator('.office-scene-surface > canvas'); await canvas.scrollIntoViewIfNeeded();
+    const d = await page.evaluate(() => window.petOfficeDiagnostics!()), bounds = (await canvas.boundingBox())!;
+    const point = (seat: number) => ({ x: bounds.x + (OFFICE_ART_SEATS.loft[seat].x - Number(d.cameraX)) / Number(d.cameraWidth) * bounds.width,
+      y: bounds.y + (OFFICE_ART_SEATS.loft[seat].label - Number(d.cameraY)) / Number(d.cameraHeight) * bounds.height });
+    const start = point(from), end = point(to);
+    await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 12 }); await page.mouse.up();
+  };
+  await drag(1, 2);
+  await expect.poll(() => host.saved.preferences.organization.placements[keys[0]].seat).toBe(2);
+  await drag(2, 0);
+  await expect.poll(() => host.saved.preferences.organization.placements[keys[0]].seat).toBe(0);
+  expect(host.saved.preferences.organization.placements[keys[1]].seat).toBe(2);
+  expect(host.saved.preferences.organization.placements[keys[2]]).toEqual({ group: 'b', seat: 0 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.close(); page = await open(context, host.saved, 'zh'); await publish(page, scene);
+  await page.locator('.office-session').nth(1).click();
+  await expect(page.locator('#office-group-seat').locator('xpath=..')).toContainText('工位 3');
+  await page.close();
+});
+
+test('ungrouped employees swap across floors and follow membership changes to the correct office', async ({ context }) => {
+  test.setTimeout(60_000);
+  const initial = defaults(), scene = liveSceneFixture(Array.from({ length: 16 }, () => 'RUNNING'));
+  initial.preferences.organization.groups = [{ id: 'a', name: '引擎小队' }];
+  const keys = scene.snapshot.sources.map(s => `${s.sourceKey.instanceId}/${s.sourceKey.contentHandleId}/${s.sourceKey.bindingEpoch}`);
+  const host = await employeeHost(context, initial), page = await open(context, host.saved, 'zh');
+  await publish(page, scene); keepOfficeAlive(page, scene); await page.locator('.office-session').first().click();
+  await page.getByRole('combobox', { name: '调整工位', exact: true }).click();
+  for (let index = 0; index < 14; index++) await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => host.saved.preferences.organization.placements[keys[0]]?.seat).toBe(14);
+  expect(host.saved.preferences.organization.placements[keys[14]]?.seat).toBe(0);
+  await expect(page.locator('.office-floor-label')).toHaveText('第 2 / 2 层');
+  await chooseOfficeOption(page, '所属分组', /引擎小队/);
+  await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', 'loft');
+  await expect(page.locator('.office-session')).toHaveCount(1);
+  await chooseOfficeOption(page, '所属分组', '未分组');
+  await expect(page.locator('.office-floor-label')).toHaveText('第 2 / 2 层');
+  await expect.poll(() => host.saved.preferences.organization.placements[keys[0]]).toEqual({ group: '', seat: 14 });
+  await page.close();
+});
+
+async function recordEmployeeNameplates(page: Page) {
+  await page.locator('.office-scene-surface > canvas').waitFor();
+  await page.evaluate(() => {
+    window.officePaintedEmployeeNames = new Set();
+    const ctx = document.querySelector<HTMLCanvasElement>('.office-scene-surface > canvas')!.getContext('2d')!;
+    const fill = ctx.fillText.bind(ctx);
+    ctx.fillText = (text, x, y, maxWidth) => {
+      if (ctx.font.includes('800 19px')) window.officePaintedEmployeeNames!.add(text);
+      if (maxWidth === undefined) fill(text, x, y); else fill(text, x, y, maxWidth);
+    };
+  });
+}
+
+test('employee names persist per binding, render above Pets, survive save failures and reset independently', async ({ context }) => {
+  test.setTimeout(60_000);
+  const host = await employeeHost(context);
+  const scene = liveSceneFixture(['RUNNING', 'THINKING']);
+  const keys = scene.snapshot.sources.map(source => `${source.sourceKey.instanceId}/${source.sourceKey.contentHandleId}/${source.sourceKey.bindingEpoch}`);
+  let page = await open(context, host.saved, 'zh');
+  await recordEmployeeNameplates(page); await publish(page, scene); keepOfficeAlive(page, scene);
+  await page.locator('.office-session').nth(0).click();
+  const firstName = '黑骑·代码魔神';
+  let input = page.getByRole('textbox', { name: '员工名称', exact: true });
+  await input.fill(`  ${firstName}  `); await input.press('Enter');
+  await expect.poll(() => host.saved.preferences.employeeNames[keys[0]]).toBe(firstName);
+  await expect.poll(() => page.evaluate(name => window.officePaintedEmployeeNames!.has(name), firstName)).toBe(true);
+  await expect(input).toHaveValue(firstName);
+  await page.locator('.office-session').nth(1).click(); await expect(input).toHaveValue('');
+  await input.fill('星际架构师'); await page.getByRole('button', { name: '应用', exact: true }).click();
+  await expect.poll(() => host.saved.preferences.employeeNames[keys[1]]).toBe('星际架构师');
+  expect(host.saved.preferences.employeeNames[keys[0]]).toBe(firstName);
+  const search = page.getByRole('searchbox', { name: '搜索项目、页签或 Provider', exact: true });
+  await search.fill('代码魔神'); await expect(page.locator('.office-session')).toHaveCount(1); await search.fill('');
+  await expect.poll(() => host.saved.preferences.search).toBe('');
+  await page.close(); page = await open(context, host.saved, 'zh');
+  await recordEmployeeNameplates(page); await publish(page, scene); keepOfficeAlive(page, scene);
+  await page.locator('.office-session').nth(0).click();
+  input = page.getByRole('textbox', { name: '员工名称', exact: true });
+  await expect(input).toHaveValue(firstName);
+  host.rejectNext = true;
+  let releaseRejection!: () => void;
+  host.rejectWait = new Promise<void>(resolve => { releaseRejection = resolve; });
+  await input.fill('保存失败的名字'); await input.press('Enter'); await input.fill('继续输入的新草稿');
+  releaseRejection(); host.rejectWait = undefined;
+  await expect(page.getByRole('alert').filter({ hasText: '共享设置保存失败' })).toBeVisible();
+  await expect(input).toHaveValue('继续输入的新草稿'); expect(host.saved.preferences.employeeNames[keys[0]]).toBe(firstName);
+  await input.press('Enter'); await expect.poll(() => host.saved.preferences.employeeNames[keys[0]]).toBe('继续输入的新草稿');
+  await page.evaluate(() => window.officePaintedEmployeeNames!.clear());
+  await page.getByRole('button', { name: '重置员工名称', exact: true }).click();
+  await expect.poll(() => host.saved.preferences.employeeNames[keys[0]]).toBeUndefined();
+  await expect(input).toHaveValue(''); expect(host.saved.preferences.employeeNames[keys[1]]).toBe('星际架构师');
+  await expect.poll(() => page.evaluate(() => window.officePaintedEmployeeNames!.has('AI 1'))).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.close();
+});
+
+test('employee nameplates follow all nine scenes and become static when animation is paused or reduced', async ({ context }) => {
+  test.setTimeout(90_000);
+  const initial = defaults(), scene = liveSceneFixture(['RUNNING', 'THINKING', 'WAITING_USER']);
+  const names = ['黑骑·代码魔神', '星际架构师', '深海御码者'];
+  initial.preferences.employeeNames = Object.fromEntries(scene.snapshot.sources.map((source, i) =>
+    [`${source.sourceKey.instanceId}/${source.sourceKey.contentHandleId}/${source.sourceKey.bindingEpoch}`, names[i]]));
+  const host = await employeeHost(context, initial);
+  const page = await open(context, host.saved, 'zh');
+  await recordEmployeeNameplates(page); await publish(page, scene); await page.locator('.office-session').first().click();
+  const themes = { loft: '暖色阁楼', cyberpunk: '霓虹赛博', cultivation: '云海仙阁', space: '星舰指挥舱', forest: '森林工坊',
+    library: '魔法图书馆', ocean: '深海观测站', zen: '禅意庭院', retro: '复古游戏工作室' };
+  for (const [theme, label] of Object.entries(themes)) {
+    await publish(page, scene);
+    await page.getByRole('combobox', { name: '场景风格', exact: true }).click();
+    await page.getByRole('option', { name: label, exact: true }).click();
+    await expect(page.locator('.office-live')).toHaveAttribute('data-ui-theme', theme);
+    await expect.poll(() => page.evaluate(names => names.every(name => window.officePaintedEmployeeNames!.has(name)), names)).toBe(true);
+    if (test.info().project.name === 'chromium-full-hd') {
+      await page.screenshot({ path: test.info().outputPath(`employee-nameplate-${theme}.png`), animations: 'disabled' });
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  const fullRoom = liveSceneFixture(Array.from({ length: 12 }, () => 'RUNNING' as const));
+  await publish(page, fullRoom);
+  await page.getByRole('button', { name: '聚焦会话', exact: true }).click();
+  await page.waitForTimeout(3000);
+  await test.info().attach('employee-nameplate-performance.json', {
+    body: JSON.stringify(await page.evaluate(() => window.petOfficeDiagnostics!()), null, 2), contentType: 'application/json',
+  });
+  if (test.info().project.name === 'chromium-full-hd') {
+    await page.screenshot({ path: test.info().outputPath('employee-nameplate-full-room.png'), animations: 'disabled' });
+  }
+  await page.getByRole('button', { name: '暂停动画', exact: true }).click();
+  const canvas = page.locator('.office-scene-surface > canvas');
+  await expect(page.getByRole('button', { name: '继续动画', exact: true })).toBeVisible();
+  const paused = await canvas.evaluate(node => (node as HTMLCanvasElement).toDataURL());
+  await page.waitForTimeout(1100);
+  expect(await canvas.evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(paused);
+  await page.getByRole('button', { name: '继续动画', exact: true }).click();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(page.getByRole('button', { name: '继续动画', exact: true })).toBeDisabled();
+  await expect.poll(() => page.evaluate(() => window.petOfficeDiagnostics?.().reducedMotion)).toBe(true);
+  const reduced = await canvas.evaluate(node => (node as HTMLCanvasElement).toDataURL());
+  await page.waitForTimeout(1100);
+  expect(await canvas.evaluate(node => (node as HTMLCanvasElement).toDataURL())).toBe(reduced);
+  await page.close();
+});
 
 test('office naming trims, persists, rolls back failed saves and restores the default titles', async ({ context }) => {
   let saved = defaults(), rejectNext = false;
@@ -226,7 +604,7 @@ test('session Pets render independently, survive owner change and reset to inher
   await page.close(); page = await open(context, saved); await publish(page, render());
   await expect.poll(() => page.evaluate(() => window.petOfficeDiagnostics?.().petImages)).toBe(2);
   await page.getByRole('list', { name: 'Session list' }).getByRole('button').first().click();
-  await expect(page.locator('.office-appearance-control')).toContainText('Red Pet');
+  await expect(page.getByRole('region', { name: 'Session Pet', exact: true })).toContainText('Red Pet');
   await choose(0, 'Follow project settings'); await expect.poll(() => page.evaluate(() => window.petOfficeDiagnostics?.().petImages)).toBe(1);
   expect(saved.preferences.appearanceOverrides).toEqual({ [keys[1]]: 'blue.png' });
   await choose(1, 'Follow project settings'); await expect.poll(() => page.evaluate(() => window.petOfficeDiagnostics?.().petImages)).toBe(0);
@@ -245,12 +623,17 @@ test('Chinese desk appearance controls and searchable Pet names remain readable'
   const page = await open(context, defaults(), 'zh'); await publish(page, liveSceneFixture(['RUNNING']));
   await hoverDesk(page, 0); await expect(page.getByRole('tooltip', { name: '工位预览' })).toBeVisible();
   await page.getByRole('list', { name: '会话列表' }).getByRole('button').first().click();
-  const control = page.locator('.office-appearance-control');
+  const control = page.getByRole('region', { name: '当前工位 Pet', exact: true });
   await expectCompactSidebar(page);
   await expect(control).toContainText('跟随项目设置'); await expect(control).not.toContainText('仅更换当前会话');
   await expect(control.locator('label')).toHaveAttribute('title', /仅更换当前会话/);
   const selection = (await page.locator('.office-selection').boundingBox())!;
-  expect(selection.height).toBeLessThan(140);
+  // Four compact controls now share the selected workstation: Pet, name, group and desk.
+  expect(selection.height).toBeLessThan(240);
+  for (const row of await page.locator('.office-selection .office-appearance-control').all()) {
+    expect((await row.boundingBox())!.height).toBeLessThanOrEqual(28);
+    expect(await row.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  }
   expect(await page.locator('.office-selection').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
   const first = page.getByRole('list', { name: '会话列表' }).getByRole('button').first();
   const card = (await first.boundingBox())!, phase = (await first.locator('.office-session-phase').boundingBox())!;

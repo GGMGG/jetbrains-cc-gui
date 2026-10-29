@@ -5,6 +5,8 @@ import type { OfficeUiPalette } from './officePresentation';
 export interface OfficeScenePresentation {
   palette: OfficeUiPalette; ambience: boolean; effectTime: number;
   effects: readonly OfficeTaskEffect[]; attention: ReadonlySet<string>;
+  employeeNames?: Readonly<Record<string, string>>; nameplateMotion?: boolean;
+  groupBadges?: Readonly<Record<string, string>>;
 }
 
 const COLORS: Record<OfficeThemeId, string> = { loft: '#ffdf9a', cyberpunk: '#81ecff', cultivation: '#f5edce', space: '#c8e8ff',

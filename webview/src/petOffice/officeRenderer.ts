@@ -8,6 +8,7 @@ import type { OfficeCamera } from './officeCamera';
 import { drawOfficeAmbience, drawOfficeTaskFeedback } from './officeSceneEffects';
 import type { OfficeScenePresentation } from './officeSceneEffects';
 import type { OfficeActorMotion } from './officeTransitions';
+import { drawOfficeNameplate } from './officeNameplates';
 
 export const OFFICE_SCENE_WIDTH = 1160;
 export const OFFICE_SCENE_HEIGHT = 1040;
@@ -43,6 +44,30 @@ export function officeSceneHeight(sources: readonly OfficeSource[], artwork = fa
 function position(seat: number): { x: number; y: number } {
   const slot = seat % OFFICE_FLOOR_CAPACITY;
   return { x: 194 + (slot % COLUMNS) * 256, y: 280 + Math.floor(slot / COLUMNS) * ROW_GAP };
+}
+
+/** Drop targets include vacant desks and use the same scene coordinates as actors. */
+export function officeSeatAtPoint(x: number, y: number, theme?: OfficeThemeId, height = OFFICE_SCENE_HEIGHT): number | null {
+  for (let slot = 0; slot < OFFICE_FLOOR_CAPACITY; slot++) {
+    if (theme) {
+      const seat = OFFICE_ART_SEATS[theme][slot], previous = OFFICE_ART_SEATS[theme][slot - COLUMNS];
+      const top = Math.max(seat.y - 200 * seat.scale, previous ? previous.label + 23 : 0);
+      if (x >= seat.x - seat.half && x <= seat.x + seat.half && y >= top && y <= seat.label + 22) return slot;
+    } else {
+      const seat = position(slot);
+      if (seat.y + 66 <= height && x >= seat.x - 108 && x <= seat.x + 108 && y >= seat.y - 186 && y <= seat.y + 66) return slot;
+    }
+  }
+  return null;
+}
+
+function groupBadge(ctx: CanvasRenderingContext2D, glyph: string | undefined, x: number, y: number, scale: number, color: string): void {
+  if (!glyph) return;
+  ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+  box(ctx, -11, -11, 22, 22, '#111923', 6);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-11, -11, 22, 22, 6); ctx.stroke();
+  ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 15px "Segoe UI Symbol", sans-serif'; ctx.fillText(glyph, 0, 0);
+  ctx.restore();
 }
 
 function box(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, color: string, radius = 0): void {
@@ -212,8 +237,10 @@ function drawVectorActors(ctx: CanvasRenderingContext2D, sources: readonly Offic
     const { scale, half, x, y, label } = seat;
     const previous = OFFICE_ART_SEATS[theme][source.seat % OFFICE_FLOOR_CAPACITY - 4];
     const previousLabel = previous?.label ?? 0;
-    const actorHeight = Math.min(144 * scale, previous ? y - previousLabel - 30 : 144 * scale);
-    const regionTop = Math.max(y - 165 * scale, previous ? previousLabel + 23 : 0);
+    const named = presentation?.employeeNames !== undefined;
+    const actorHeight = Math.min(144 * scale, previous ? y - previousLabel - (named ? 34 + 46 * scale : 30) : 144 * scale);
+    const nameplateY = y - actorHeight - 23 * scale;
+    const regionTop = Math.max(named ? nameplateY - 28 * scale : y - 165 * scale, previous ? previousLabel + 23 : 0);
     const region = { sourceKey: source.sourceKey, x: x - half, y: regionTop, width: half * 2, height: label + 22 - regionTop };
     const actor = typeof visual === 'function' ? visual(source) : visual;
     const motion = actor?.motion;
@@ -248,6 +275,9 @@ function drawVectorActors(ctx: CanvasRenderingContext2D, sources: readonly Offic
     ctx.fillStyle = '#bdd2d6'; ctx.font = `${9 * scale}px "Segoe UI", "Microsoft YaHei", sans-serif`;
     ctx.fillText(fit(`${source.tabLabel} · ${source.product}`), x, label + 17);
     ctx.fillStyle = phaseColor(source.phase); ctx.beginPath(); ctx.arc(x + width / 2 - 7 * scale, label + 8.5, 2.5 * scale, 0, Math.PI * 2); ctx.fill();
+    if (named) drawOfficeNameplate(ctx, presentation.employeeNames?.[source.sourceKey] || source.tabLabel, x, nameplateY, scale,
+      half * 2 / scale - 12, theme, time, presentation.nameplateMotion ?? false, source.seat, source.sourceKey === selected);
+    groupBadge(ctx, presentation?.groupBadges?.[source.sourceKey], x - half + 15 * scale, nameplateY - 9 * scale, scale, presentation?.palette.accent ?? '#a7dbde');
     if (presentation) drawOfficeTaskFeedback(ctx, source.sourceKey, x, y, scale, presentation.effectTime, presentation);
     regions.push(region);
   }
@@ -315,7 +345,11 @@ export function drawOfficeScene(
     label = `${source.tabLabel} · ${source.product}`; while (ctx.measureText(label).width > 188 && label.length > 2) label = label.slice(0, -2) + '…';
     ctx.fillText(label, x, y + 60);
     ctx.fillStyle = phaseColor(source.phase); ctx.beginPath(); ctx.arc(x - 92, y - 107, 5, 0, Math.PI * 2); ctx.fill();
-    regions.push({ sourceKey: source.sourceKey, x: x - 108, y: y - 142, width: 216, height: 208 });
+    const named = presentation?.employeeNames !== undefined;
+    if (named) drawOfficeNameplate(ctx, presentation.employeeNames?.[source.sourceKey] || source.tabLabel, x, y - 158, 1,
+      202, theme, time, presentation.nameplateMotion ?? false, source.seat, selectedSource);
+    groupBadge(ctx, presentation?.groupBadges?.[source.sourceKey], x - 96, y - 167, 1, presentation?.palette.accent ?? '#a7dbde');
+    regions.push({ sourceKey: source.sourceKey, x: x - 108, y: y - (named ? 186 : 142), width: 216, height: named ? 252 : 208 });
     if (presentation) drawOfficeTaskFeedback(ctx, source.sourceKey, x, y - 15, 1, presentation.effectTime, presentation);
   }
   return regions;

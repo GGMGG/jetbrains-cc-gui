@@ -10,10 +10,16 @@ import type { OfficePresentationPreferences } from './officePresentation';
 import { parseOfficeAppearanceOverrides, parseOfficePetChoices } from './officeAppearanceOverrides';
 import type { OfficeAppearanceOverrides } from './officeAppearanceOverrides';
 import { parseOfficeName } from './officeName';
+import { parseOfficeEmployeeNames } from './officeEmployeeNames';
+import type { OfficeEmployeeNames } from './officeEmployeeNames';
+import { emptyOfficeOrganization, parseOfficeOrganization } from './officeGroups';
+import type { OfficeOrganization } from './officeGroups';
+import { officePreferenceBytes } from './officePreferenceBudget';
 
 export interface OfficeSharedPreferences {
   officeName: string; limitMiB: number; floors: OfficeThemeId[]; floor: number; product: string; search: string;
-  showIdle: boolean; paused: boolean; topmost: boolean; zoom: number; presentation: OfficePresentationPreferences; appearanceOverrides: OfficeAppearanceOverrides;
+  showIdle: boolean; paused: boolean; topmost: boolean; zoom: number; presentation: OfficePresentationPreferences; appearanceOverrides: OfficeAppearanceOverrides; employeeNames: OfficeEmployeeNames;
+  organization: OfficeOrganization;
 }
 export interface OfficeSharedState {
   schemaVersion: 1; revision: string; preferences: OfficeSharedPreferences;
@@ -25,10 +31,14 @@ export function parseOfficeSharedState(raw: unknown): OfficeSharedState {
   const value = object(raw); keys(value, ['schemaVersion', 'revision', 'preferences', 'bounds']);
   if (value.schemaVersion !== 1 || !/^(initial|[a-f0-9-]{36})$/.test(text(value.revision, 64))) throw new Error('sharedPreferencesError');
   const p = object(value.preferences);
-  keys(p, ['limitMiB', 'floors', 'floor', 'product', 'search', 'showIdle', 'paused', 'topmost', 'zoom', ...('presentation' in p ? ['presentation'] : []), ...('appearanceOverrides' in p ? ['appearanceOverrides'] : []), ...('officeName' in p ? ['officeName'] : [])]);
+  keys(p, ['limitMiB', 'floors', 'floor', 'product', 'search', 'showIdle', 'paused', 'topmost', 'zoom', ...('presentation' in p ? ['presentation'] : []), ...('appearanceOverrides' in p ? ['appearanceOverrides'] : []), ...('officeName' in p ? ['officeName'] : []), ...('employeeNames' in p ? ['employeeNames'] : []), ...('organization' in p ? ['organization'] : [])]);
+  const organization = 'organization' in p ? parseOfficeOrganization(p.organization) : emptyOfficeOrganization();
   const officeName = 'officeName' in p ? parseOfficeName(p.officeName) : '';
   const presentation = 'presentation' in p ? parseOfficePresentation(p.presentation) : { ...OFFICE_PRESENTATION_DEFAULTS };
   const appearanceOverrides = 'appearanceOverrides' in p ? parseOfficeAppearanceOverrides(p.appearanceOverrides) : {};
+  const employeeNames = 'employeeNames' in p ? parseOfficeEmployeeNames(p.employeeNames) : {};
+  // Both binding maps share the existing metadata budget, keeping preference messages bounded.
+  if (officePreferenceBytes(appearanceOverrides) + officePreferenceBytes(employeeNames) > 32002) throw new Error('sharedPreferencesError');
   const floors = normalizeOfficeThemeFloors(p.floors);
   if (!validOfficeCacheLimit(p.limitMiB)
     || typeof p.showIdle !== 'boolean' || typeof p.paused !== 'boolean' || typeof p.topmost !== 'boolean'
@@ -36,9 +46,10 @@ export function parseOfficeSharedState(raw: unknown): OfficeSharedState {
   const b = object(value.bounds); keys(b, ['x', 'y', 'width', 'height', 'placed']);
   for (const name of ['x', 'y'] as const) if (typeof b[name] !== 'number' || !Number.isSafeInteger(b[name]) || Math.abs(b[name]) > 32768) throw new Error('sharedPreferencesError');
   if (integer(b.width, 7680) < 320 || integer(b.height, 4320) < 320 || typeof b.placed !== 'boolean') throw new Error('sharedPreferencesError');
-  return { schemaVersion: 1, revision: value.revision as string,
-    preferences: { officeName, limitMiB: p.limitMiB, floors, floor: integer(p.floor, OFFICE_MAX_FLOORS - 1), product: text(p.product, 160), search: text(p.search, 160),
-      showIdle: p.showIdle, paused: p.paused, topmost: p.topmost, zoom: p.zoom as number, presentation, appearanceOverrides },
+  const preferences: OfficeSharedPreferences = { officeName, limitMiB: p.limitMiB, floors, floor: integer(p.floor, OFFICE_MAX_FLOORS - 1), product: text(p.product, 160), search: text(p.search, 160),
+    showIdle: p.showIdle, paused: p.paused, topmost: p.topmost, zoom: p.zoom as number, presentation, appearanceOverrides, employeeNames, organization };
+  if (officePreferenceBytes(preferences) > 48000) throw new Error('groupsStorageFull');
+  return { schemaVersion: 1, revision: value.revision as string, preferences,
     bounds: { x: b.x as number, y: b.y as number, width: b.width as number, height: b.height as number, placed: b.placed } };
 }
 
@@ -67,9 +78,12 @@ export class OfficeNativeStorage implements OfficeBackgroundStorage {
   request(operation: OfficeStorageOperation, payload: Record<string, unknown>): Promise<unknown> {
     if (this.closed || this.pending.size >= 2) return Promise.reject(new OfficeStorageError('OFFICE_STORAGE_BUSY'));
     const encoded = JSON.stringify(payload);
-    if (encoded.length > 44000) return Promise.reject(new OfficeStorageError('OFFICE_STORAGE_INVALID'));
+    if (encoded.length > (operation === 'preferences' ? 56000 : 44000)) return Promise.reject(new OfficeStorageError('OFFICE_STORAGE_INVALID'));
     return new Promise((resolve, reject) => {
       const requestId = crypto.randomUUID();
+      if (new TextEncoder().encode(JSON.stringify({ pageGeneration: this.page, command: 'storage', requestId, operation, payload: encoded })).length > 65536) {
+        reject(new OfficeStorageError('OFFICE_STORAGE_INVALID')); return;
+      }
       const timer = setTimeout(() => { this.pending.delete(requestId); reject(new OfficeStorageError('OFFICE_STORAGE_TIMEOUT')); }, 15000);
       this.pending.set(requestId, { operation, resolve, reject, timer });
       try { this.send('storage', { requestId, operation, payload: encoded }); }
@@ -199,8 +213,7 @@ export class OfficeSharedPreferencesController {
 
   save(preferences: OfficeSharedPreferences): void {
     if (this.closed) return;
-    this.desired = structuredClone(preferences);
-    this.desired.appearanceOverrides = parseOfficeAppearanceOverrides(preferences.appearanceOverrides);
+    this.desired = structuredClone(parseOfficeSharedState({ ...this.state, preferences }).preferences);
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => { this.timer = null; void this.flush(false); }, 300);
   }

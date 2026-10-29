@@ -10,7 +10,7 @@ declare global { interface Window { officeSharedHost?: (message: string) => Prom
 const sceneSequences = new WeakMap<Page, number>();
 function defaults(): OfficeSharedState {
   return { schemaVersion: 1, revision: 'initial', preferences: { officeName: '', limitMiB: 50, floors: Array.from({ length: 16 }, () => 'loft'), floor: 0,
-    product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: true }, appearanceOverrides: {} }, bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
+    product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: true }, appearanceOverrides: {}, employeeNames: {}, organization: { groups: [], placements: {}, activeGroup: '' } }, bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
 }
 async function scene(page: Page, count: number) {
   const data = liveSceneFixture(Array.from({ length: count }, () => 'RUNNING'));
