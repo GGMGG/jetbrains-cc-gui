@@ -206,6 +206,16 @@ interface Window {
   onConversionResult?: (json: string) => void;
 
   /**
+   * History deletion outcome, sent once per delete request after the backend
+   * quiesced (or refused) the targets.
+   * Payload: { requestId?: string, provider: string, sessionIds: string[],
+   * deletedSessionIds: string[], success: boolean, errorCode?: string }.
+   * requestId echoes the delete request; deletedSessionIds lists requested ids whose files are gone.
+   * errorCode is SESSION_RUNNING, SELECTED_DATA_CHANGED or DELETE_FAILED.
+   */
+  onHistoryDeleteResult?: (json: string) => void;
+
+  /**
    * Add user message to chat (used for external Quick Fix feature)
    * Immediately shows the user's message in the chat UI before AI response
    */

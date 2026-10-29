@@ -30,11 +30,15 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { setTimeout as pause } from 'node:timers/promises';
 import { dressContextForTurn } from './codex-ide-context.js';
 import { projectCodexItemMessages } from './codex-item-projection.js';
 import { ASYNC_QUESTION_METHOD, normalizeAsyncQuestions, asyncQuestionAnswer } from './codex-async-questions.js';
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { buildProjectDocFallbackConfig } from './codex-native-runtime-config.js';
+
+// Only an explicit closing rejection proves that retrying resume replays no work.
+const THREAD_RESUME_RETRY_DELAYS_MS = [250, 750];
 
 export const SERVICE_STATES = Object.freeze([
   'stopped',
@@ -528,14 +532,15 @@ export class CodexAppServerService extends EventEmitter {
     return response;
   }
 
-  /** Resume an existing thread. Never re-sends any user task. */
-  async #resumeThread(threadId, { bootstrap = false } = {}) {
+  /** Resume an existing thread, briefly waiting for an explicitly closing writer. */
+  async #resumeThread(threadId, { bootstrap = false, operation = null } = {}) {
     if (this.#isThreadLoaded(threadId)) {
       return;
     }
     const client = this.client;
     const pending = this.threadResumes.get(threadId);
     if (pending?.client === client) {
+      pending.consumers.add(operation);
       return await pending.promise;
     }
     const thread = this.#recordThreadRelation(threadId);
@@ -545,14 +550,38 @@ export class CodexAppServerService extends EventEmitter {
     }
     // Preconnect and FIFO operations can arrive together while history loads.
     // Sharing the resume prevents two native requests from claiming one writer.
+    const entry = { client, consumers: new Set([operation]), promise: null };
+    // Launch changes belong to the idle rebuild, not to an in-flight recovery.
+    const params = {
+      threadId,
+      excludeTurns: true,
+      config: this.launchOptions?.nativeConfig ?? undefined,
+      modelProvider: this.launchOptions?.modelProvider ?? undefined,
+      developerInstructions: this.launchOptions?.developerInstructions ?? undefined,
+    };
     const promise = (async () => {
-      const response = await client.request('thread/resume', {
-        threadId,
-        excludeTurns: true,
-        config: this.launchOptions?.nativeConfig ?? undefined,
-        modelProvider: this.launchOptions?.modelProvider ?? undefined,
-        developerInstructions: this.launchOptions?.developerInstructions ?? undefined,
-      });
+      let response;
+      for (let attempt = 0; ; attempt += 1) {
+        if (this.client !== client || !client.alive) {
+          throw new ClassifiedError('RUNTIME_RESET', 'Codex runtime changed while resuming the thread');
+        }
+        // An independent preconnect can still need recovery after a joined send is cancelled.
+        if (![...entry.consumers].some(consumer => !consumer || (!consumer.cancelRequested && !consumer.settled))) {
+          throw new ClassifiedError('CANCELLED', 'cancelled while waiting to resume the thread');
+        }
+        try {
+          response = await client.request('thread/resume', params);
+          break;
+        } catch (error) {
+          const delay = THREAD_RESUME_RETRY_DELAYS_MS[attempt];
+          if (delay === undefined || error?.code !== 'RPC_ERROR' || error?.rpcCode !== -32600
+              || error?.method !== 'thread/resume'
+              || !/\bis closing;\s*retry thread\/resume after the thread is closed\b/i.test(error.message)) {
+            throw error;
+          }
+          await pause(delay);
+        }
+      }
       if (this.client !== client || !client.alive) {
         throw new ClassifiedError('RUNTIME_RESET', 'Codex runtime changed while resuming the thread');
       }
@@ -567,8 +596,13 @@ export class CodexAppServerService extends EventEmitter {
         payload: this.#redactNativeProjection({ thread: response?.thread ?? null }, { threadId }),
       }));
       this.#rememberThreadSettings(threadId, response);
-    })();
-    const entry = { client, promise };
+    })().catch(error => {
+      // Shared callers must receive the RPC origin even when the native text omits it.
+      throw new ClassifiedError(error?.code || 'THREAD_RESUME_FAILED', `thread/resume: ${error?.message || String(error)}`, {
+        method: 'thread/resume', rpcCode: error?.rpcCode, phase: error?.phase, cause: error,
+      });
+    });
+    entry.promise = promise;
     this.threadResumes.set(threadId, entry);
     try {
       await promise;
@@ -577,7 +611,7 @@ export class CodexAppServerService extends EventEmitter {
       throw error;
     } finally {
       if (this.threadResumes.get(threadId) === entry) this.threadResumes.delete(threadId);
-      if (bootstrap) {
+      if (bootstrap && this.client === client) {
         this.bootstrapInFlight = false;
       }
     }
@@ -757,13 +791,14 @@ export class CodexAppServerService extends EventEmitter {
         operation.turnInput = dressContextForTurn(operation.markerPayload.input ?? [], operation.markerPayload.additionalContext, supported);
       }
       // Thread bootstrap: start or resume BEFORE the operation RPC.
+      const bootstrapClient = this.client;
       this.bootstrapInFlight = true;
       let threadId = operation.threadId || this.rootThreadId || this.desiredThreadId;
       operation.threadId = threadId;
       try {
         if (!threadId || !this.#isThreadLoaded(threadId)) {
           if (threadId) {
-            await this.#resumeThread(threadId);
+            await this.#resumeThread(threadId, { operation });
             if (operation.frozenSettings && !operation.frozenSettings.cwdExplicit && this.effectiveSettings?.cwd) {
               operation.frozenSettings.cwd = this.effectiveSettings.cwd;
             }
@@ -775,7 +810,8 @@ export class CodexAppServerService extends EventEmitter {
           }
         }
       } finally {
-        this.bootstrapInFlight = false;
+        // A retired retry can finish after the replacement has begun its own bootstrap.
+        if (this.client === bootstrapClient) this.bootstrapInFlight = false;
       }
 
       if (operation.settled || operation.cancelRequested) {
@@ -820,6 +856,10 @@ export class CodexAppServerService extends EventEmitter {
       // (written-but-unconfirmed) never lands here because request() threw
       // only after the write was refused.
       const phase = operation.dispatchPhase;
+      if (phase === 'notWritten' && err?.code === 'CANCELLED' && operation.cancelRequested) {
+        this.#settleOperation(operation, { outcome: 'cancelled', error: err.message });
+        return;
+      }
       if (phase === 'notWritten' && err?.phase === 'writtenUnconfirmed') {
         // The child state is unconfirmed, so no queued operation may write
         // before the reset: block settle's queue dispatch via the draining
@@ -2377,6 +2417,7 @@ export class CodexAppServerService extends EventEmitter {
     this.planItems.clear();
     this.busy = false;
     this.activeOperationId = null;
+    this.bootstrapInFlight = false;
     this.#setState('stopped');
     this.emit('codex_event', this.#envelope({ kind: 'runtimeReset', payload: { reason } }));
   }

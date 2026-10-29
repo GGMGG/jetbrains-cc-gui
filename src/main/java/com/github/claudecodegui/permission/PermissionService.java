@@ -154,17 +154,13 @@ public class PermissionService {
     // ── Constructor & Factory Methods ──────────────────────────────────
 
     private PermissionService(Project project, String sessionId) {
+        this(project, sessionId, resolvePermissionDir());
+    }
+
+    private PermissionService(Project project, String sessionId, Path permissionDir) {
         this.project = project;
         this.sessionId = sessionId;
-
-        String envDir = System.getenv("CLAUDE_PERMISSION_DIR");
-        if (envDir != null && !envDir.trim().isEmpty()) {
-            this.permissionDir = Paths.get(envDir);
-            debugLog("INIT", "Using permission dir from env CLAUDE_PERMISSION_DIR: " + envDir);
-        } else {
-            this.permissionDir = Paths.get(System.getProperty("java.io.tmpdir"), "claude-permission");
-            debugLog("INIT", "Env CLAUDE_PERMISSION_DIR not set, using tmp dir: " + this.permissionDir);
-        }
+        this.permissionDir = permissionDir;
         debugLog("INIT", "Session ID: " + this.sessionId);
         try {
             Files.createDirectories(permissionDir);
@@ -179,6 +175,22 @@ public class PermissionService {
         this.fileProtocol = new PermissionFileProtocol(permissionDir, sessionId, gson, (tag, message) -> debugLog(tag, message));
         this.requestWatcher = new PermissionRequestWatcher(
                 permissionDir, sessionId, fileProtocol, (tag, message) -> debugLog(tag, message));
+    }
+
+    private static Path resolvePermissionDir() {
+        String envDir = System.getenv("CLAUDE_PERMISSION_DIR");
+        if (envDir != null && !envDir.trim().isEmpty()) {
+            return Paths.get(envDir);
+        }
+        return Paths.get(System.getProperty("java.io.tmpdir"), "claude-permission");
+    }
+
+    static PermissionService createForTest(Project project, String sessionId, Path permissionDir) {
+        return new PermissionService(project, sessionId, permissionDir);
+    }
+
+    void setLastActivityTimeForTest(long epochMs) {
+        this.lastActivityTime = epochMs;
     }
 
     public String getSessionId() { return this.sessionId; }
@@ -276,6 +288,15 @@ public class PermissionService {
 
     long getLastActivityTime() {
         return lastActivityTime;
+    }
+
+    /**
+     * True while a chat window still owns this session's dialogs.
+     * Idle cleanup must not stop that watcher: a day without a permission
+     * prompt is a quiet chat, not an abandoned session.
+     */
+    boolean hasRegisteredDialogShowers() {
+        return dialogRouter.hasRegisteredDialogShowers();
     }
 
     // ── Common Helpers ─────────────────────────────────────────────────
@@ -486,6 +507,7 @@ public class PermissionService {
 
     private void handleAskUserQuestionRequest(Path requestFile) {
         String fileName = requestFile.getFileName().toString();
+        this.lastActivityTime = System.currentTimeMillis();
 
         String content = acquireRequestContent(requestFile, "ASK");
         if (content == null) { return; }
@@ -563,6 +585,7 @@ public class PermissionService {
 
     private void handlePlanApprovalRequest(Path requestFile) {
         String fileName = requestFile.getFileName().toString();
+        this.lastActivityTime = System.currentTimeMillis();
 
         String content = acquireRequestContent(requestFile, "PLAN");
         if (content == null) { return; }

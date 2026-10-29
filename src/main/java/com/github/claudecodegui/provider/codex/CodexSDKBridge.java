@@ -17,6 +17,7 @@ import com.github.claudecodegui.settings.ConfigPathManager;
 import com.github.claudecodegui.storage.CodexStorageRuntimeLease;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -1132,6 +1133,25 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 this.forgetChannelState(channelId, threadId, sessionEpoch);
             }
         });
+    }
+
+    /**
+     * Hold writer leases while history files are deleted, so no chat window can
+     * resume one of these threads between the idle release and the file removal.
+     *
+     * @param threadIds persisted thread ids selected for deletion
+     * @return a callback releasing every lease, or null when a thread already has a writer
+     */
+    public Runnable reserveCodexThreadsForDeletion(Collection<String> threadIds) {
+        String deletionOwnerId = "history-delete:" + UUID.randomUUID();
+        Runnable release = () -> CodexThreadOwnerRegistry.releaseOwner(deletionOwnerId);
+        for (String threadId : threadIds) {
+            if (!CodexThreadOwnerRegistry.claim(this.ownerScope, threadId, deletionOwnerId).acquired()) {
+                release.run();
+                return null;
+            }
+        }
+        return release;
     }
 
     /**
