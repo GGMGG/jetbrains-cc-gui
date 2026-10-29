@@ -750,6 +750,7 @@ public class ChatWindowDelegate {
         usagePushService.pushCurrentUsageIfAvailable(resolveModelContextLimitForRecovery(
                 session.getProvider(),
                 session.getModel(),
+                session.getCwd(),
                 context.getSettingsService()
         ));
         usagePushService.refreshContextBar();
@@ -762,14 +763,16 @@ public class ChatWindowDelegate {
     static int resolveModelContextLimitForRecovery(
             String provider,
             String model,
+            String cwd,
             CodemossSettingsService settingsService
     ) {
         if ("codex".equalsIgnoreCase(provider)) {
             return SettingsHandler.getModelContextLimit(provider, model);
         }
 
+        boolean isClaude = "claude".equalsIgnoreCase(provider);
         String resolvedModel = model;
-        if (settingsService != null) {
+        if (isClaude && settingsService != null) {
             try {
                 JsonObject settings = settingsService.readClaudeSettings();
                 if (settings != null && settings.has("env") && settings.get("env").isJsonObject()) {
@@ -783,7 +786,9 @@ public class ChatWindowDelegate {
                         + e.getMessage());
             }
         }
-        return SettingsHandler.getModelContextLimit(resolvedModel);
+        return isClaude
+                ? ModelProviderHandler.getClaudeContextLimit(resolvedModel, cwd)
+                : SettingsHandler.getModelContextLimit(resolvedModel);
     }
 
     private void replayCurrentSessionStateToFrontend() {

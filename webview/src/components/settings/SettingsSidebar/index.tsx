@@ -26,6 +26,7 @@ const sidebarGroups: { key: string; items: SidebarItem[] }[] = [
     { key: 'skills', icon: 'codicon-book', labelKey: 'settings.skills' },
     { key: 'hooks', icon: 'codicon-symbol-event', labelKey: 'settings.hooks.title' },
     { key: 'mcp', icon: 'codicon-server', labelKey: 'settings.mcp' },
+    { key: 'hooks', icon: 'codicon-symbol-event', labelKey: 'settings.hooks.title' },
     { key: 'pet', icon: 'codicon-hubot', labelKey: 'settings.pet.title' },
     { key: 'clawBot', icon: 'codicon-comment-discussion', labelKey: 'settings.clawBot.title' },
   ] },

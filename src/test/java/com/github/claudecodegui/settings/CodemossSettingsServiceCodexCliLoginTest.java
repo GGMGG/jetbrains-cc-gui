@@ -220,9 +220,7 @@ public class CodemossSettingsServiceCodexCliLoginTest {
         provider.addProperty("name", "Legacy Provider");
         provider.addProperty("configToml", "model = \"legacy-model\"\n");
         service.addCodexProvider(provider);
-        JsonObject config = service.readConfig();
-        config.getAsJsonObject("codex").addProperty("current", "legacy-provider");
-        service.writeConfig(config);
+        service.updateConfig(config -> config.getAsJsonObject("codex").addProperty("current", "legacy-provider"));
 
         assertEquals(CodemossSettingsService.CODEX_RUNTIME_ACCESS_MANAGED, service.getCodexRuntimeAccessMode());
         JsonObject migrated = service.readConfig().getAsJsonObject("codex");
@@ -243,9 +241,7 @@ public class CodemossSettingsServiceCodexCliLoginTest {
         provider.addProperty("name", "Legacy Provider");
         provider.addProperty("configToml", "model = \"legacy-model\"\n");
         service.addCodexProvider(provider);
-        JsonObject config = service.readConfig();
-        config.getAsJsonObject("codex").addProperty("current", "legacy-provider");
-        service.writeConfig(config);
+        service.updateConfig(config -> config.getAsJsonObject("codex").addProperty("current", "legacy-provider"));
 
         assertEquals(CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE, service.getCodexRuntimeAccessMode());
         JsonObject unchanged = service.readConfig().getAsJsonObject("codex");

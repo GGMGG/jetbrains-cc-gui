@@ -131,7 +131,8 @@ export function useServerData({
 
   // Load server list
   const loadServers = useCallback((refreshExpandedTools = false) => {
-    refreshExpandedToolsRef.current = refreshExpandedTools;
+    // A plain reload must not cancel a refresh that is still waiting for its catalog.
+    refreshExpandedToolsRef.current = refreshExpandedToolsRef.current || refreshExpandedTools;
     setLoading(true);
     onLog(
       t('mcp.logs.loadingServers'),

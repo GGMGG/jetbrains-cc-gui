@@ -1,7 +1,6 @@
 package com.github.claudecodegui.session;
 
 import com.github.claudecodegui.session.ClaudeSession.Message;
-import com.github.claudecodegui.handler.SettingsHandler;
 import com.github.claudecodegui.handler.provider.ModelProviderHandler;
 import com.github.claudecodegui.notifications.ClaudeNotifier;
 import com.github.claudecodegui.provider.common.MessageCallback;
@@ -489,7 +488,7 @@ public class ClaudeMessageHandler implements MessageCallback {
                 if (messageObj.has("usage") && messageObj.get("usage").isJsonObject()) {
                     JsonObject usage = messageObj.getAsJsonObject("usage");
                     int usedTokens = TokenUsageUtils.extractContextTokens(usage, state.getProvider());
-                    int maxTokens = SettingsHandler.getModelContextLimit(state.getModel());
+                    int maxTokens = currentContextLimit();
                     ClaudeNotifier.setTokenUsage(project, usedTokens, maxTokens);
                     callbackHandler.notifyUsageUpdate(usedTokens, maxTokens);
                     LOG.debug("Updated token usage from assistant message: " + usedTokens);
@@ -716,15 +715,22 @@ public class ClaudeMessageHandler implements MessageCallback {
     }
 
     /**
-     * Resolve the model that should be billed for this turn.
+     * Context window for the current turn, computed for the model the CLI actually receives.
+     */
+    private int currentContextLimit() {
+        return ModelProviderHandler.getClaudeContextLimit(resolveMappedModel(state.getModel()), state.getCwd());
+    }
+
+    /**
+     * Resolve the real model behind the selected Claude slot for pricing and the context window.
      *
      * <p>The chat UI selects Claude slot IDs (e.g. {@code claude-sonnet-4-6[1m]}), which the
      * active provider's env maps to real model IDs (e.g. {@code deepseek-v4-flash}) before the
      * request reaches the API. Pricing must use the real ID — otherwise a custom price configured
-     * for the mapped model is never matched and the turn is billed at built-in Claude rates
-     * (same resolution used for the context limit at {@link ModelProviderHandler}).
+     * for the mapped model is never matched and the turn is billed at built-in Claude rates.
+     * The context window must use it too, because the CLI picks the window from the real ID.</p>
      */
-    private String resolvePricingModel(String model) {
+    private String resolveMappedModel(String model) {
         try {
             JsonObject claudeSettings = settingsService.readClaudeSettings();
             if (claudeSettings != null && claudeSettings.has("env") && claudeSettings.get("env").isJsonObject()) {
@@ -768,7 +774,7 @@ public class ClaudeMessageHandler implements MessageCallback {
             // before taking the message lock, which the transport snapshot and
             // every EDT reader queue on: a disk read inside it would stall the
             // streaming pipeline for the duration of the file access.
-            String pricingModel = resolvePricingModel(state.getModel());
+            String pricingModel = resolveMappedModel(state.getModel());
             synchronized (state.getMessageStateLock()) {
                 if (!ownsCurrentTurn()) {
                     return;
@@ -798,7 +804,7 @@ public class ClaudeMessageHandler implements MessageCallback {
                         msg.add("usage", usageJson);
                     }
                     int usedTokens = TokenUsageUtils.extractContextTokens(usageJson, state.getProvider());
-                    int maxTokens = SettingsHandler.getModelContextLimit(state.getModel());
+                    int maxTokens = currentContextLimit();
                     ClaudeNotifier.setTokenUsage(project, usedTokens, maxTokens);
                     callbackHandler.notifyUsageUpdate(usedTokens, maxTokens);
                     LOG.debug("Fallback: updated token usage from result message: " + usedTokens);
@@ -1192,7 +1198,7 @@ public class ClaudeMessageHandler implements MessageCallback {
         try {
             JsonObject usageJson = gson.fromJson(content, JsonObject.class);
             int usedTokens = TokenUsageUtils.extractContextTokens(usageJson, state.getProvider());
-            int maxTokens = SettingsHandler.getModelContextLimit(state.getModel());
+            int maxTokens = currentContextLimit();
             ClaudeNotifier.setTokenUsage(project, usedTokens, maxTokens);
             // Notify webview of usage update
             callbackHandler.notifyUsageUpdate(usedTokens, maxTokens);

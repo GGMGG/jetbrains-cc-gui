@@ -698,7 +698,6 @@ const BlockSection = memo(function BlockSection({
 }: BlockSectionProps) {
   const renderedSource = useStreamingHighlightSource(source, isStreamingTail);
   const sectionRef = useRef<HTMLDivElement>(null);
-  const focusedCopyRef = useRef<{ button: HTMLButtonElement; index: number } | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
@@ -738,23 +737,27 @@ const BlockSection = memo(function BlockSection({
     committedHtmlRef.current !== html && containerRef.current
       ? captureRangeOffsets(containerRef.current)
       : null;
+  // Keyboard focus gets the same rescue: the rewrite also removes a focused
+  // copy button, so note its index while the old button is still in place.
+  // Reading focus here instead of tracking blur keeps this independent of
+  // whether the browser fires blur for removed nodes (Chromium does, jsdom
+  // does not) and of React dropping events during commit.
+  const focusedCopyIndex =
+    committedHtmlRef.current !== html && sectionRef.current
+      ? Array.from(sectionRef.current.querySelectorAll('.copy-code-btn')).indexOf(document.activeElement as Element)
+      : -1;
 
   useLayoutEffect(() => {
     committedHtmlRef.current = html;
     if (rescued && containerRef.current) {
       restoreRangeOffsets(containerRef.current, rescued);
     }
-    const focusedCopy = focusedCopyRef.current;
-    if (focusedCopy && !focusedCopy.button.isConnected) {
-      focusedCopyRef.current = null;
-      // Replacing innerHTML removes focus without a blur event. Only restore
-      // that lost focus; an explicit blur or move to another control wins.
-      if (document.activeElement === document.body) {
-        sectionRef.current?.querySelectorAll<HTMLButtonElement>('.copy-code-btn')[focusedCopy.index]
-          ?.focus({ preventScroll: true });
-      }
+    // Only restore focus the rewrite dropped; a move to another control wins.
+    if (focusedCopyIndex >= 0 && document.activeElement === document.body) {
+      sectionRef.current?.querySelectorAll<HTMLButtonElement>('.copy-code-btn')[focusedCopyIndex]
+        ?.focus({ preventScroll: true });
     }
-  }, [html, containerRef, rescued]);
+  }, [html, containerRef, rescued, focusedCopyIndex]);
 
   const copyLatestCode = async (event: React.MouseEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement>) => {
     if (source === renderedSource) return;
@@ -781,13 +784,6 @@ const BlockSection = memo(function BlockSection({
       className="md-block"
       onClick={copyLatestCode}
       onKeyDown={copyLatestCode}
-      onFocusCapture={(event) => {
-        const button = event.target;
-        focusedCopyRef.current = button instanceof HTMLButtonElement && button.matches('.copy-code-btn')
-          ? { button, index: Array.from(event.currentTarget.querySelectorAll('.copy-code-btn')).indexOf(button) }
-          : null;
-      }}
-      onBlurCapture={() => { focusedCopyRef.current = null; }}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

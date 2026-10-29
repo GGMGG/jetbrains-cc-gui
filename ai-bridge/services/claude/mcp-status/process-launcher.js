@@ -1,25 +1,70 @@
-import { execFile } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { hasUnsafeShellMetacharacters } from './command-validator.js';
+import { findUnsafeShellMetacharacter } from './command-validator.js';
 
-const execFileAsync = promisify(execFile);
 const WINDOWS_SHELL_EXTENSIONS = new Set(['.cmd', '.bat']);
 const WINDOWS_EXECUTABLE_EXTENSIONS = new Set(['.cmd', '.bat', '.exe']);
 const WINDOWS_SHELL_COMMANDS = new Set(['npx', 'npm', 'pnpm', 'yarn']);
+const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
+const LOOKUP_TIMEOUT_MS = 5000;
+const pendingListings = new Map();
 
-export async function findWindowsCommand(command, env, run = execFileAsync) {
+/** Windows environment names are case-insensitive (`Path` is common). */
+function readEnvValue(env, name) {
+  const key = name in env ? name : Object.keys(env).find(item => item.toUpperCase() === name);
+  return typeof env[key] === 'string' ? env[key] : '';
+}
+
+/**
+ * List each PATH directory once. Concurrent lookups share a listing still in
+ * flight, so an offline share holds one libuv thread rather than one per server.
+ * Store aliases such as WindowsApps\python.exe are links, so keep non-folders.
+ */
+function listDirectory(directory) {
+  const key = directory.toLowerCase();
+  if (!pendingListings.has(key)) {
+    const listing = readdir(directory, { withFileTypes: true })
+      .then(entries => entries.filter(entry => !entry.isDirectory()).map(entry => entry.name), () => [])
+      .finally(() => pendingListings.delete(key));
+    pendingListings.set(key, listing);
+  }
+  return pendingListings.get(key);
+}
+
+async function searchPath(command, env, list, isCancelled) {
+  const extensions = (readEnvValue(env, 'PATHEXT') || DEFAULT_PATHEXT).split(';')
+    .map(extension => extension.trim().toLowerCase())
+    .filter(extension => WINDOWS_EXECUTABLE_EXTENSIONS.has(extension));
+  // Relative entries would resolve against the bridge directory, so skip them.
+  const directories = readEnvValue(env, 'PATH').split(';')
+    .map(directory => directory.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(directory => path.win32.isAbsolute(directory));
+  for (const directory of directories) {
+    if (isCancelled()) return null;
+    const names = new Map((await list(directory)).map(name => [name.toLowerCase(), name]));
+    const match = extensions.map(extension => names.get(`${command}${extension}`.toLowerCase())).find(Boolean);
+    if (match) return path.win32.join(directory, match);
+  }
+  return null;
+}
+
+/**
+ * Find the first PATH directory holding the command with a PATHEXT extension.
+ * Node's file APIs keep non-ASCII paths intact, unlike where.exe output in the
+ * console code page. The bounded wait keeps an offline PATH directory from
+ * stalling every MCP verification timer.
+ */
+export async function findWindowsCommand(command, env = {}, list = listDirectory, timeoutMs = LOOKUP_TIMEOUT_MS) {
+  if (/[\\/:]/.test(command)) return null;
+  let timedOut = false;
+  let timer;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => { timedOut = true; resolve(null); }, timeoutMs);
+  });
   try {
-    // where.exe already applies PATHEXT. One bounded asynchronous lookup keeps
-    // slow or offline PATH entries from blocking every MCP verification timer.
-    const result = await run('where.exe', [command], {
-      env, encoding: 'utf8', windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024
-    });
-    return typeof result.stdout === 'string'
-      ? result.stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean)
-      : [];
-  } catch {
-    return [];
+    return await Promise.race([searchPath(command, env, list, () => timedOut), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -38,9 +83,7 @@ export async function resolveWindowsCommand(
   if (WINDOWS_SHELL_EXTENSIONS.has(extension) || extension === '.exe') {
     return { command: normalizedCommand, useShell: WINDOWS_SHELL_EXTENSIONS.has(extension) };
   }
-  const candidates = await lookup(normalizedCommand, env);
-  const resolvedCommand = candidates.find(candidate =>
-    WINDOWS_EXECUTABLE_EXTENSIONS.has(path.win32.extname(candidate).toLowerCase()));
+  const resolvedCommand = await lookup(normalizedCommand, env);
   if (resolvedCommand) {
     return {
       command: resolvedCommand,
@@ -61,8 +104,16 @@ export function prepareStdioLaunch(launch, args) {
   if (!launch.useShell) return { ...launch, args };
   // Reject expansion/quoting syntax as well as chaining. Validate the resolved
   // path too: it can come from a PATH directory rather than the configuration.
-  if ([launch.command, ...args].some(hasUnsafeShellMetacharacters)) {
-    throw new Error('Command or args contain unsafe shell metacharacters');
+  // Name only the character: arguments often carry credentials.
+  const unsafe = [launch.command, ...args].map(findUnsafeShellMetacharacter).find(Boolean);
+  if (unsafe) {
+    throw new Error(`Command or args contain unsafe shell metacharacter ${JSON.stringify(unsafe)}; `
+      + 'pass such values through env instead');
   }
-  return { ...launch, command: `"${launch.command}"`, args: args.map(arg => `"${arg}"`) };
+  return { ...launch, command: `"${launch.command}"`, args: args.map(quoteBatchArgument) };
+}
+
+/** Double trailing backslashes so argv parsing does not read `\"` as a literal quote. */
+function quoteBatchArgument(arg) {
+  return `"${arg.replace(/(\\+)$/, '$1$1')}"`;
 }

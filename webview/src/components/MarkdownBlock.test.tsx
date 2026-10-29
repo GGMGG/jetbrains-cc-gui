@@ -151,6 +151,38 @@ describe('MarkdownBlock linkify integration', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  it('restores copy focus when the browser fires blur while removing the old button', () => {
+    vi.useFakeTimers();
+    const view = render(<MarkdownBlock content={'```js\nfirst'} isStreaming />);
+    const section = view.container.querySelector<HTMLDivElement>('.md-block')!;
+    // Chromium dispatches blur/focusout on a focused node that innerHTML
+    // removes; jsdom does not, so replay that before the real rewrite.
+    const innerHTML = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML')!;
+    let firedBlur = false;
+    Object.defineProperty(section, 'innerHTML', {
+      configurable: true,
+      get(this: HTMLDivElement) {
+        return innerHTML.get!.call(this);
+      },
+      set(this: HTMLDivElement, value: string) {
+        const focused = document.activeElement;
+        if (focused instanceof HTMLButtonElement && this.contains(focused)) {
+          firedBlur = true;
+          focused.dispatchEvent(new FocusEvent('blur'));
+          focused.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+        }
+        innerHTML.set!.call(this, value);
+      },
+    });
+    section.querySelector<HTMLButtonElement>('.copy-code-btn')!.focus();
+
+    view.rerender(<MarkdownBlock content={'```js\nfirst\nsecond'} isStreaming />);
+    act(() => vi.advanceTimersByTime(150));
+
+    expect(firedBlur).toBe(true);
+    expect(document.activeElement).toBe(section.querySelector('.copy-code-btn'));
+  });
+
   it('cancels stale highlights on replacement and unmount while prose updates immediately', () => {
     vi.useFakeTimers();
     const highlight = vi.spyOn(hljs, 'highlight');

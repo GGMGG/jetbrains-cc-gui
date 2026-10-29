@@ -140,6 +140,21 @@ describe.each([false, true])('refreshing expanded tools (Codex=%s)', isCodexMode
     hook.unmount();
   });
 
+  it('keeps a pending refresh when a plain catalog load follows it', () => {
+    const hook = renderProvider();
+    deliver([server]);
+    act(() => hook.result.current.setExpandedServers(new Set([server.id])));
+    sendToJavaMock.mockClear();
+    act(() => hook.result.current.loadServers(true));
+    act(() => hook.result.current.loadServers());
+    deliver([server]);
+    const toolsAction = isCodexMode ? 'get_codex_mcp_server_tools' : 'get_mcp_server_tools';
+    expect(sendToJavaMock.mock.calls.filter(([action]) => action === toolsAction)).toEqual([
+      [toolsAction, { serverId: server.id, forceRefresh: true }],
+    ]);
+    hook.unmount();
+  });
+
   it.each(['deleted', 'disabled'])('does not query an expanded server that is now %s', state => {
     const hook = renderProvider();
     deliver([server]);

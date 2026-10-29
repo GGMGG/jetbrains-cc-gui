@@ -13,7 +13,7 @@ test('resolves a bare Windows command to its executable shim', async () => {
     'codegraph',
     {},
     'win32',
-    () => ['C:\\tools\\codegraph', 'C:\\tools\\codegraph.cmd']
+    () => 'C:\\tools\\codegraph.cmd'
   );
 
   assert.equal(result.command, 'C:\\tools\\codegraph.cmd');
@@ -25,7 +25,7 @@ test('keeps an executable Windows command out of the shell', async () => {
     'node',
     {},
     'win32',
-    () => ['C:\\Program Files\\nodejs\\node.exe']
+    () => 'C:\\Program Files\\nodejs\\node.exe'
   );
 
   assert.equal(result.command, 'C:\\Program Files\\nodejs\\node.exe');

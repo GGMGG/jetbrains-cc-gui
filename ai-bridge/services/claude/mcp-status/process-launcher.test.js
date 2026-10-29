@@ -1,26 +1,65 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { findWindowsCommand, prepareStdioLaunch } from './process-launcher.js';
+import { findWindowsCommand, prepareStdioLaunch, resolveWindowsCommand } from './process-launcher.js';
 import { getStdioServerTools } from './stdio-tools-getter.js';
 import { verifyStdioServerStatus } from './stdio-verifier.js';
 
-test('PATH lookup uses one asynchronous where call with PATHEXT', async () => {
-  const calls = [];
-  let release;
-  const lookup = findWindowsCommand('npx', { PATH: 'fixture' }, (...args) => {
-    calls.push(args);
-    return new Promise(resolve => { release = resolve; });
-  });
-  let timerRan = false;
-  await new Promise(resolve => setTimeout(() => { timerRan = true; resolve(); }, 0));
-  assert.equal(timerRan, true);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].slice(0, 2), ['where.exe', ['npx']]);
-  release({ stdout: 'C:\\Program Files\\nodejs\\npx.cmd\r\n' });
-  assert.deepEqual(await lookup, ['C:\\Program Files\\nodejs\\npx.cmd']);
+test('finds the first PATH executable in PATHEXT order', async () => {
+  const listings = {
+    'C:\\Users\\张三\\bin': ['uvx', 'UVX.CMD', 'uvx.exe'],
+    'D:\\later': ['uvx.exe', 'codegraph.cmd']
+  };
+  const list = async directory => listings[directory] ?? [];
+  // Mixed-case key, a quoted entry and a relative entry, as Windows allows.
+  const env = { Path: '"C:\\Users\\张三\\bin";relative;D:\\later', PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+  assert.equal(await findWindowsCommand('uvx', env, list), 'C:\\Users\\张三\\bin\\uvx.exe');
+  assert.equal(await findWindowsCommand('CodeGraph', env, list), 'D:\\later\\codegraph.cmd');
+  assert.equal(await findWindowsCommand('missing', env, list), null);
+  assert.equal(await findWindowsCommand('bin\\uvx', env, async () => ['uvx.exe']), null);
+});
+
+test('lists real PATH directories and ignores folders named like executables', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'ccg path lookup '));
+  try {
+    await writeFile(path.join(directory, 'Fixture.CMD'), '');
+    await mkdir(path.join(directory, 'trap.exe'));
+    assert.equal(await findWindowsCommand('fixture', { PATH: directory }), path.win32.join(directory, 'Fixture.CMD'));
+    assert.equal(await findWindowsCommand('trap', { PATH: directory }), null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('stops walking PATH once the lookup times out', async () => {
+  const listed = [];
+  const slow = directory => {
+    listed.push(directory);
+    return new Promise(resolve => setTimeout(resolve, 30, []));
+  };
+  assert.equal(await findWindowsCommand('npx', { PATH: 'C:\\offline;C:\\next' }, slow, 10), null);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(listed, ['C:\\offline']);
+});
+
+test('keeps the configured command when PATH has no executable', async () => {
+  const none = async () => null;
+  assert.deepEqual(await resolveWindowsCommand('npx', {}, 'win32', none), { command: 'npx', useShell: true });
+  assert.deepEqual(await resolveWindowsCommand('mytool', {}, 'win32', none), { command: 'mytool', useShell: false });
+});
+
+test('keeps trailing backslashes literal inside quoted batch arguments', () => {
+  const launch = prepareStdioLaunch({ command: 'tool.cmd', useShell: true }, ['C:\\data\\', 'C:\\a\\\\', 'a\\b']);
+  assert.deepEqual(launch.args, ['"C:\\data\\\\"', '"C:\\a\\\\\\\\"', '"a\\b"']);
+});
+
+test('names the refused character without echoing the argument', () => {
+  assert.throws(
+    () => prepareStdioLaunch({ command: 'npx', useShell: true }, ['postgresql://u:p%40ss@db']),
+    error => /unsafe shell metacharacter "%".*env/.test(error.message) && !error.message.includes('p%40ss')
+  );
 });
 
 test('rejects shell expansion in resolved paths and arguments', () => {
@@ -36,10 +75,12 @@ test('rejects shell expansion in resolved paths and arguments', () => {
 test('launches resolved and explicit Windows shims in paths containing spaces', {
   skip: process.platform !== 'win32'
 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'ccg mcp shim '));
+  // Non-ASCII characters cover PATH lookup outside the console code page.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ccg mcp 中文 shim '));
   const shim = path.join(root, 'fixture-mcp.cmd');
   const script = path.join(root, 'fixture.mjs');
-  await writeFile(shim, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`, 'utf8');
+  // %~dp0 keeps the batch file ASCII; cmd.exe reads batch files in the OEM code page.
+  await writeFile(shim, `@echo off\r\n"${process.execPath}" "%~dp0fixture.mjs" %*\r\n`, 'utf8');
   await writeFile(script, `
 import readline from 'node:readline';
 readline.createInterface({ input: process.stdin }).on('line', line => {
@@ -53,9 +94,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 });
 `, 'utf8');
   try {
-    const args = ['value with spaces', 'C:\\Program Files (x86)\\fixture', ''];
+    const args = ['value with spaces', 'C:\\Program Files (x86)\\fixture', '', 'C:\\trailing\\'];
     for (const command of ['fixture-mcp', shim]) {
-      const config = { command, args, cwd: root, env: { PATH: `${root}${path.delimiter}${process.env.PATH}` } };
+      // Run from another directory so the bare name can only come from PATH.
+      const config = { command, args, cwd: os.tmpdir(), env: { PATH: `${root}${path.delimiter}${process.env.PATH}` } };
       const tools = await getStdioServerTools('space-shim', config);
       assert.equal(tools.error, null);
       assert.deepEqual(JSON.parse(tools.tools[0].description), args);
@@ -65,7 +107,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   } finally {
     const resolved = path.resolve(root);
     assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
-    assert.ok(path.basename(resolved).startsWith('ccg mcp shim '));
+    assert.ok(path.basename(resolved).startsWith('ccg mcp 中文 shim '));
     await rm(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

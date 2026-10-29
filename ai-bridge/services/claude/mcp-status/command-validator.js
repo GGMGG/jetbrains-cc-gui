@@ -60,8 +60,10 @@ const SHELL_METACHARACTER_REGEX = /[&|;<>\r\n`"%!^]/;
 
 /**
  * @param {string} value - command or argument value
- * @returns {boolean} true if the value contains cmd.exe command-injection metacharacters
+ * @returns {string|null} the first cmd.exe command-injection metacharacter, or null
  */
-export function hasUnsafeShellMetacharacters(value) {
-  return typeof value === 'string' && SHELL_METACHARACTER_REGEX.test(value);
+export function findUnsafeShellMetacharacter(value) {
+  if (typeof value !== 'string') return null;
+  const match = SHELL_METACHARACTER_REGEX.exec(value);
+  return match ? match[0] : null;
 }
