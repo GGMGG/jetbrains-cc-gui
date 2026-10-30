@@ -14,7 +14,7 @@ import { sendBridgeEvent } from '../../../utils/bridge';
 import { clearPendingStreamStart, isPendingStreamStartActive } from '../../../utils/streamLifecycle';
 import { THROTTLE_INTERVAL } from '../../useStreamingMessages';
 import { parseSequence } from '../parseSequence';
-import { getStreamEndHandlingMode, getRawUuid, isCodexMessageSnapshot, mergeRawBlocksForFinalization } from '../messageSync';
+import { chooseEndedStreamingContent, ensureRawTextCovers, getStreamEndHandlingMode, getRawUuid, isCodexMessageSnapshot, mergeRawBlocksForFinalization } from '../messageSync';
 
 /**
  * Pour every tool_use_id carried by tool_result blocks inside one message's raw
@@ -626,10 +626,13 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
     if (!window.__deniedToolIds) {
       window.__deniedToolIds = new Set<string>();
     }
-    // FIX: Prioritize streaming content over backend snapshot to prevent digit loss
-    // Streaming content has all the latest deltas (including the final one just flushed).
-    // Backend snapshot might be from an earlier coalescer push and may be incomplete.
-    const endedStreamingContent = streamingContentRef.current || backendSnapshotContent || '';
+    // The delta buffer wins when it is ahead of, or unrelated to, the snapshot:
+    // a stale coalescer push must not chop a newer suffix. When the snapshot
+    // is that same buffer plus a tail the webview never applied, keep the tail.
+    const endedStreamingContent = chooseEndedStreamingContent(
+      streamingContentRef.current,
+      backendSnapshotContent,
+    );
     const endedBackendRaw = backendSnapshotRaw;
 
     // FIX: Clear streaming refs BEFORE setMessages updater to prevent race conditions.
@@ -772,6 +775,11 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
         let finalRaw = newMessages[idx].raw;
         if (!nativeTarget && endedBackendRaw != null) {
           finalRaw = mergeRawBlocksForFinalization(finalRaw, endedBackendRaw) as ClaudeMessage['raw'];
+        }
+        // The bubble renders from raw text blocks. A recovered tail that lives
+        // only on the content string would stay invisible.
+        if (!nativeTarget && finalContent) {
+          finalRaw = ensureRawTextCovers(finalRaw, finalContent) as ClaudeMessage['raw'];
         }
         newMessages[idx] = {
           ...newMessages[idx],

@@ -943,7 +943,7 @@ async function runDaemonMain() {
     if (request.method === 'codex.resetRuntime' || request.method === 'codex.releaseThread') {
       const handler = request.method === 'codex.resetRuntime'
         ? codexResetRuntimePersistent : codexReleaseThreadPersistent;
-      handler(request.params || {})
+      Promise.resolve().then(() => handler(request.params || {}))
         .then((result) => writeRawLine({ id: request.id || '0', done: true, success: true, result }))
         .catch((error) => writeRawLine({ id: request.id || '0', done: true, success: false,
           error: error?.message || String(error) }));
