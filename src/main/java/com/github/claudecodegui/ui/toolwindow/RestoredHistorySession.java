@@ -5,11 +5,13 @@ final class RestoredHistorySession<T> {
     private T session;
     private String sessionId;
     private boolean committed;
+    private boolean attempted;
 
     synchronized void bind(T restoredSession, String restoredSessionId) {
         session = restoredSessionId != null ? restoredSession : null;
         sessionId = restoredSessionId;
         committed = false;
+        attempted = false;
     }
 
     synchronized boolean isCurrent(T currentSession, String currentSessionId) {
@@ -19,6 +21,14 @@ final class RestoredHistorySession<T> {
 
     synchronized String sessionId() {
         return sessionId;
+    }
+
+    synchronized boolean wasAttempted() {
+        return attempted;
+    }
+
+    synchronized void markAttempted() {
+        attempted = true;
     }
 
     synchronized void complete(T currentSession, String currentSessionId) {
