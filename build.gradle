@@ -202,7 +202,7 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('test', Test) {
-    // Keep native configuration fixtures inside their temporary home directories.
+    // Keep native skill fixtures isolated from the host's live configuration.
     environment 'CODEX_HOME', ''
 }
 

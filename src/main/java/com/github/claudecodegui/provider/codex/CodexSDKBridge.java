@@ -16,6 +16,7 @@ import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.settings.ConfigPathManager;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -660,7 +661,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 if (!result.success && result.error == null) {
                     result.error = streamedResult.error;
                 }
-                if (result.success || "User interrupted".equals(result.error)) {
+                if (result.success || result.cancelled) {
                     if (!hadSendError.get()) {
                         callback.onComplete(result);
                     }
@@ -1042,6 +1043,49 @@ public class CodexSDKBridge extends BaseSDKBridge {
         });
     }
 
+    /** Whether this bridge owns the native writer for the given persisted thread. */
+    public boolean ownsCodexThread(String threadId) {
+        return threadId != null
+                && this.bridgeOwnerId.equals(CodexThreadOwnerRegistry.ownerOf(this.ownerScope, threadId));
+    }
+
+    /** Whether any chat window in this IDE currently holds a native writer for the thread. */
+    public boolean hasCodexThreadOwner(String threadId) {
+        return threadId != null && CodexThreadOwnerRegistry.ownerOf(this.ownerScope, threadId) != null;
+    }
+
+    /** Release an idle owner for deletion without cancelling a turn that started concurrently. */
+    public CompletableFuture<JsonObject> releaseIdleCodexThread(String channelId, String cwd, String threadId) {
+        CompletableFuture<JsonObject> release = runCodexLifecycleOperation(
+                "codex.releaseThread", channelId, cwd, threadId, true);
+        String sessionEpoch = this.runtimeSessionEpochs.get(safeChannelId(channelId));
+        return release.whenComplete((result, error) -> {
+            // A busy refusal must preserve the live channel and every other daemon session.
+            if (error == null && result != null && !result.has("error")) {
+                this.forgetChannelState(channelId, threadId, sessionEpoch);
+            }
+        });
+    }
+
+    /**
+     * Hold writer leases while history files are deleted, so no chat window can
+     * resume one of these threads between the idle release and the file removal.
+     *
+     * @param threadIds persisted thread ids selected for deletion
+     * @return a callback releasing every lease, or null when a thread already has a writer
+     */
+    public Runnable reserveCodexThreadsForDeletion(Collection<String> threadIds) {
+        String deletionOwnerId = "history-delete:" + UUID.randomUUID();
+        Runnable release = () -> CodexThreadOwnerRegistry.releaseOwner(deletionOwnerId);
+        for (String threadId : threadIds) {
+            if (!CodexThreadOwnerRegistry.claim(this.ownerScope, threadId, deletionOwnerId).acquired()) {
+                release.run();
+                return null;
+            }
+        }
+        return release;
+    }
+
     /**
      * Clears channel-scoped runtime state, but only when the given epoch still
      * owns the channel. Release/preconnect complete asynchronously; without the
@@ -1076,6 +1120,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
             String cwd,
             String threadId
     ) {
+        return runCodexLifecycleOperation(method, channelId, cwd, threadId, false);
+    }
+
+    private CompletableFuture<JsonObject> runCodexLifecycleOperation(
+            String method, String channelId, String cwd, String threadId, boolean onlyIfIdle
+    ) {
         boolean releasing = "codex.releaseThread".equals(method);
         if (!releasing && !this.isCodexRuntimeAccessAllowed()) {
             return CompletableFuture.completedFuture(interactionError("Codex runtime access is inactive"));
@@ -1095,6 +1145,9 @@ public class CodexSDKBridge extends BaseSDKBridge {
         params.addProperty("channelId", safeChannelId);
         params.addProperty("cwd", cwd == null ? "" : cwd);
         params.addProperty("threadId", threadId == null ? "" : threadId);
+        if (releasing && onlyIfIdle) {
+            params.addProperty("onlyIfIdle", true);
+        }
         params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString()));
         if (!releasing) {
@@ -1260,6 +1313,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                             callback.onError(result.get("error").getAsString());
                             result.addProperty("errorReported", true);
                         } else {
+                            streamed.cancelled = cancelled;
                             streamed.success = !cancelled && !result.has("error");
                             callback.onComplete(streamed);
                         }
