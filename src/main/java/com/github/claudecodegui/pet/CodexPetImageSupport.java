@@ -36,7 +36,9 @@ public final class CodexPetImageSupport {
     private static ImageReader imageReader(ImageInputStream input, boolean webp) throws IOException {
         if (webp) {
             WebPImageReaderSpi provider = new WebPImageReaderSpi();
-            return provider.canDecodeInput(input) ? provider.createReaderInstance() : null;
+            if (provider.canDecodeInput(input)) {
+                return provider.createReaderInstance();
+            }
         }
         Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
         return readers.hasNext() ? readers.next() : null;
