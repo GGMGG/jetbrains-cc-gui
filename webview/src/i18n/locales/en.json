@@ -4,9 +4,10 @@
     "loading": "Loading session history...",
     "loaded_one": "Loaded {{count}} history message.",
     "loaded_other": "Loaded {{count}} history messages.",
-    "timeout": "Session history loading timed out. You can continue using this session.",
-    "cancelled": "Session history loading was cancelled.",
-    "failed": "Session history loading failed. You can continue using this session.",
+    "missing": "The saved history is no longer available. A new session is ready.",
+    "timeout": "Session history loading timed out. Select Retry to try again.",
+    "cancelled": "Session history loading was cancelled. Select Retry to try again.",
+    "failed": "Session history loading failed. Select Retry to try again.",
     "load": "Load history",
     "retry": "Retry",
     "cancel": "Cancel"
