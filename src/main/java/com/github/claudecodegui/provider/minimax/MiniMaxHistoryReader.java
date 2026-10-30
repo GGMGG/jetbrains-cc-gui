@@ -285,7 +285,8 @@ public class MiniMaxHistoryReader {
                         .parseString(Files.readString(snapshotPath, StandardCharsets.UTF_8))
                         .getAsJsonObject();
                 if (snapshot.has("displayMessages")
-                        && snapshot.get("displayMessages").isJsonArray()) {
+                        && snapshot.get("displayMessages").isJsonArray()
+                        && !snapshot.getAsJsonArray("displayMessages").isEmpty()) {
                     return buildMessages(snapshot.getAsJsonArray("displayMessages"), cancellation);
                 }
             } catch (CancellationException e) {
