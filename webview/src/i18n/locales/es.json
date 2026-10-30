@@ -1050,7 +1050,9 @@
       "claude-vscode": "Esta sesión fue creada por la extensión de VS Code y no se muestra en CLI por defecto. Haz clic en 'Convertir a CLI' para que aparezca en la lista /resume del CLI del terminal",
       "remote": "Esta sesión fue creada por una instancia remota de Claude Code"
     },
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "sessionInUse": "No se pueden eliminar las sesiones en uso.",
+    "deleteFailed": "No se pudo eliminar la sesión. Inténtalo de nuevo."
   },
   "permission": {
     "dialogTitle": "Solicitud de permiso",
@@ -2057,14 +2059,85 @@
     "updateClaudeSdkCustomCli": "SDK actualizado a {{version}}, pero el plugin ejecuta tu CLI de Claude personalizado ({{path}}). Actualízalo con la opción 2.",
     "updateClaudeSdkAlreadyLatest": "{{version}} ya es el SDK más reciente que admite este plugin, y este modelo necesita un Claude Code más nuevo. Actualiza el plugin cuando salga una nueva versión o elige otro modelo.",
     "codexWriterConflict": {
-      "title": "Hilo de Codex ocupado",
-      "intro": "Otro turno o cliente de Codex está escribiendo en esta conversación. No se pudo iniciar este envío.",
-      "reason": "Detenga el turno en el cliente que usa esta conversación y vuelva a enviar cuando haya terminado."
+      "title": "La conversación de Codex está en uso",
+      "intro": "Otro cliente de Codex o ventana de chat conserva el permiso de escritura de esta conversación.",
+      "reason": "Esto no significa que la conversación haya caducado. El complemento no elimina bloqueos ni detiene otros clientes automáticamente.",
+      "solutions": {
+        "releaseWriter": {
+          "title": "Liberar la conversación en el cliente que la usa",
+          "step0": "Detén la tarea y cierra o libera esta conversación en el cliente de Codex o la ventana que la está usando.",
+          "step1": "Cuando ese cliente la libere, vuelve aquí y envía de nuevo. No elimines archivos de bloqueo para forzar el acceso."
+        }
+      }
+    },
+    "codexThreadClosing": {
+      "title": "La conversación de Codex aún se está cerrando",
+      "intro": "Codex no ha terminado de cerrar esta conversación y todavía no puede restaurarla.",
+      "reason": "El complemento reintenta brevemente este estado de cierre explícito antes de iniciar la tarea. Si persiste, muestra el error original.",
+      "solutions": {
+        "waitForClose": {
+          "title": "Esperar a que termine el cierre anterior",
+          "step0": "Espera a que el cliente de Codex o la ventana anterior libere la conversación y vuelve a intentarlo.",
+          "step1": "Si se repite, abre de nuevo la conversación desde el historial después de que el cliente anterior la libere."
+        }
+      }
+    },
+    "codexThreadHistoryMissing": {
+      "title": "No se encuentra el historial de Codex",
+      "intro": "El entorno actual de Codex no encuentra el historial nativo de esta conversación.",
+      "reason": "Puede deberse a un directorio de historial distinto o a una primera inicialización incompleta. No demuestra que el historial se haya eliminado.",
+      "solutions": {
+        "checkStorage": {
+          "title": "Comprobar la ubicación original del historial",
+          "step0": "Comprueba que Codex use el CODEX_HOME original y el mismo entorno anfitrión, especialmente local frente a WSL.",
+          "step1": "Tras restaurar el directorio original o una copia de seguridad, abre de nuevo la conversación desde el historial."
+        },
+        "startNewIfMissing": {
+          "title": "Empezar de nuevo solo si el historial es irrecuperable",
+          "step0": "Crea una conversación nueva y aporta el contexto necesario solo si no puedes recuperar el historial original. Los mensajes que se muestran aquí no restauran automáticamente el contexto nativo de Codex."
+        }
+      }
+    },
+    "codexThreadArchived": {
+      "title": "La conversación de Codex está archivada",
+      "intro": "Codex indica que esta conversación está archivada y no se puede reanudar directamente.",
+      "reason": "Estar archivada no significa que haya caducado. No necesitas crear una conversación nueva para recuperarla.",
+      "solutions": {
+        "unarchive": {
+          "title": "Desarchivar la conversación original",
+          "step0": "Desarchívala en el cliente de Codex original o sigue el comando de desarchivado que aparece en el error original.",
+          "step1": "Actualiza el historial del complemento, abre de nuevo esta conversación y envía otra vez."
+        }
+      }
+    },
+    "codexThreadResumeConfiguration": {
+      "title": "La configuración de Codex impide la restauración",
+      "intro": "Codex no pudo cargar su configuración o inicializar un servidor MCP obligatorio.",
+      "reason": "Una conversación nueva no reparará la misma configuración. El complemento no desactiva automáticamente los servicios obligatorios.",
+      "solutions": {
+        "repairConfiguration": {
+          "title": "Corregir la configuración indicada por Codex",
+          "step0": "Consulta el error original para identificar la entrada de configuración o el servidor MCP obligatorio que ha fallado.",
+          "step1": "Corrige la configuración, las credenciales o la conexión en los ajustes de Codex, del proveedor o de MCP, y vuelve a abrir la conversación para intentarlo de nuevo."
+        }
+      }
     },
     "codexThreadResume": {
-      "title": "El hilo de sesión ya no es válido",
-      "intro": "Crear una nueva sesión resolverá este problema. El ID de hilo de la sesión actual ya no existe en el servidor de Codex.",
-      "reason": "Codex elimina los hilos antiguos después de un tiempo, lo que puede provocar este error al reanudar una sesión anterior."
+      "title": "No se pudo restaurar la conversación de Codex",
+      "intro": "Codex no pudo restaurar esta conversación. La causa aún no se ha identificado.",
+      "reason": "Un fallo de restauración no demuestra que haya caducado. El complemento mantiene la conversación original y no la sustituye silenciosamente por una vacía.",
+      "solutions": {
+        "inspectCause": {
+          "title": "Revisar el error original antes de reintentar",
+          "step0": "Revisa el error original y comprueba el proveedor, el entorno de Codex y el directorio de historial de esta conversación.",
+          "step1": "Si ya apareció una respuesta o una ejecución de herramienta, comprueba su resultado antes de reenviar para evitar repetir la tarea."
+        },
+        "checkCli": {
+          "title": "Comprobar la compatibilidad de Codex CLI",
+          "step0": "Compara la versión del terminal con la página CLI del complemento. Si hay una ruta personalizada, ejecuta ese programa con --version.",
+          "step1": "Si el error indica una versión de CLI o protocolo no compatible, actualiza Codex según las instrucciones oficiales y actualiza la detección de CLI."
+        }
+      }
     },
     "sdkNativeBinaryMissing": {
       "title": "Instalación del SDK incompleta — falta el binario nativo",

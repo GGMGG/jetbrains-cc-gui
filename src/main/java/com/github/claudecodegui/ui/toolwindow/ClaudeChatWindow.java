@@ -105,6 +105,7 @@ public class ClaudeChatWindow {
     // clearPermissionDecisionMemory(), both of which must reach the instance
     // the bridges actually route permission requests to.
     private String permissionServiceKey = null;
+    private boolean permissionServiceDisposed = false;
 
     private volatile JBCefBrowser browser;
     // volatile: read from the daemon reader thread by the session_updated listener
@@ -116,6 +117,7 @@ public class ClaudeChatWindow {
 
     private volatile boolean disposed = false;
     private final InitialWebviewStartup initialWebviewStartup = new InitialWebviewStartup();
+    private final PendingSelectionContext pendingSelectionContext = new PendingSelectionContext();
     private volatile boolean frontendReady = false;
     private final FrontendReadyTransitionTracker frontendReadyTransitions =
             new FrontendReadyTransitionTracker();
@@ -240,7 +242,7 @@ public class ClaudeChatWindow {
         this(project, skipRegister, true);
     }
 
-    /** Restore inactive tabs without allocating a browser until activation or remote work. */
+    /** Restore inactive tabs without allocating a browser until activation or an explicit startup request. */
     public ClaudeChatWindow(Project project, boolean skipRegister, boolean initializeWebview) {
         this.project = project;
         this.claudeSDKBridge = new ClaudeSDKBridge();
@@ -316,7 +318,8 @@ public class ClaudeChatWindow {
                 () -> webviewInitializer.recreateWebview("watchdog_recreate"),
                 () -> disposed,
                 () -> streamCoalescer.isStreamActive(),
-                () -> frontendReady
+                () -> frontendReady,
+                () -> webviewInitializer != null && webviewInitializer.canRecoverWebview()
         );
 
         this.session = new ClaudeSession(
@@ -449,12 +452,14 @@ public class ClaudeChatWindow {
         this.editorContextTracker = new EditorContextTracker(project, new EditorContextTracker.ContextCallback() {
             @Override
             public void addSelectionInfo(String info) {
-                callJavaScript("addSelectionInfo", info);
+                pendingSelectionContext.update(info);
+                flushPendingSelectionContext();
             }
 
             @Override
             public void clearSelectionInfo() {
-                callJavaScript("clearSelectionInfo");
+                pendingSelectionContext.update(null);
+                flushPendingSelectionContext();
             }
         });
         editorContextTracker.registerListeners();
@@ -559,7 +564,7 @@ public class ClaudeChatWindow {
                 });
     }
 
-    /** Coalesce activation, hierarchy and remote-work requests before the first EDT startup. */
+    /** Coalesce activation, hierarchy and forced startup requests before the first EDT startup. */
     static final class InitialWebviewStartup {
         private boolean requested;
         private boolean forced;
@@ -1332,6 +1337,8 @@ public class ClaudeChatWindow {
         if (browser == nextBrowser) {
             return;
         }
+        // Fence surface callbacks before listener/query cleanup can pump native events.
+        browser = nextBrowser;
         if (observedBrowserComponent != null) {
             observedBrowserComponent.removeComponentListener(surfaceRefreshComponentListener);
         }
@@ -1339,7 +1346,6 @@ public class ClaudeChatWindow {
         rebindNativeSurfaceComponent(null);
         cancelScheduledOsrSurfaceRefresh();
         surfaceRefreshCoordinator.invalidate();
-        browser = nextBrowser;
         webviewEventQueue.browserChanged();
         streamCoalescer.resetDeliveryBaseline();
         if (nextBrowser != null) {
@@ -1925,6 +1931,7 @@ public class ClaudeChatWindow {
         }
         hasEverBeenFrontendReady = true;
         webviewEventQueue.readyChanged();
+        flushPendingSelectionContext();
         flushPendingCodeSnippet();
         flushPendingFileReferences();
         // No transcript replay here: the only caller that passes true is
@@ -2451,6 +2458,36 @@ public class ClaudeChatWindow {
     /** Execute raw JavaScript through the same ordered webview queue as callback events. */
     public void executeJavaScriptCode(String jsCode) {
         webviewEventQueue.enqueueRaw(jsCode);
+    }
+
+    private void flushPendingSelectionContext() {
+        if (disposed || !frontendReady) {
+            return;
+        }
+        pendingSelectionContext.replay(info -> {
+            if (info == null) {
+                callJavaScript("clearSelectionInfo");
+            } else {
+                callJavaScript("addSelectionInfo", info);
+            }
+        });
+    }
+
+    /** Editor context is latest state, so inactive tabs retain one value without creating JCEF. */
+    static final class PendingSelectionContext {
+        private boolean known;
+        private String selection;
+
+        synchronized void update(String info) {
+            known = true;
+            selection = info;
+        }
+
+        synchronized void replay(Consumer<String> sender) {
+            if (known) {
+                sender.accept(selection);
+            }
+        }
     }
 
     /** Keep an IDE action's captured clipboard image while its draft claims ownership. */
@@ -3191,6 +3228,7 @@ public class ClaudeChatWindow {
                 handlerContext.setDisposed(true);
                 handlerContext.setBrowser(null);
             }
+            disposePermissionService();
             try {
                 webviewWatchdog.stop();
             } catch (Exception | LinkageError error) {
@@ -3204,10 +3242,10 @@ public class ClaudeChatWindow {
                 LOG.warn("Failed to finish webview bridge cleanup", error);
             }
             try {
-                if (targetBrowser != null) {
+                if (webviewInitializer != null) {
+                    webviewInitializer.disposeBrowsers(targetBrowser);
+                } else if (targetBrowser != null) {
                     targetBrowser.dispose();
-                    LOG.info("Window browser disposal completed, windowId=" + System.identityHashCode(this)
-                            + ", browserId=" + System.identityHashCode(targetBrowser));
                 }
             } catch (Exception | LinkageError error) {
                 LOG.warn("Failed to clean up browser", error);
@@ -3276,18 +3314,7 @@ public class ClaudeChatWindow {
             titleEventListener = null;
         }
 
-        try {
-            if (this.permissionServiceKey != null && !this.permissionServiceKey.isEmpty()) {
-                PermissionService permissionService = PermissionService.getInstance(project, this.permissionServiceKey);
-                permissionService.unregisterDialogShower(project);
-                permissionService.unregisterAskUserQuestionDialogShower(project);
-                permissionService.unregisterPlanApprovalDialogShower(project);
-                PermissionService.removeInstance(this.permissionServiceKey);
-                LOG.info("Removed PermissionService instance for key: " + this.permissionServiceKey);
-            }
-        } catch (Exception e) {
-            LOG.warn("Failed to unregister dialog showers or remove session instance: " + e.getMessage());
-        }
+        disposePermissionService();
 
         LOG.info("Starting window resource cleanup, project: " + project.getName());
 
@@ -3356,6 +3383,31 @@ public class ClaudeChatWindow {
         }
 
         LOG.info("Window service cleanup completed, project: " + project.getName());
+    }
+
+    private void disposePermissionService() {
+        if (this.permissionServiceDisposed) {
+            return;
+        }
+        this.permissionServiceDisposed = true;
+        if (this.permissionServiceKey == null || this.permissionServiceKey.isEmpty()) {
+            return;
+        }
+        try {
+            PermissionService permissionService = PermissionService.getInstance(project, this.permissionServiceKey);
+            permissionService.unregisterDialogShower(project);
+            permissionService.unregisterAskUserQuestionDialogShower(project);
+            permissionService.unregisterPlanApprovalDialogShower(project);
+        } catch (Exception | LinkageError e) {
+            LOG.warn("Failed to unregister dialog showers: " + e.getMessage());
+        } finally {
+            try {
+                PermissionService.removeInstance(this.permissionServiceKey);
+                LOG.info("Removed PermissionService instance for key: " + this.permissionServiceKey);
+            } catch (Exception | LinkageError e) {
+                LOG.warn("Failed to remove session instance: " + e.getMessage());
+            }
+        }
     }
 
     // ==================== Host Interface Factories ====================

@@ -438,6 +438,7 @@ export const useAppChatController = ({
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
     codexPlan, codexPlanExecutionPending,
     codexCompactionPending,
+    codexTurnActive,
     onExecuteCodexPlan: executeCodexPlan,
     codexCompactionStartedAt,
     onContinueCodexPlan: handleContinueCodexPlan,
