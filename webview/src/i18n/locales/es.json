@@ -44,6 +44,17 @@
     "currentMode": "Modo actual: {{mode}}",
     "currentModel": "Modelo actual: {{model}}",
     "removeAttachment": "Eliminar adjunto",
+    "queue": {
+      "edit": "Editar mensaje en cola",
+      "remove": "Quitar de la cola",
+      "editLabel": "Editar mensaje {{position}} en cola",
+      "removeLabel": "Quitar mensaje {{position}} de la cola",
+      "reorderLabel": "Reordenar mensaje {{position}}",
+      "reorderHint": "Arrastra para reordenar, o usa las flechas tras enfocar",
+      "mergedIntoDraft": "El mensaje en cola se añadió al borrador actual",
+      "attachmentsNotRestored": "Los archivos adjuntos del mensaje en cola no se restauraron",
+      "editBlockedAttachments": "Sus archivos adjuntos no se pueden restaurar aquí, el mensaje se queda en la cola"
+    },
     "closePreview": "Cerrar vista previa",
     "loadingDropdown": "Cargando...",
     "modelsLoadFailed": "Error al cargar los modelos. Haz clic para reintentar",
@@ -1098,7 +1109,11 @@
     "timeoutWarning": "Por favor responde pronto, el diálogo se cerrará en {{seconds}} segundos",
     "expand": "Expandir",
     "collapse": "Contraer",
-    "clickToAnswer": "Haz clic para responder"
+    "clickToAnswer": "Haz clic para responder",
+    "recordTitle": "Preguntas de Codex",
+    "recordAnswer": "Tu respuesta",
+    "recordSkipped": "Omitida (cerrada sin responder)",
+    "answerNotSent": "Tu respuesta a la pregunta de Codex no se envió porque ahora hay otro chat abierto. Vuelve a ese chat y envía la respuesta de nuevo."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

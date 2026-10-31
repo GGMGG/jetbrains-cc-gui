@@ -90,6 +90,7 @@ public class WebviewInitializer {
         Map<String, MarkerCliBridge> getCliBridges();
         JPanel getMainPanel();
         HtmlLoader getHtmlLoader();
+        default String getDraftCacheKey() { return null; }
         HandlerContext getHandlerContext();
         JBCefBrowser getBrowser();
         JBCefOSRHandlerFactory getOsrHandlerFactory();
@@ -1604,7 +1605,8 @@ public class WebviewInitializer {
                 htmlContent,
                 tabProvider,
                 tabModel,
-                SessionState.discoverUserDshPresetIds());
+                SessionState.discoverUserDshPresetIds(),
+                host.getDraftCacheKey());
     }
 
     /**

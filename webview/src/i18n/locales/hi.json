@@ -44,6 +44,17 @@
     "currentMode": "वर्तमान मोड: {{mode}}",
     "currentModel": "वर्तमान मॉडल: {{model}}",
     "removeAttachment": "अटैचमेंट हटाएं",
+    "queue": {
+      "edit": "कतार में संदेश संपादित करें",
+      "remove": "कतार से हटाएं",
+      "editLabel": "कतार में संदेश {{position}} संपादित करें",
+      "removeLabel": "कतार से संदेश {{position}} हटाएं",
+      "reorderLabel": "संदेश {{position}} का क्रम बदलें",
+      "reorderHint": "क्रम बदलने के लिए खींचें, या फोकस करके तीर कुंजियों का उपयोग करें",
+      "mergedIntoDraft": "कतार में संदेश वर्तमान ड्राफ्ट में जोड़ दिया गया",
+      "attachmentsNotRestored": "कतार में रखे संदेश के अनुलग्नक पुनर्स्थापित नहीं हो सके",
+      "editBlockedAttachments": "इसके अनुलग्नक यहाँ पुनर्स्थापित नहीं किए जा सकते, संदेश कतार में रहता है"
+    },
     "closePreview": "पूर्वावलोकन बंद करें",
     "loadingDropdown": "लोड हो रहा है...",
     "modelsLoadFailed": "मॉडल लोड करने में विफल। पुनः प्रयास के लिए क्लिक करें",
@@ -1098,7 +1109,11 @@
     "timeoutWarning": "कृपया जल्द उत्तर दें, डायलॉग {{seconds}} सेकंड में स्वचालित रूप से बंद हो जाएगा",
     "expand": "विस्तार करें",
     "collapse": "संक्षिप्त करें",
-    "clickToAnswer": "उत्तर देने के लिए क्लिक करें"
+    "clickToAnswer": "उत्तर देने के लिए क्लिक करें",
+    "recordTitle": "Codex के प्रश्न",
+    "recordAnswer": "आपका उत्तर",
+    "recordSkipped": "छोड़ा गया (बिना उत्तर दिए बंद किया गया)",
+    "answerNotSent": "Codex के प्रश्न का आपका उत्तर नहीं भेजा गया, क्योंकि अभी कोई दूसरी चैट खुली है। उस चैट पर लौटें और उत्तर फिर से भेजें।"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

@@ -44,6 +44,17 @@
     "currentMode": "Mode actuel : {{mode}}",
     "currentModel": "Modèle actuel : {{model}}",
     "removeAttachment": "Supprimer la pièce jointe",
+    "queue": {
+      "edit": "Modifier le message en file d'attente",
+      "remove": "Retirer de la file d'attente",
+      "editLabel": "Modifier le message {{position}} en file d'attente",
+      "removeLabel": "Retirer le message {{position}} de la file d'attente",
+      "reorderLabel": "Réordonner le message {{position}}",
+      "reorderHint": "Faire glisser pour réordonner, ou utiliser les flèches après avoir mis le focus",
+      "mergedIntoDraft": "Le message en file d'attente a été ajouté au brouillon en cours",
+      "attachmentsNotRestored": "Les pièces jointes du message en file n ont pas été restaurées",
+      "editBlockedAttachments": "Ses pièces jointes ne peuvent pas être restaurées ici, le message reste dans la file d'attente"
+    },
     "closePreview": "Fermer l'aperçu",
     "loadingDropdown": "Chargement...",
     "modelsLoadFailed": "Échec du chargement des modèles. Cliquez pour réessayer",
@@ -1098,7 +1109,11 @@
     "timeoutWarning": "Veuillez répondre rapidement, la boîte de dialogue se fermera dans {{seconds}} secondes",
     "expand": "Développer",
     "collapse": "Réduire",
-    "clickToAnswer": "Cliquez pour répondre"
+    "clickToAnswer": "Cliquez pour répondre",
+    "recordTitle": "Questions de Codex",
+    "recordAnswer": "Votre réponse",
+    "recordSkipped": "Ignorée (fermée sans réponse)",
+    "answerNotSent": "Votre réponse à la question de Codex n'a pas été envoyée, car une autre conversation est ouverte. Revenez à cette conversation et renvoyez votre réponse."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

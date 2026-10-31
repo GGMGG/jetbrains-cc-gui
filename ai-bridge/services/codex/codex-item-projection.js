@@ -1,3 +1,5 @@
+import { normalizeAsyncQuestions } from './codex-async-questions.js';
+
 /** Shared native item projection for live streaming and persisted history. */
 export function projectCodexItemMessages(item, { threadId = null, turnId = null, authoritative = false, kind = null } = {}) {
   const messages = [];
@@ -56,6 +58,11 @@ export function projectCodexItemMessages(item, { threadId = null, turnId = null,
       return messages;
     }
     if (type === 'agentMessage' || type === 'agent_message') {
+      const questions = normalizeAsyncQuestions(item);
+      if (questions.length > 0) {
+        emitAssistant([{ type: 'tool_use', id: itemId, name: 'codex_user_input', input: { questions } }]);
+        return messages;
+      }
       // Some persisted turns carry the body as a plain `content` string while
       // others use `text`; both must render, an unrecognised shape collapses
       // into an empty authoritative message and erases the reply on reload.

@@ -790,13 +790,13 @@ function serviceAwaitingReply(stdinData) {
 /** Control operation (bypasses queue): reply to a native interaction. */
 export async function codexRespondInteractionPersistent(stdinData) {
   const service = serviceAwaitingReply(stdinData);
-  const replied = service.respondInteraction(stdinData.rpcId, stdinData.result ?? {});
+  const replied = await service.respondInteraction(stdinData.rpcId, stdinData.result ?? {});
   if (!replied) {
     const error = new Error('invalid native Codex interaction result');
     error.code = 'INVALID_INTERACTION_RESULT';
     throw error;
   }
-  return { replied: true };
+  return typeof replied === 'object' ? replied : { replied: true };
 }
 
 /** Control operation (bypasses queue): typed error reply. */
