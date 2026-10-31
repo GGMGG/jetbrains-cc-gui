@@ -44,6 +44,17 @@
     "currentMode": "Modo actual: {{mode}}",
     "currentModel": "Modelo actual: {{model}}",
     "removeAttachment": "Eliminar adjunto",
+    "queue": {
+      "edit": "Editar mensaje en cola",
+      "remove": "Quitar de la cola",
+      "editLabel": "Editar mensaje {{position}} en cola",
+      "removeLabel": "Quitar mensaje {{position}} de la cola",
+      "reorderLabel": "Reordenar mensaje {{position}}",
+      "reorderHint": "Arrastra para reordenar, o usa las flechas tras enfocar",
+      "mergedIntoDraft": "El mensaje en cola se añadió al borrador actual",
+      "attachmentsNotRestored": "Los archivos adjuntos del mensaje en cola no se restauraron",
+      "editBlockedAttachments": "Sus archivos adjuntos no se pueden restaurar aquí, el mensaje se queda en la cola"
+    },
     "closePreview": "Cerrar vista previa",
     "loadingDropdown": "Cargando...",
     "modelsLoadFailed": "Error al cargar los modelos. Haz clic para reintentar",
@@ -1135,7 +1146,8 @@
     "invalidJsonConfig": "Formato de configuración JSON inválido",
     "providerAdded": "Proveedor añadido",
     "providerUpdated": "Proveedor actualizado",
-    "providerDeleted": "Proveedor eliminado"
+    "providerDeleted": "Proveedor eliminado",
+    "codexSettingsDispatchFailed": "No se puede enviar la configuraci?n de Codex al IDE. Abre el chat de nuevo e int?ntalo."
   },
   "config": {
     "clickToCopy": "Haz clic para copiar",

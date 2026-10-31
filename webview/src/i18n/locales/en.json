@@ -61,6 +61,17 @@
     "currentMode": "Current mode: {{mode}}",
     "currentModel": "Current model: {{model}}",
     "removeAttachment": "Remove attachment",
+    "queue": {
+      "edit": "Edit queued message",
+      "remove": "Remove from queue",
+      "editLabel": "Edit queued message {{position}}",
+      "removeLabel": "Remove queued message {{position}}",
+      "reorderLabel": "Reorder message {{position}}",
+      "reorderHint": "Drag to reorder, or focus and use arrow keys",
+      "mergedIntoDraft": "Queued message added to the current draft",
+      "attachmentsNotRestored": "Attachments from the queued message were not restored",
+      "editBlockedAttachments": "Its attachments cannot be restored here, so the message stays in the queue"
+    },
     "closePreview": "Close preview",
     "loadingDropdown": "Loading...",
     "modelsLoadFailed": "Failed to load models. Click to retry",
@@ -75,6 +86,8 @@
     "usagePercentage": "Usage: {{percentage}}",
     "planUsage": {
       "title": "Claude plan usage",
+      "grokTitle": "Grok plan usage",
+      "staleIdle": "Last reading. It refreshes the next time you use Grok",
       "loading": "Loading usage…",
       "unavailable": "Usage unavailable",
       "dash": "Usage —",
@@ -1588,7 +1601,8 @@
     "invalidJsonConfig": "Invalid JSON config format",
     "providerAdded": "Provider added",
     "providerUpdated": "Provider updated",
-    "providerDeleted": "Provider deleted"
+    "providerDeleted": "Provider deleted",
+    "codexSettingsDispatchFailed": "Cannot send Codex settings to the IDE. Reopen the chat and try again."
   },
   "config": {
     "clickToCopy": "Click to copy",

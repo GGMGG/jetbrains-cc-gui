@@ -44,6 +44,17 @@
     "currentMode": "Mode actuel : {{mode}}",
     "currentModel": "Modèle actuel : {{model}}",
     "removeAttachment": "Supprimer la pièce jointe",
+    "queue": {
+      "edit": "Modifier le message en file d'attente",
+      "remove": "Retirer de la file d'attente",
+      "editLabel": "Modifier le message {{position}} en file d'attente",
+      "removeLabel": "Retirer le message {{position}} de la file d'attente",
+      "reorderLabel": "Réordonner le message {{position}}",
+      "reorderHint": "Faire glisser pour réordonner, ou utiliser les flèches après avoir mis le focus",
+      "mergedIntoDraft": "Le message en file d'attente a été ajouté au brouillon en cours",
+      "attachmentsNotRestored": "Les pièces jointes du message en file n ont pas été restaurées",
+      "editBlockedAttachments": "Ses pièces jointes ne peuvent pas être restaurées ici, le message reste dans la file d'attente"
+    },
     "closePreview": "Fermer l'aperçu",
     "loadingDropdown": "Chargement...",
     "modelsLoadFailed": "Échec du chargement des modèles. Cliquez pour réessayer",
@@ -1135,7 +1146,8 @@
     "invalidJsonConfig": "Format de configuration JSON invalide",
     "providerAdded": "Fournisseur ajouté",
     "providerUpdated": "Fournisseur mis à jour",
-    "providerDeleted": "Fournisseur supprimé"
+    "providerDeleted": "Fournisseur supprimé",
+    "codexSettingsDispatchFailed": "Impossible d?envoyer les param?tres Codex ? l?IDE. Rouvrez la discussion et r?essayez."
   },
   "config": {
     "clickToCopy": "Cliquer pour copier",

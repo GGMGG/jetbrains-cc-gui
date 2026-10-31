@@ -44,6 +44,17 @@
     "currentMode": "वर्तमान मोड: {{mode}}",
     "currentModel": "वर्तमान मॉडल: {{model}}",
     "removeAttachment": "अटैचमेंट हटाएं",
+    "queue": {
+      "edit": "कतार में संदेश संपादित करें",
+      "remove": "कतार से हटाएं",
+      "editLabel": "कतार में संदेश {{position}} संपादित करें",
+      "removeLabel": "कतार से संदेश {{position}} हटाएं",
+      "reorderLabel": "संदेश {{position}} का क्रम बदलें",
+      "reorderHint": "क्रम बदलने के लिए खींचें, या फोकस करके तीर कुंजियों का उपयोग करें",
+      "mergedIntoDraft": "कतार में संदेश वर्तमान ड्राफ्ट में जोड़ दिया गया",
+      "attachmentsNotRestored": "कतार में रखे संदेश के अनुलग्नक पुनर्स्थापित नहीं हो सके",
+      "editBlockedAttachments": "इसके अनुलग्नक यहाँ पुनर्स्थापित नहीं किए जा सकते, संदेश कतार में रहता है"
+    },
     "closePreview": "पूर्वावलोकन बंद करें",
     "loadingDropdown": "लोड हो रहा है...",
     "modelsLoadFailed": "मॉडल लोड करने में विफल। पुनः प्रयास के लिए क्लिक करें",
@@ -1135,7 +1146,8 @@
     "invalidJsonConfig": "अमान्य JSON कॉन्फ़िग प्रारूप",
     "providerAdded": "प्रदाता जोड़ा गया",
     "providerUpdated": "प्रदाता अपडेट किया गया",
-    "providerDeleted": "प्रदाता हटाया गया"
+    "providerDeleted": "प्रदाता हटाया गया",
+    "codexSettingsDispatchFailed": "Codex ?????? IDE ?? ???? ???? ?? ????? ??? ?????? ????? ??? ????? ?????"
   },
   "config": {
     "clickToCopy": "कॉपी करने के लिए क्लिक करें",
