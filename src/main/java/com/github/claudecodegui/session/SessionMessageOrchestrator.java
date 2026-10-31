@@ -270,12 +270,14 @@ public class SessionMessageOrchestrator {
                 ClaudeHistoryLoad historyLoad = null;
                 if ("claude".equals(requestedProvider)) {
                     historyLoad = loadClaudeSessionWithPagination(
-                            requestedSessionId, requestedCwd, cancellation);
+                            requestedSessionId, requestedCwd, cancellation, !updateSharedLoadingState);
                     serverMessages = historyLoad.messages;
                     pagedClaudeLoad = historyLoad.paged;
                 } else {
-                    serverMessages = historyAccess.getProviderSessionMessages(
-                            requestedProvider, requestedSessionId, requestedCwd, cancellation::isCancelled);
+                    serverMessages = updateSharedLoadingState
+                            ? historyAccess.getProviderSessionMessages(requestedProvider, requestedSessionId, requestedCwd)
+                            : historyAccess.getProviderSessionMessages(
+                                    requestedProvider, requestedSessionId, requestedCwd, cancellation::isCancelled);
                     pagedClaudeLoad = false;
                 }
                 checkHistoryLoadCancellation(cancellation);
@@ -338,7 +340,7 @@ public class SessionMessageOrchestrator {
                                 .containsAll(MessageStructure.structuralBlockKeys(currentMessages))) {
                             LOG.warn("Ignoring history page that would remove live structural blocks");
                             requireRestoreCommit(updateSharedLoadingState);
-                        return;
+                            return;
                         }
                         keptOlderLivePrefix = pagedClaudeLoad && alignedAnchorIndex > 0;
                         loadedMessages = mergedMessages;
@@ -348,12 +350,12 @@ public class SessionMessageOrchestrator {
                             LOG.warn("Ignoring stale shorter history result: loaded="
                                     + loadedMessages.size() + ", live=" + liveHistoryBacked);
                             requireRestoreCommit(updateSharedLoadingState);
-                        return;
+                            return;
                         }
                         if (!historyPreservesCurrentStructure(loadedStructure, currentMessages)) {
                             LOG.warn("Ignoring history result that would remove live structural blocks");
                             requireRestoreCommit(updateSharedLoadingState);
-                        return;
+                            return;
                         }
                     }
 
@@ -393,9 +395,6 @@ public class SessionMessageOrchestrator {
                 }
             } catch (SessionHistoryNotFoundException e) {
                 checkHistoryLoadCancellation(cancellation);
-                if (!updateSharedLoadingState) {
-                    throw new CompletionException(e);
-                }
                 // A missing history file is an explicit stale-session signal, so unlike
                 // the stale-result guards above it clears the live transcript.
                 synchronized (state.getMessageStateLock()) {
@@ -510,13 +509,15 @@ public class SessionMessageOrchestrator {
     private ClaudeHistoryLoad loadClaudeSessionWithPagination(
             String sessionId,
             String cwd,
-            HistoryLoadCancellation cancellation
+            HistoryLoadCancellation cancellation,
+            boolean cancellableRestore
     ) {
         // Try the paginated path first: latest page only, then prepend earlier
         // pages as the user scrolls up.
         try {
-            JsonObject page = historyAccess.getProviderSessionMessagesPage(
-                    sessionId, cwd, null, 30, cancellation::isCancelled);
+            JsonObject page = cancellableRestore
+                    ? historyAccess.getProviderSessionMessagesPage(sessionId, cwd, null, 30, cancellation::isCancelled)
+                    : historyAccess.getProviderSessionMessagesPage(sessionId, cwd, null, 30);
             checkHistoryLoadCancellation(cancellation);
             if (page != null && page.has("success") && page.get("success").getAsBoolean()) {
                 List<JsonObject> messages = new ArrayList<>();
@@ -548,7 +549,9 @@ public class SessionMessageOrchestrator {
         // Fallback: full history load (legacy behavior)
         LOG.info("Using full-history fallback for Claude session: " + sessionId);
         return new ClaudeHistoryLoad(
-                historyAccess.getProviderSessionMessages("claude", sessionId, cwd, cancellation::isCancelled), null);
+                cancellableRestore
+                        ? historyAccess.getProviderSessionMessages("claude", sessionId, cwd, cancellation::isCancelled)
+                        : historyAccess.getProviderSessionMessages("claude", sessionId, cwd), null);
     }
 
     /**

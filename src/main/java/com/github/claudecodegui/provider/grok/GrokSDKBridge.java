@@ -10,6 +10,7 @@ import com.github.claudecodegui.provider.common.HistoryCancellation;
 import com.github.claudecodegui.provider.common.DaemonBridge;
 import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
+import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.util.PlatformUtils;
@@ -1222,7 +1223,7 @@ public class GrokSDKBridge extends BaseSDKBridge {
             List<JsonObject> messages = new GrokHistoryReader().getSessionMessages(sessionId, cwd, cancellation);
             HistoryCancellation.check(cancellation);
             return messages;
-        } catch (CancellationException e) {
+        } catch (CancellationException | SessionHistoryNotFoundException e) {
             throw e;
         } catch (Exception e) {
             throw new IllegalStateException("Failed to load Grok session history", e);

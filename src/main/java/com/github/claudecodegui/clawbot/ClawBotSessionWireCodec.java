@@ -35,7 +35,11 @@ final class ClawBotSessionWireCodec {
     }
 
     static ClawBotSessionRegistration registrationFromJson(JsonObject object) throws IOException {
-        return new ClawBotSessionRegistration(
+        if (object == null) {
+            throw new IOException("CLAWBOT_IPC_SESSION_INVALID");
+        }
+        try {
+            return new ClawBotSessionRegistration(
                 readString(object, "sessionHandleId"),
                 readString(object, "instanceId"),
                 readString(object, "projectId"),
@@ -45,7 +49,10 @@ final class ClawBotSessionWireCodec {
                 readStatus(object),
                 readLong(object, "connectionEpoch"),
                 readOptionalString(object, "tabDisplayName", "Chat"),
-                readOptionalString(object, "generation", "legacy"));
+                    readOptionalString(object, "generation", "legacy"));
+        } catch (IllegalArgumentException error) {
+            throw new IOException("CLAWBOT_IPC_SESSION_INVALID", error);
+        }
     }
 
     static JsonArray registrationsToJson(List<ClawBotSessionRegistration> registrations) {
