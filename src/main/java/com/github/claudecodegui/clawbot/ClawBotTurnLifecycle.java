@@ -2,6 +2,7 @@ package com.github.claudecodegui.clawbot;
 
 import com.google.gson.JsonObject;
 
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
@@ -16,7 +17,10 @@ public final class ClawBotTurnLifecycle {
     private boolean closed;
 
     public synchronized void bind(CompletableFuture<Void> completion) {
-        this.tail = completion;
+        if (tail != null) {
+            throw new IllegalStateException("Remote turn is already bound");
+        }
+        this.tail = Objects.requireNonNull(completion, "completion");
     }
 
     /** No native control I/O runs under this monitor or the session message lock. */
@@ -30,12 +34,16 @@ public final class ClawBotTurnLifecycle {
         }
         try {
             JsonObject result = response.get();
-            if (result == null || result.has("error") || !result.has("replied") || !result.get("replied").getAsBoolean()
-                    || !result.has("followUp") || !result.get("followUp").isJsonObject()) {
+            if (result == null || result.has("error") || !result.has("followUp")) {
                 return result;
             }
+            if (!result.has("replied") || !result.get("replied").isJsonPrimitive()
+                    || !result.getAsJsonPrimitive("replied").isBoolean() || !result.get("replied").getAsBoolean()
+                    || !result.get("followUp").isJsonObject()) {
+                return staleResponse();
+            }
             JsonObject followUp = result.getAsJsonObject("followUp");
-            if (!followUp.has("threadId") || !followUp.has("text") || !followUp.get("text").isJsonPrimitive()
+            if (!isString(followUp, "threadId") || !isString(followUp, "text")
                     || !followUp.get("threadId").getAsString().equals(threadId.get())) {
                 return staleResponse();
             }
@@ -47,12 +55,15 @@ public final class ClawBotTurnLifecycle {
             CompletableFuture<Void> next = new CompletableFuture<>();
             synchronized (this) {
                 previous = tail;
+                if (previous == null) {
+                    JsonObject error = result.deepCopy();
+                    error.addProperty("error", "Remote turn has not started");
+                    return error;
+                }
                 tail = next;
             }
-            if (previous == null) {
-                next.completeExceptionally(new IllegalStateException("Remote turn has not started"));
-            } else {
-                previous.thenComposeAsync(ignored -> {
+            // Every accepted answer gets a turn even when an earlier turn failed.
+            previous.handle((ignored, failure) -> null).thenComposeAsync(ignored -> {
                     synchronized (this) {
                         if (closed || !current.getAsBoolean()) {
                             return CompletableFuture.<Void>failedFuture(new IllegalStateException("Remote turn changed"));
@@ -73,7 +84,6 @@ public final class ClawBotTurnLifecycle {
                         next.completeExceptionally(error);
                     }
                 });
-            }
             JsonObject consumed = result.deepCopy();
             // The backend owns this continuation; the browser must not enqueue it a second time.
             consumed.remove("followUp");
@@ -111,7 +121,12 @@ public final class ClawBotTurnLifecycle {
 
     private static JsonObject staleResponse() {
         JsonObject error = new JsonObject();
-        error.addProperty("error", "Unknown or stale remote Codex question");
+        error.addProperty("error", "Unknown or stale remote question");
         return error;
+    }
+
+    private static boolean isString(JsonObject object, String name) {
+        return object.has(name) && object.get(name).isJsonPrimitive()
+                && object.getAsJsonPrimitive(name).isString();
     }
 }
