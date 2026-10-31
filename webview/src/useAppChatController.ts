@@ -318,9 +318,12 @@ export const useAppChatController = ({
     reorder: reorderMessageQueue,
   } = useMessageQueue({ isLoading: loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending, onExecute: hookHandleSubmit });
 
-  const onCodexQuestionError = useCallback((message: string) => addToast(message, 'error'), [addToast]);
+  const onCodexAnswerUndelivered = useCallback(() => addToast(t('askUserQuestion.answerNotSent', {
+    defaultValue: 'Your answer to the Codex question was not sent because another chat is open now. '
+      + 'Return to that chat and send the answer again.',
+  }), 'error'), [addToast, t]);
   useCodexQuestionResponses({ provider: currentProvider, threadId: currentSessionId,
-    enqueue: enqueueMessage, onError: onCodexQuestionError });
+    enqueue: enqueueMessage, onUndelivered: onCodexAnswerUndelivered });
 
   // Point the session-transition indirection at the real clearQueue.
   useEffect(() => {
@@ -433,6 +436,7 @@ export const useAppChatController = ({
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
     codexPlan, codexPlanExecutionPending,
     codexCompactionPending,
+    codexTurnActive,
     onExecuteCodexPlan: executeCodexPlan,
     codexCompactionStartedAt,
     onContinueCodexPlan: handleContinueCodexPlan,

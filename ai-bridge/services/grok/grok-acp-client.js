@@ -1118,6 +1118,24 @@ export function buildPromptBlocks({ message, agentPrompt, openedFiles, attachmen
   const blocks = [];
   let text = message || '';
 
+  const { blocks: imageBlocks, loaded, errors } = buildGrokImageBlocks(
+    Array.isArray(attachments) ? attachments : []
+  );
+  if (errors.length > 0) {
+    console.error(
+      `[Grok] image load issues: ${loaded} ok, ${errors.length} failed (${errors.join('; ')})`
+    );
+  }
+  if (loaded > 0) {
+    console.error(`[Grok] embedding ${loaded} image block(s) into ACP prompt`);
+  }
+  // Decide the image-only fallback before agent instructions, rules, and IDE
+  // context are appended so injected sections do not hide the request to look
+  // at the attached images.
+  if (!String(text).trim() && loaded > 0) {
+    text = GROK_IMAGE_ONLY_FALLBACK_TEXT;
+  }
+
   if (agentPrompt && String(agentPrompt).trim()) {
     text =
       `${text}\n\n## Agent Role and Instructions\n\n${String(agentPrompt).trim()}`;
@@ -1148,18 +1166,6 @@ export function buildPromptBlocks({ message, agentPrompt, openedFiles, attachmen
     } catch {
       // ignore
     }
-  }
-
-  const { blocks: imageBlocks, loaded, errors } = buildGrokImageBlocks(
-    Array.isArray(attachments) ? attachments : []
-  );
-  if (errors.length > 0) {
-    console.error(
-      `[Grok] image load issues: ${loaded} ok, ${errors.length} failed (${errors.join('; ')})`
-    );
-  }
-  if (loaded > 0) {
-    console.error(`[Grok] embedding ${loaded} image block(s) into ACP prompt`);
   }
 
   // Non-image attachments (or failed images): keep a text note so the agent

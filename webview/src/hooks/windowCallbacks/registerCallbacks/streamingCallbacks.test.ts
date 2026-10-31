@@ -336,6 +336,61 @@ describe('onStreamEnd append guard for a pending backend snapshot', () => {
     void harness;
   });
 
+  it('keeps a snapshot tail the delta buffer never received, including in the rendered text block', () => {
+    const streaming: ClaudeMessage = {
+      type: 'assistant',
+      content: 'лайфхак св',
+      isStreaming: true,
+      __turnId: 4,
+      raw: { message: { content: [{ type: 'text', text: 'лайфхак св' }] } },
+    } as unknown as ClaudeMessage;
+    harness = createHarness([streaming], 4);
+    harness.refs.isStreamingRef.current = true;
+    harness.refs.streamingMessageIndexRef.current = 0;
+    harness.refs.streamingTurnIdRef.current = 4;
+    harness.refs.streamingContentRef.current = 'лайфхак св';
+    harness.refs.currentProviderRef.current = 'gemini';
+    window.__pendingUpdateJson = JSON.stringify([{
+      type: 'assistant',
+      content: 'лайфхак связки с Home Assistant.',
+      raw: { message: { content: [{ type: 'text', text: 'лайфхак св' }] } },
+    }]);
+
+    window.onStreamEnd!('3');
+
+    const finalized = harness.getMessages()[0];
+    expect(finalized.content).toBe('лайфхак связки с Home Assistant.');
+    expect((finalized.raw as { message: { content: Array<{ text: string }> } }).message.content[0].text)
+      .toBe('лайфхак связки с Home Assistant.');
+  });
+
+  it('does not let a shorter snapshot chop a newer delta buffer', () => {
+    const streaming: ClaudeMessage = {
+      type: 'assistant',
+      content: 'полный',
+      isStreaming: true,
+      __turnId: 5,
+      raw: { message: { content: [{ type: 'text', text: 'полный' }] } },
+    } as unknown as ClaudeMessage;
+    harness = createHarness([streaming], 5);
+    harness.refs.isStreamingRef.current = true;
+    harness.refs.streamingMessageIndexRef.current = 0;
+    harness.refs.streamingTurnIdRef.current = 5;
+    harness.refs.streamingContentRef.current = 'полный ответ';
+    window.__pendingUpdateJson = JSON.stringify([{
+      type: 'assistant',
+      content: 'полный',
+      raw: { message: { content: [{ type: 'text', text: 'полный' }] } },
+    }]);
+
+    window.onStreamEnd!('4');
+
+    const finalized = harness.getMessages()[0];
+    expect(finalized.content).toBe('полный ответ');
+    expect((finalized.raw as { message: { content: Array<{ text: string }> } }).message.content[0].text)
+      .toBe('полный ответ');
+  });
+
   it('does not overwrite another assistant at a stale but valid index', () => {
     const older: ClaudeMessage = {
       type: 'assistant', content: 'older answer', __turnId: 1,
