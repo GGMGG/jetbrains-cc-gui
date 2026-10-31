@@ -326,6 +326,10 @@ public class ClaudeSession {
                         || !Objects.equals(epoch, this.state.getRuntimeSessionEpoch())) {
                     return false;
                 }
+                // The operation has completed, so no further evidence can arrive. A still-live turn was
+                // rejected before any callback, or Stop deferred its failure; a settled turn keeps its outcome.
+                this.state.getExecutionState().finish(this.state.executionTurnForOwner(owner),
+                        SessionExecutionState.Outcome.FAILED, true);
                 this.state.setBusy(false);
                 this.state.setLoading(false);
             }
