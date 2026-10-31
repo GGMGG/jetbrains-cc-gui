@@ -520,7 +520,7 @@ public final class ClawBotIdeClient implements AutoCloseable {
             if (closed) { throw new IOException("CLAWBOT_IDE_CLIENT_CLOSED"); }
             if ("ERROR".equals(response.type())) {
                 String errorCode = readString(response.payload(), "code");
-                if (!errorCode.matches("CLAWBOT_[A-Z_]{1,64}")) { throw new IOException("CLAWBOT_IPC_RESULT_INVALID"); }
+                if (!errorCode.matches("(?:CLAWBOT|ILINK)_[A-Z0-9_]{1,64}")) { throw new IOException("CLAWBOT_IPC_RESULT_INVALID"); }
                 if (isSessionRecoveryError(errorCode)) {
                     snapshotPending = true;
                     ownerRecoveryPending = true;
