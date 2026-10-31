@@ -51,6 +51,7 @@ import {
   setPermissionModePersistent as grokSetPermissionModePersistent,
   getContextUsagePersistent as grokGetContextUsagePersistent,
   getUsagePersistent as grokGetUsagePersistent,
+  getPlanUsagePersistent as grokGetPlanUsagePersistent,
   getRuntimeSnapshot as getGrokRuntimeSnapshot
 } from './services/grok/persistent-acp-service.js';
 import {
@@ -729,7 +730,8 @@ async function runDaemonMain() {
     const claudeBusy = (claude.anonymousRuntimeCount || 0) > 0
       || (claude.sessionRuntimeCount || 0) > 0
       || !!claude.activeTurnEpoch;
-    const grokBusy = (grok.runtimeCount || 0) > 0 || (grok.activeTurnCount || 0) > 0;
+    const grokBusy = (grok.runtimeCount || 0) > 0 || (grok.activeTurnCount || 0) > 0
+      || grok.planUsageInFlight === true;
     const zcodeBusy = zcode.clientActive || zcode.turnActive;
     const codex = getCodexRuntimeSnapshot();
     const codexBusy = codex.busy || codex.sessionCount > 0;
@@ -800,7 +802,25 @@ async function runDaemonMain() {
       return;
     }
 
-    if (request.method !== 'heartbeat' && request.method !== 'status') {
+    if (request.method === 'grok.getPlanUsage' && (!isDaemonMode || idleShutdownInFlight)) {
+      writeRawLine({
+        id: request.id || '0',
+        done: true,
+        success: true,
+        result: {
+          present: false,
+          unavailable: true,
+          // An exiting daemon is not a billing failure: Java keeps the last reading and does not back off.
+          dormant: true,
+          provider: 'grok',
+          source: 'x.ai/billing',
+          message: 'Grok daemon is shutting down',
+        },
+      });
+      return;
+    }
+
+    if (request.method !== 'heartbeat' && request.method !== 'status' && request.method !== 'grok.getPlanUsage') {
       // A retired Java generation should not send commands here. Return an
       // explicit error if a stale writer races the final exit.
       if (!isDaemonMode) {
@@ -989,6 +1009,7 @@ async function runDaemonMain() {
       ['codex.listSkills', codexListSkillsPersistent],
       ['codex.getMcpStatus', codexGetMcpStatusPersistent],
       ['codex.reloadMcp', codexReloadMcpPersistent],
+      ['grok.getPlanUsage', grokGetPlanUsagePersistent],
     ]);
     const readOnlyHandler = readOnlyCodexMethods.get(request.method);
     if (readOnlyHandler) {
