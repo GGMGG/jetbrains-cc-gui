@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { sendBridgeEvent } from '../../../utils/bridge';
 import { formatClawBotError } from './formatError';
 import ReplyRecoveryPanel, { parseReplyRecoveryItems, type ReplyRecoveryItem } from './ReplyRecoveryPanel';
 import styles from './style.module.less';
@@ -456,7 +457,10 @@ export default function ClawBotSection() {
     }
     setErrorCode(null);
     setBusyOperation(type);
-    window.sendToJava(`${type}:${JSON.stringify(payload)}`);
+    if (!sendBridgeEvent(type, JSON.stringify(payload))) {
+      setBusyOperation(null);
+      setErrorCode('CLAWBOT_BRIDGE_UNAVAILABLE');
+    }
   }, [busyOperation]);
 
   const saveProgressSettings = useCallback(() => {
@@ -520,8 +524,11 @@ export default function ClawBotSection() {
           setShowAuthorizedSenders(true);
           setSenderOffset(0);
           if (window.sendToJava !== undefined) {
-            setBusyOperation('clawbot_list_senders');
-            window.sendToJava('clawbot_list_senders:{"offset":0}');
+            if (sendBridgeEvent('clawbot_list_senders', '{"offset":0}')) {
+              setBusyOperation('clawbot_list_senders');
+            } else {
+              setErrorCode('CLAWBOT_BRIDGE_UNAVAILABLE');
+            }
           }
         }
         if (result.operation === 'list_senders' && result.authorizedSenders !== undefined) {
