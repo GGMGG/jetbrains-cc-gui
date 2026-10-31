@@ -1146,7 +1146,8 @@
     "invalidJsonConfig": "Formato de configuración JSON inválido",
     "providerAdded": "Proveedor añadido",
     "providerUpdated": "Proveedor actualizado",
-    "providerDeleted": "Proveedor eliminado"
+    "providerDeleted": "Proveedor eliminado",
+    "codexSettingsDispatchFailed": "No se puede enviar la configuraci?n de Codex al IDE. Abre el chat de nuevo e int?ntalo."
   },
   "config": {
     "clickToCopy": "Haz clic para copiar",

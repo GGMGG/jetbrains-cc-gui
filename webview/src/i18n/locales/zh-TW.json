@@ -1187,7 +1187,8 @@
     "invalidJsonConfig": "配置 JSON 格式錯誤，請修正後再儲存",
     "providerAdded": "供應商新增成功",
     "providerUpdated": "供應商更新成功",
-    "providerDeleted": "供應商刪除成功"
+    "providerDeleted": "供應商刪除成功",
+    "codexSettingsDispatchFailed": "??? IDE ?? Codex ??????????????"
   },
   "config": {
     "clickToCopy": "點選複製",

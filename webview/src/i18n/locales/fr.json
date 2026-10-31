@@ -1146,7 +1146,8 @@
     "invalidJsonConfig": "Format de configuration JSON invalide",
     "providerAdded": "Fournisseur ajouté",
     "providerUpdated": "Fournisseur mis à jour",
-    "providerDeleted": "Fournisseur supprimé"
+    "providerDeleted": "Fournisseur supprimé",
+    "codexSettingsDispatchFailed": "Impossible d?envoyer les param?tres Codex ? l?IDE. Rouvrez la discussion et r?essayez."
   },
   "config": {
     "clickToCopy": "Cliquer pour copier",
