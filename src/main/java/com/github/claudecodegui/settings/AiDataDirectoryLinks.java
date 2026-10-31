@@ -62,13 +62,15 @@ final class AiDataDirectoryLinks {
     }
 
     private static void createWindowsJunctionWithMklink(Path canonical, Path target) throws IOException {
-        String command = "mklink /J \"" + canonical + "\" \"" + target + "\"";
         Process process;
         try {
-            process = new ProcessBuilder("cmd.exe", "/d", "/c", command)
+            ProcessBuilder builder = new ProcessBuilder("cmd.exe", "/d", "/v:off", "/c",
+                    "mklink /J \"%CC_GUI_JUNCTION_LINK%\" \"%CC_GUI_JUNCTION_TARGET%\"")
                     .redirectErrorStream(true)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .start();
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            builder.environment().put("CC_GUI_JUNCTION_LINK", canonical.toString());
+            builder.environment().put("CC_GUI_JUNCTION_TARGET", target.toString());
+            process = builder.start();
         } catch (IOException error) {
             throw new AiDataDirectoryException("LINK_CREATION_FAILED", error);
         }
