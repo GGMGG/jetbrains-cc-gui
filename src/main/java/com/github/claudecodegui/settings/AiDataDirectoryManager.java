@@ -143,6 +143,12 @@ public final class AiDataDirectoryManager {
                     boolean recovered = recoverInterruptedMigration();
                     return buildSnapshot(recovered);
                 }
+            } catch (AiDataDirectoryException error) {
+                if ("AI_DATA_MIGRATION_ACTIVE".equals(error.getMessage())
+                        || "AI_PROCESSES_ACTIVE".equals(error.getMessage())) {
+                    return buildBusySnapshot();
+                }
+                throw error;
             }
         }
     }
@@ -193,7 +199,7 @@ public final class AiDataDirectoryManager {
                 try {
                     for (MigrationEntry entry : entries) {
                         checkMigrationCancellation(migrationPermit);
-                        prepareTarget(entry, migrationPermit);
+                        prepareTarget(entry, migrationPermit, journal);
                         checkMigrationCancellation(migrationPermit);
                         entry.phase = Phase.TARGET_READY.name();
                         stateStore.writeJournal(journal);
@@ -397,7 +403,7 @@ public final class AiDataDirectoryManager {
         return requested.toRealPath();
     }
 
-    private void prepareTarget(MigrationEntry entry, AiDataProcessGate.MigrationPermit migrationPermit)
+    private void prepareTarget(MigrationEntry entry, AiDataProcessGate.MigrationPermit migrationPermit, Journal journal)
             throws IOException {
         CancellationChecker cancellationChecker = () -> checkMigrationCancellation(migrationPermit);
         Path staging = entry.stagingPath();
@@ -429,6 +435,9 @@ public final class AiDataDirectoryManager {
         } else {
             Files.writeString(marker, entry.id, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
         }
+        // Persist the verified contents before publishing a path that external tools can write.
+        entry.targetFingerprint = targetFingerprint(staging, cancellationChecker);
+        stateStore.writeJournal(journal);
         for (Path relativeLink : internalDirectoryLinks.keySet()) {
             cancellationChecker.check();
             AiDataDirectoryLinks.deleteDirectoryLink(staging.resolve(relativeLink));
@@ -438,6 +447,17 @@ public final class AiDataDirectoryManager {
         for (Map.Entry<Path, Path> link : internalDirectoryLinks.entrySet()) {
             cancellationChecker.check();
             createPlatformLink(target.resolve(link.getKey()), target.resolve(link.getValue()));
+        }
+    }
+
+    private static String targetFingerprint(Path path, CancellationChecker cancellationChecker) throws IOException {
+        String manifest = GSON.toJson(new java.util.TreeMap<>(buildDataManifest(path, cancellationChecker)));
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(manifest.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IOException("SHA-256 is unavailable", impossible);
         }
     }
 
@@ -665,6 +685,10 @@ public final class AiDataDirectoryManager {
         }
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             if (AiDataTreeOperations.hasStorageMarker(target, entry.id)) {
+                if (entry.targetFingerprint != null
+                        && !entry.targetFingerprint.equals(targetFingerprint(target, NO_CANCELLATION))) {
+                    throw new AiDataDirectoryException("RECOVERY_TARGET_CHANGED");
+                }
                 deleteTree(target);
             } else if (!entry.targetExisted || !isDirectoryEmpty(target)) {
                 throw new AiDataDirectoryException("RECOVERY_TARGET_CONFLICT");
