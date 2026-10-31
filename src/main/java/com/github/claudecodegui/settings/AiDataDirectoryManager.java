@@ -116,7 +116,7 @@ public final class AiDataDirectoryManager {
 
     public JsonObject snapshot() throws IOException {
         synchronized (OPERATION_LOCK) {
-            if (!isSupported()) {
+            if (!isSupported() || !processGate.isCoordinationAvailable()) {
                 return buildSnapshot(false);
             }
             if (!needsExclusiveSnapshot()) {
@@ -129,9 +129,9 @@ public final class AiDataDirectoryManager {
                     }
                 }
             }
-            try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
-                AiDataMigrationCoordinator.LockHandle migrationLock = migrationCoordinator.tryAcquire("status");
-                if (migrationLock == null) {
+            try (AiDataProcessGate.MigrationPermit recovery = acquireRecoveryPermitIfNeeded()) {
+                AiDataMigrationCoordinator.LockHandle migrationLock = recovery == null ? migrationCoordinator.tryAcquire("status") : null;
+                if (recovery == null && migrationLock == null) {
                     return buildBusySnapshot();
                 }
                 try (migrationLock) {
@@ -143,6 +143,12 @@ public final class AiDataDirectoryManager {
                     boolean recovered = recoverInterruptedMigration();
                     return buildSnapshot(recovered);
                 }
+            } catch (AiDataDirectoryException error) {
+                if ("AI_DATA_MIGRATION_ACTIVE".equals(error.getMessage())
+                        || "AI_PROCESSES_ACTIVE".equals(error.getMessage())) {
+                    return buildBusySnapshot();
+                }
+                throw error;
             }
         }
     }
@@ -171,11 +177,8 @@ public final class AiDataDirectoryManager {
             if (scanExternalProcesses && DshHostProcessCoordinator.getInstance().hasRunningHost()) {
                 throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
             }
-            AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
-            if (migrationPermit == null) {
-                throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
-            }
-            try (migrationPermit; AiDataMigrationCoordinator.LockHandle migrationLock = acquireMigrationLock("migrate")) {
+            AiDataProcessGate.MigrationPermit migrationPermit = acquireMigrationPermit("migrate");
+            try (migrationPermit) {
                 importLegacyState();
                 if (hasExternalAiProcess()) {
                     throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
@@ -196,7 +199,7 @@ public final class AiDataDirectoryManager {
                 try {
                     for (MigrationEntry entry : entries) {
                         checkMigrationCancellation(migrationPermit);
-                        prepareTarget(entry, migrationPermit);
+                        prepareTarget(entry, migrationPermit, journal);
                         checkMigrationCancellation(migrationPermit);
                         entry.phase = Phase.TARGET_READY.name();
                         stateStore.writeJournal(journal);
@@ -250,11 +253,8 @@ public final class AiDataDirectoryManager {
     public JsonObject cleanupBackups() throws IOException {
         synchronized (OPERATION_LOCK) {
             requireSupported();
-            AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
-            if (migrationPermit == null) {
-                throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
-            }
-            try (migrationPermit; AiDataMigrationCoordinator.LockHandle migrationLock = acquireMigrationLock("cleanup")) {
+            AiDataProcessGate.MigrationPermit migrationPermit = acquireMigrationPermit("cleanup");
+            try (migrationPermit) {
                 importLegacyState();
                 if (hasExternalAiProcess()) {
                     throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
@@ -403,7 +403,7 @@ public final class AiDataDirectoryManager {
         return requested.toRealPath();
     }
 
-    private void prepareTarget(MigrationEntry entry, AiDataProcessGate.MigrationPermit migrationPermit)
+    private void prepareTarget(MigrationEntry entry, AiDataProcessGate.MigrationPermit migrationPermit, Journal journal)
             throws IOException {
         CancellationChecker cancellationChecker = () -> checkMigrationCancellation(migrationPermit);
         Path staging = entry.stagingPath();
@@ -435,6 +435,9 @@ public final class AiDataDirectoryManager {
         } else {
             Files.writeString(marker, entry.id, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
         }
+        // Persist the verified contents before publishing a path that external tools can write.
+        entry.targetFingerprint = targetFingerprint(staging, cancellationChecker);
+        stateStore.writeJournal(journal);
         for (Path relativeLink : internalDirectoryLinks.keySet()) {
             cancellationChecker.check();
             AiDataDirectoryLinks.deleteDirectoryLink(staging.resolve(relativeLink));
@@ -444,6 +447,17 @@ public final class AiDataDirectoryManager {
         for (Map.Entry<Path, Path> link : internalDirectoryLinks.entrySet()) {
             cancellationChecker.check();
             createPlatformLink(target.resolve(link.getKey()), target.resolve(link.getValue()));
+        }
+    }
+
+    private static String targetFingerprint(Path path, CancellationChecker cancellationChecker) throws IOException {
+        String manifest = GSON.toJson(new java.util.TreeMap<>(buildDataManifest(path, cancellationChecker)));
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(manifest.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IOException("SHA-256 is unavailable", impossible);
         }
     }
 
@@ -495,23 +509,22 @@ public final class AiDataDirectoryManager {
                     || !Files.exists(legacyStateDirectory.resolve(JOURNAL_FILE), LinkOption.NOFOLLOW_LINKS))) {
             return null;
         }
-        AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
-        if (migrationPermit == null) {
-            throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
-        }
-        return migrationPermit;
+        return acquireMigrationPermit("recovery");
     }
 
-    private AiDataMigrationCoordinator.LockHandle acquireMigrationLock(String operation) throws IOException {
-        AiDataMigrationCoordinator.LockHandle migrationLock = migrationCoordinator.tryAcquire(operation);
-        if (migrationLock == null) {
+    private AiDataProcessGate.MigrationPermit acquireMigrationPermit(String operation) throws IOException {
+        AiDataProcessGate.MigrationPermit permit = processGate.tryAcquireCoordinatedMigrationPermit(migrationCoordinator, operation);
+        if (permit == null) {
+            if (!processGate.isCoordinationAvailable()) {
+                throw new AiDataDirectoryException("AI_DATA_COORDINATION_UNAVAILABLE");
+            }
             JsonObject owner = migrationCoordinator.readActiveOwner();
             if (owner != null) {
                 throw new AiDataDirectoryException("AI_DATA_MIGRATION_ACTIVE", owner);
             }
             throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
         }
-        return migrationLock;
+        return permit;
     }
 
     private boolean hasExternalAiProcess() {
@@ -672,6 +685,10 @@ public final class AiDataDirectoryManager {
         }
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             if (AiDataTreeOperations.hasStorageMarker(target, entry.id)) {
+                if (entry.targetFingerprint != null
+                        && !entry.targetFingerprint.equals(targetFingerprint(target, NO_CANCELLATION))) {
+                    throw new AiDataDirectoryException("RECOVERY_TARGET_CHANGED");
+                }
                 deleteTree(target);
             } else if (!entry.targetExisted || !isDirectoryEmpty(target)) {
                 throw new AiDataDirectoryException("RECOVERY_TARGET_CONFLICT");
@@ -727,7 +744,7 @@ public final class AiDataDirectoryManager {
 
     private JsonObject buildSnapshot(boolean recovered) throws IOException {
         JsonObject result = new JsonObject();
-        result.addProperty("supported", isSupported());
+        result.addProperty("supported", isSupported() && processGate.isCoordinationAvailable());
         result.addProperty("platform", platform.name().toLowerCase());
         result.addProperty("wsl", wsl);
         result.addProperty("homeDirectory", userHome.toString());
@@ -736,6 +753,8 @@ public final class AiDataDirectoryManager {
             result.addProperty("error", "WSL_NOT_SUPPORTED");
         } else if (!isSupported()) {
             result.addProperty("error", "PLATFORM_NOT_SUPPORTED");
+        } else if (!processGate.isCoordinationAvailable()) {
+            result.addProperty("error", "AI_DATA_COORDINATION_UNAVAILABLE");
         }
 
         JsonArray entries = new JsonArray();
