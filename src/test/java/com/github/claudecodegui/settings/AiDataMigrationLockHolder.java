@@ -1,9 +1,12 @@
+package com.github.claudecodegui.settings;
+
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
-public class AiDataMigrationLockHolder {
+/** Standalone native lock participant, copied to a disposable class path by its test. */
+public final class AiDataMigrationLockHolder {
     public static void main(String[] args) throws Exception {
         try (FileChannel channel = FileChannel.open(Path.of(args[0]), StandardOpenOption.CREATE,
                 StandardOpenOption.READ, StandardOpenOption.WRITE);

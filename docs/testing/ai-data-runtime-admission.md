@@ -1,42 +1,42 @@
-# AI data runtime admission foundation
+# AI data runtime admission
 
-This preparatory patch supplies the admission and ownership primitives used by
-the directory relocation patch. It does not activate relocation, add settings UI
-or change existing process launchers. Those call sites are connected together in
-the next patch so they cannot use a relocated home before recovery is available.
+Migration intent excludes new starts before idle runtimes are stopped. Active
+work rejects migration. Runtime callbacks execute outside the gate mutex.
 
-## Contract
+On Windows, process/read permits share a stable OS lock with exclusive migration
+permits. The lock lives under the user's `.cc-gui/ai-data-coordination`, outside
+every movable provider home. Per-inode JVM state rejects local contenders before
+opening another descriptor, which would otherwise release POSIX process locks
+when that descriptor closes. Lock ownership includes PID and process start time.
 
-- A migration intent blocks new process admission before idle runtimes stop.
-  Existing active work rejects relocation. Runtime callbacks run outside the
-  admission lock.
-- A process start before commit cancels relocation and waits for rollback. A
-  start after commit waits for relocation to finish.
-- Process and bounded read permits participate in the same stable Windows
-  shared/exclusive file-lock protocol. Owner metadata records the protocol
-  version, process identity and operation without moving with managed data.
-- A bound process permit survives channel removal and parent exit until its
-  observed descendants exit. A termination timeout retains exclusion.
-- Coordination directories reached through a link or Windows junction are
-  rejected. A dead owner's metadata does not prevent reacquiring the OS lock.
+New starts request cancellation from the current owner's pre-commit migration
+and wait for rollback. The request carries an owner ID so it cannot cancel a
+later migration. After commit, starts wait without cancelling the move. Waiting
+for another JVM is bounded to 30 seconds and reports `AI_DATA_MIGRATION_BUSY`.
+An active migration's journal is not reported as abandoned recovery while its
+OS lock is held. A leftover journal blocks admission until recovery completes.
 
-The process-tree observer tracks plugin-owned processes through Java process
-handles. It does not control unrelated external CLIs or guarantee observation
-of an arbitrary child that forks and reparents between OS snapshots. External
-CLI detection and the Windows-only relocation policy belong to the next patch.
+An I/O failure in the optional coordination directory disables relocation and
+reports that condition, while ordinary AI process startup remains available.
+Inventory reads and maintenance do not receive unprotected read permits.
+Contention and pending recovery are not treated as coordination I/O failures.
 
-## Validation
+The migration permit owns its exclusive OS lock through commit or rollback
+cleanup. Acquiring it must not be followed by a second acquisition of that same
+lock. Closing a permit is idempotent; closing owner metadata precedes unlocking.
 
-Run from the repository root:
+Observed descendants retain process admission after parent exit. Observation
+retries transient failures, prunes exited handles, and avoids recursively
+scanning every child after the root scan. A termination timeout retains admission
+and repeatedly checks newly observed children. The dependent relocation layer requests normal daemon shutdown and preserves
+detached background tools; explicit user stop may terminate the owned tree.
 
-```powershell
-.\gradlew.bat test --tests '*AiDataProcessGateTest' `
-  --tests '*AiDataRuntimeQuiescenceTest' --tests '*ManagedProcessTreeTest' `
-  --tests '*AiDataMigrationCoordinatorTest' --tests '*AiDataMigrationCrossJvmTest' `
-  checkstyleMain -PskipWebview=true --offline --console=plain --max-workers=2
-```
+Process handles cannot guarantee observation of an arbitrary process that forks
+and reparents between OS snapshots. They do not establish that unrelated external
+CLIs are idle. The relocation layer performs its own external-process checks.
 
-On Windows, all 18 cases and Checkstyle pass. The tests include actual Java
-parent/child processes, two JVMs competing at a barrier, forced owner death,
-shared-lock exclusion and a junction path guard. The relocation patch adds the
-real daemon, recovery and cleanup entry-point regressions.
+Focused checks cover independent gates, cancellation on both sides of commit,
+coordination I/O degradation, real parent/child processes, competing JVMs,
+owner death, retained shared/exclusive locks, and linked coordination paths.
+The foundation PR keeps launcher wiring and directory migration in dependent
+patches; those patches add daemon, journal recovery and cleanup checks.
