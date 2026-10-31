@@ -47,6 +47,14 @@ describe('useSessionManagement', () => {
       } })));
   }
 
+  /** Delete payloads now carry provider and requestId alongside the targets. */
+  const sentRequests = (type: 'delete_session' | 'delete_sessions') => vi.mocked(window.sendToJava!).mock.calls
+    .map(([payload]) => String(payload))
+    .filter(payload => payload.startsWith(`${type}:`))
+    .map(payload => JSON.parse(payload.slice(type.length + 1)) as Record<string, unknown>);
+  const sentRequest = (type: 'delete_session' | 'delete_sessions') => sentRequests(type).at(-1)!;
+
+
   it('starts a clean session transition for a direct new session', () => {
     const mocks = createMocks();
 
@@ -203,7 +211,7 @@ describe('useSessionManagement', () => {
     await confirmCodexDeletion();
     expect(historyData.sessions).toEqual([]);
     expect(historyData.total).toBe(0);
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_session:history-1');
+    expect(sentRequest('delete_session').sessionId).toBe('history-1');
     expect(window.sendToJava).toHaveBeenCalledWith(expect.stringMatching(/^delete_ai_storage_sessions:/));
   });
 
@@ -253,7 +261,7 @@ describe('useSessionManagement', () => {
 
     expect(historyData.sessions?.map(session => session.sessionId)).toEqual(['history-2']);
     expect(window.sendToJava).toHaveBeenCalledTimes(2);
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_sessions:["history-1"]');
+    expect(sentRequest('delete_sessions').sessionIds).toEqual(['history-1']);
     await confirmCodexDeletion();
     expect(historyData.sessions).toEqual([]);
     expect(historyData.total).toBe(0);
@@ -296,7 +304,7 @@ describe('useSessionManagement', () => {
       result.current.deleteHistorySessions(['history-1', 'history-2', 'history-1']);
     });
 
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_sessions:["history-1","history-2"]');
+    expect(sentRequest('delete_sessions').sessionIds).toEqual(['history-1', 'history-2']);
     expect(mocks.addToast).toHaveBeenCalledWith('history.sessionDeleted', 'success');
   });
 
@@ -410,7 +418,7 @@ describe('useSessionManagement', () => {
       result.current.deleteHistorySessions(['history-1', 'history-2']);
     });
 
-    expect(window.sendToJava).toHaveBeenCalledWith('delete_sessions:["history-1"]');
+    expect(sentRequest('delete_sessions').sessionIds).toEqual(['history-1']);
     await confirmCodexDeletion();
     expect(window.sendToJava).toHaveBeenCalledWith('create_new_session:');
     expect(mocks.addToast).not.toHaveBeenCalledWith('history.sessionDeleted', 'success');
@@ -418,6 +426,33 @@ describe('useSessionManagement', () => {
       message: 'history.sessionDeleted',
       type: 'success',
     });
+  });
+
+  describe('Non-Codex history deletion outcomes', () => {
+    const deliverResult = (result: Record<string, unknown>) => act(() => {
+      window.onHistoryDeleteResult?.(JSON.stringify(result));
+    });
+    it('does not announce non-Codex deletions twice but still reports their failures', () => {
+      const mocks = createMocks();
+      const { result } = renderHook(() => useSessionManagement({
+        messages: [], loading: false, historyData: null, currentSessionId: 'claude-1',
+        currentProvider: 'claude', ...mocks, t,
+      }));
+
+      act(() => { result.current.deleteHistorySession('claude-1'); });
+      expect(sentRequest('delete_session')).toMatchObject({ sessionId: 'claude-1', provider: 'claude' });
+      mocks.addToast.mockClear();
+      deliverResult({ requestId: sentRequest('delete_session').requestId, provider: 'claude',
+        sessionIds: ['claude-1'], deletedSessionIds: ['claude-1'], success: true });
+      expect(mocks.addToast).not.toHaveBeenCalled();
+
+      act(() => { result.current.deleteHistorySession('claude-2'); });
+      mocks.addToast.mockClear();
+      deliverResult({ requestId: sentRequest('delete_session').requestId, provider: 'claude',
+        sessionIds: ['claude-2'], deletedSessionIds: [], success: false, errorCode: 'DELETE_FAILED' });
+      expect(mocks.addToast).toHaveBeenCalledWith('history.deleteFailed', 'error');
+    });
+
   });
 
   it('forceCreateNewSession interrupts loading session and cleans state', () => {

@@ -17,6 +17,7 @@ import com.github.claudecodegui.settings.ConfigPathManager;
 import com.github.claudecodegui.storage.CodexStorageRuntimeLease;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
     private final String ownerScope;
     private final Path storageCoordination;
     private final CodexInteractionRegistry interactionRegistry = new CodexInteractionRegistry();
+    private final Set<String> answeringInteractions = ConcurrentHashMap.newKeySet();
 
     /** Executor for blocking daemon round-trips; never the common pool, never the UI thread. */
     public static java.util.concurrent.Executor codexControlExecutor() {
@@ -715,18 +717,33 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 || !this.interactionRegistry.matchesPageToken(interactionKey, pageToken)) {
             return staleInteractionError();
         }
-        JsonObject acknowledgement = sendCodexControl(
+        return respondCodexInteraction(entry, cwd, result);
+    }
+
+    private JsonObject respondCodexInteraction(CodexInteractionRegistry.Entry entry, String cwd, JsonObject result) {
+        String interactionKey = entry.interactionKey();
+        if (!this.answeringInteractions.add(interactionKey)) {
+            return interactionError("Codex interaction is already being answered");
+        }
+        try {
+            if (this.interactionRegistry.get(interactionKey) != entry) {
+                return interactionError("Unknown or stale Codex interaction");
+            }
+            JsonObject acknowledgement = sendCodexControl(
                 "codex.respondInteraction",
-                channelId,
+                entry.channelId(),
                 cwd,
                 params -> {
                     params.add("rpcId", entry.rpcId() == null ? new JsonObject() : entry.rpcId().deepCopy());
                     params.add("result", result == null ? new JsonObject() : result.deepCopy());
                 });
-        if (endsInteraction(acknowledgement)) {
-            this.interactionRegistry.resolve(interactionKey);
+            if (endsInteraction(acknowledgement)) {
+                this.interactionRegistry.resolve(interactionKey);
+            }
+            return acknowledgement;
+        } finally {
+            this.answeringInteractions.remove(interactionKey);
         }
-        return acknowledgement;
     }
 
     /**
@@ -755,7 +772,14 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 || !this.interactionRegistry.matchesPageToken(interactionKey, pageToken)) {
             return staleInteractionError();
         }
-        JsonObject acknowledgement = sendCodexControl(
+        if (!this.answeringInteractions.add(interactionKey)) {
+            return interactionError("Codex interaction is already being answered");
+        }
+        try {
+            if (this.interactionRegistry.get(interactionKey) != entry) {
+                return interactionError("Unknown or stale Codex interaction");
+            }
+            JsonObject acknowledgement = sendCodexControl(
                 "codex.respondInteractionError",
                 channelId,
                 cwd,
@@ -764,24 +788,31 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     params.addProperty("code", code);
                     params.addProperty("message", message == null ? "Codex interaction cancelled" : message);
                 });
-        if (endsInteraction(acknowledgement)) {
-            this.interactionRegistry.resolve(interactionKey);
+            if (endsInteraction(acknowledgement)) {
+                this.interactionRegistry.resolve(interactionKey);
+            }
+            return acknowledgement;
+        } finally {
+            this.answeringInteractions.remove(interactionKey);
         }
-        return acknowledgement;
     }
 
     /**
      * Whether a reply ack means the native request is over: it was delivered, or Codex reports it
      * no longer waits for it. Keeping the latter registered would let a page refresh show a dialog
-     * that can never be answered. An unconfirmed (timed-out) reply may still land, so it stays.
+     * that can never be answered. A reply Java stopped waiting for may still land, so it stays; one
+     * the daemon itself retired as unconfirmed is no longer pending there and ends here too.
      */
     static boolean endsInteraction(JsonObject acknowledgement) {
         if (!acknowledgement.has("error")) {
             return true;
         }
-        return acknowledgement.has("code") && acknowledgement.get("code").isJsonPrimitive()
-                && CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(
-                        acknowledgement.get("code").getAsString());
+        if (!acknowledgement.has("code") || !acknowledgement.get("code").isJsonPrimitive()) {
+            return false;
+        }
+        String code = acknowledgement.get("code").getAsString();
+        return CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(code)
+                || CodexAppServerRequestExecutor.DELIVERY_UNCONFIRMED.equals(code);
     }
 
     private static boolean sameChannel(String first, String second) {
@@ -1071,6 +1102,25 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 this.forgetChannelState(channelId, threadId, sessionEpoch);
             }
         });
+    }
+
+    /**
+     * Hold writer leases while history files are deleted, so no chat window can
+     * resume one of these threads between the idle release and the file removal.
+     *
+     * @param threadIds persisted thread ids selected for deletion
+     * @return a callback releasing every lease, or null when a thread already has a writer
+     */
+    public Runnable reserveCodexThreadsForDeletion(Collection<String> threadIds) {
+        String deletionOwnerId = "history-delete:" + UUID.randomUUID();
+        Runnable release = () -> CodexThreadOwnerRegistry.releaseOwner(deletionOwnerId);
+        for (String threadId : threadIds) {
+            if (!CodexThreadOwnerRegistry.claim(this.ownerScope, threadId, deletionOwnerId).acquired()) {
+                release.run();
+                return null;
+            }
+        }
+        return release;
     }
 
     /**
