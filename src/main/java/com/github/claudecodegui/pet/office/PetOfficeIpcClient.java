@@ -85,6 +85,12 @@ final class PetOfficeIpcClient implements AutoCloseable {
 
     void exitOffice() throws IOException { request("WINDOW_EXIT", new JsonObject(), "EXIT_SCHEDULED"); }
 
+    void assetEndpoint(PetOfficeEndpoint endpoint) throws IOException {
+        JsonObject payload = new JsonObject();
+        payload.add("endpoint", PetOfficeAppearanceCodec.endpoint(endpoint));
+        request("ASSET_ENDPOINT", payload, "ASSET_REGISTERED");
+    }
+
     List<PetOfficeRouteBroker.Command> poll() throws IOException {
         return PetOfficeRouteProtocol.decode(request("ROUTE_POLL", new JsonObject(), "ROUTES").get("commands"), instanceId);
     }

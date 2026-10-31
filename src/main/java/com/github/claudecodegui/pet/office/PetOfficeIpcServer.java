@@ -138,6 +138,11 @@ final class PetOfficeIpcServer implements AutoCloseable {
                 String type = string(packet, "type", 32);
                 try {
                     switch (type) {
+                    case "ASSET_ENDPOINT":
+                        fields(packet, "schemaVersion", "leaderEpoch", "type", "requestId", "connectionEpoch", "endpoint");
+                        registry.assetEndpoint(connection, PetOfficeAppearanceCodec.endpoint(packet.getAsJsonObject("endpoint"), connection.instanceId()));
+                        reply(socket, packet, "ACK", "ASSET_REGISTERED");
+                        break;
                     case "ROUTE_POLL":
                         fields(packet, "schemaVersion", "leaderEpoch", "type", "requestId", "connectionEpoch");
                         reply(socket, packet, "ACK", "ROUTES", PetOfficeRouteProtocol.encode(routes.poll(connection)));

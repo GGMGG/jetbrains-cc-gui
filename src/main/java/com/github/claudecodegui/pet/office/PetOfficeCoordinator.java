@@ -8,7 +8,8 @@ import java.util.function.BooleanSupplier;
 /** Testable desktop ownership; closing transport never releases the caller's window lease. */
 record PetOfficeCoordinator(PetOfficeRuntimeLease lease, PetOfficeEndpointStore store, PetOfficeIpcServer server,
                             PetOfficeParticipantRegistry registry, String instanceId, PetOfficeRecoveryStore recovery,
-                            PetOfficeModeStore modes, PetOfficeModeStore.Control entering) implements AutoCloseable {
+                            PetOfficeModeStore modes, PetOfficeModeStore.Control entering,
+                            PetOfficeRemoteAppearances appearances) implements AutoCloseable {
     static PetOfficeCoordinator start(Path root, PetOfficeRuntimeLease lease, String instanceId, BooleanSupplier active,
                                       Runnable show, Runnable exit, PetOfficeRecoveryStore.Intent expected, boolean explicit) throws IOException {
         if (!active.getAsBoolean() || !lease.isValid()) {
@@ -20,6 +21,8 @@ record PetOfficeCoordinator(PetOfficeRuntimeLease lease, PetOfficeEndpointStore 
         server.onExit(exit);
         var recovery = new PetOfficeRecoveryStore(root);
         var modes = new PetOfficeModeStore(root);
+        var appearances = new PetOfficeRemoteAppearances(instanceId, registry,
+                () -> active.getAsBoolean() && lease.isValid() && server.isRunning());
         boolean started = false;
         try {
             var entering = modes.beginEnter(server.endpoint().leaderEpoch(), lease);
@@ -30,11 +33,12 @@ record PetOfficeCoordinator(PetOfficeRuntimeLease lease, PetOfficeEndpointStore 
                 }
                 recovery.adopt(server.endpoint().leaderEpoch(), expected, explicit, lease);
             }
-            var coordinator = new PetOfficeCoordinator(lease, store, server, registry, instanceId, recovery, modes, entering);
+            var coordinator = new PetOfficeCoordinator(lease, store, server, registry, instanceId, recovery, modes, entering, appearances);
             started = true;
             return coordinator;
         } finally {
             if (!started) {
+                appearances.close();
                 server.close();
                 store.removeOwned(server.endpoint(), lease);
             }
@@ -67,6 +71,7 @@ record PetOfficeCoordinator(PetOfficeRuntimeLease lease, PetOfficeEndpointStore 
     /** Called after native window/browser disposal; explicit exit may now restore overlays. */
     @Override
     public void close() throws IOException {
+        appearances.close();
         server.close();
         var intent = recovery.read();
         if (intent != null && !intent.enabled()) {
