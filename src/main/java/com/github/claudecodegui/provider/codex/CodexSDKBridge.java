@@ -717,6 +717,39 @@ public class CodexSDKBridge extends BaseSDKBridge {
         return respondCodexInteraction(entry, cwd, result);
     }
 
+    /** Native questions exposed to the authenticated remote conversation, independent of page reloads. */
+    public List<CodexInteractionRegistry.Entry> getPendingCodexQuestions(String channelId, String rootThreadId) {
+        return this.interactionRegistry.snapshot(channelId).stream()
+                .filter(entry -> isCurrentCodexQuestion(entry, channelId, rootThreadId)).toList();
+    }
+
+    public long getCodexInteractionRevision() {
+        return this.interactionRegistry.revision();
+    }
+
+    public JsonObject respondCodexQuestion(String channelId, String cwd, String rootThreadId,
+                                          String remoteToken, JsonObject result) {
+        CodexInteractionRegistry.Entry entry = this.interactionRegistry.snapshot(channelId).stream()
+                .filter(candidate -> candidate.remoteToken().equals(remoteToken)).findFirst().orElse(null);
+        if (!isCurrentCodexQuestion(entry, channelId, rootThreadId)) {
+            return interactionError("Unknown or stale Codex question");
+        }
+        return respondCodexInteraction(entry, cwd, result);
+    }
+
+    private boolean isCurrentCodexQuestion(CodexInteractionRegistry.Entry entry, String channelId, String rootThreadId) {
+        if (entry == null || channelId == null) {
+            return false;
+        }
+        RuntimeGenerationScope generation = this.runtimeGenerations.get(channelId);
+        return entry.method().endsWith("/requestUserInput")
+                && sameChannel(channelId, entry.channelId())
+                && java.util.Objects.equals(entry.sessionEpoch(), this.runtimeSessionEpochs.get(channelId))
+                && rootThreadId != null && rootThreadId.equals(entry.rootThreadId())
+                && generation != null && java.util.Objects.equals(generation.runtimeGeneration(), entry.runtimeGeneration())
+                && (entry.deadlineAt() <= 0 || entry.deadlineAt() > System.currentTimeMillis());
+    }
+
     private JsonObject respondCodexInteraction(CodexInteractionRegistry.Entry entry, String cwd, JsonObject result) {
         String interactionKey = entry.interactionKey();
         if (!this.answeringInteractions.add(interactionKey)) {
