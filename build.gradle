@@ -206,7 +206,8 @@ tasks.withType(JavaCompile).configureEach {
     options.release.set(17)
 }
 
-tasks.withType(Test).configureEach {
+tasks.named('test', Test) {
+    // Keep native skill fixtures isolated from the host's live configuration.
     environment 'CODEX_HOME', ''
 }
 

@@ -222,20 +222,20 @@ class HistoryLoadService {
         if (!"codex".equals(provider)) {
             return historyJson;
         }
-        JsonObject history = new Gson().fromJson(historyJson, JsonObject.class);
-        String activeId = active != null && "codex".equals(active.getProvider()) ? active.getSessionId() : null;
-        if (history.has("sessions") && history.get("sessions").isJsonArray()) {
-            for (var element : history.getAsJsonArray("sessions")) {
-                JsonObject row = element.getAsJsonObject();
-                String id = row.get("sessionId").getAsString();
-                boolean current = id.equals(activeId);
-                boolean running = current && (active.isBusy() || active.getState().getExecutionState().hasLiveTurn());
-                boolean ownedElsewhere = bridge != null && bridge.hasCodexThreadOwner(id)
-                        && (!current || !bridge.ownsCodexThread(id));
-                row.addProperty("running", running || ownedElsewhere || (row.has("running") && row.get("running").getAsBoolean()));
+        try {
+            JsonObject history = new Gson().fromJson(historyJson, JsonObject.class);
+            if (history == null) {
+                return historyJson;
             }
+            if (history.has("sessions") && history.get("sessions").isJsonArray()) {
+                CodexHistoryActivity.markRows(history.getAsJsonArray("sessions"), "sessionId", active, bridge);
+            }
+            return new Gson().toJson(history);
+        } catch (Exception e) {
+            // Activity is only a UI hint; the deletion guard still refuses protected rows.
+            LOG.warn("[HistoryHandler] Failed to mark Codex history activity: " + e.getMessage());
+            return historyJson;
         }
-        return new Gson().toJson(history);
     }
 
     private String enhanceHistoryWithFavorites(String historyJson, String currentProvider) {

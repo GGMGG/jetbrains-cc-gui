@@ -172,7 +172,8 @@ class ClaudeDaemonRequestExecutor {
                 result.messageCount = result.messages.size();
 
                 if (wasAborted.get()) {
-                    // Native abort acknowledgement also settles an earlier deferred send error.
+                    // sendAbort() detached this request without awaiting the daemon's acknowledgement.
+                    // That also settles an earlier deferred send error.
                     long elapsed = System.currentTimeMillis() - startTime;
                     log.info("[DaemonExecutor] Request was aborted by user (elapsed: " + elapsed + "ms)");
                     result.success = false;

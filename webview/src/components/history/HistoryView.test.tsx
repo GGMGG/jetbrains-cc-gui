@@ -154,12 +154,26 @@ describe('HistoryView running session protection', () => {
   });
 
   it('keeps host ownership protection when the local current session reports idle', () => {
-    const data = { ...historyData, sessions: historyData.sessions!.map(session => ({ ...session, running: true })) };
+    const data = { ...historyData, sessions: historyData.sessions!.map(session => ({
+      ...session, running: true, ownedElsewhere: true })) };
     render(<HistoryView {...actions} historyData={data} currentSessionBusy={false} />);
     const current = screen.getByText('Second session').closest('.history-item') as HTMLElement;
     const foreign = screen.getByText('First session').closest('.history-item') as HTMLElement;
     expect(within(current).getByRole('button', { name: 'history.deleteSession' }).hasAttribute('disabled')).toBe(true);
     expect(within(foreign).getByRole('button', { name: 'history.deleteSession' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('re-enables the current session once its turn ends, even if the list was captured mid-turn', () => {
+    const data = { ...historyData, sessions: historyData.sessions!.map(session => ({ ...session, running: true })) };
+    const { rerender } = render(<HistoryView {...actions} historyData={data} currentSessionBusy />);
+    const deleteButton = (title: string) => within(screen.getByText(title).closest('.history-item') as HTMLElement)
+      .getByRole('button', { name: 'history.deleteSession' });
+    expect(deleteButton('Second session').hasAttribute('disabled')).toBe(true);
+
+    rerender(<HistoryView {...actions} historyData={data} currentSessionBusy={false} />);
+
+    expect(deleteButton('Second session').hasAttribute('disabled')).toBe(false);
+    expect(deleteButton('First session').hasAttribute('disabled')).toBe(true);
   });
 });
 
