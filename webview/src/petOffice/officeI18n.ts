@@ -1,4 +1,5 @@
 import i18n from '../i18n/config';
+import { officeGroupsEn, officeGroupsZh } from './officeGroupsI18n';
 
 const en = {
   title: 'Pet Office', subtitle: 'One room. Many conversations.', prototype: 'Prototype · simulated sessions',
@@ -146,6 +147,6 @@ const presentationZh = {
   reducedMotionHint: '系统已启用“减少动态效果”，动画保持暂停，任务状态和会话跳转仍可使用。',
   presentationStorageError: '动态设置暂时无法保存，请重新调整以重试。',
 };
-i18n.addResourceBundle('en', 'petOffice', { ...en, ...liveEn, ...presentationEn, phase: { ...en.phase, IDLE: 'Idle' } });
-i18n.addResourceBundle('zh', 'petOffice', { ...zh, ...liveZh, ...presentationZh, phase: { ...zh.phase, IDLE: '空闲' } });
+i18n.addResourceBundle('en', 'petOffice', { ...en, ...liveEn, ...presentationEn, ...officeGroupsEn, phase: { ...en.phase, IDLE: 'Idle' } });
+i18n.addResourceBundle('zh', 'petOffice', { ...zh, ...liveZh, ...presentationZh, ...officeGroupsZh, phase: { ...zh.phase, IDLE: '空闲' } });
 export default i18n;

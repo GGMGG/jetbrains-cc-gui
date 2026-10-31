@@ -14,7 +14,7 @@ import { OfficeSceneReceiver } from './officeSceneReceiver';
 import { OfficeLiveAssetPool } from './officeLiveAssets';
 import { OfficeBackgroundManager } from './officeBackgrounds';
 import type { OfficeBackgroundState } from './officeBackgrounds';
-import { OfficeSeatAllocator, presentSource } from './officeLiveModel';
+import { presentSource } from './officeLiveModel';
 import type { LiveScene, LiveSource } from './officeLiveModel';
 import { filterOfficeSources, OFFICE_FLOOR_CAPACITY, officeFloorSources, phaseColor } from './officeModel';
 import { drawOfficeScene, hitTestOffice, officeSceneHeight, OFFICE_SCENE_WIDTH } from './officeRenderer';
@@ -49,6 +49,11 @@ import type { OfficePresentationPreferences, OfficeUiPalette } from './officePre
 import { OfficeWindowScenery } from './officeWindowScenery';
 import { OfficeEmployeeNameControl } from './OfficeEmployeeNameControl';
 import type { OfficeEmployeeNames } from './officeEmployeeNames';
+import { assignOfficeGroup, emptyOfficeOrganization, officeSourceGroup, parseOfficeOrganization, prepareOfficeSeatMove, seatOfficeSources, swapOfficeSeats } from './officeGroups';
+import type { OfficeOrganization, OfficeSeatMemory } from './officeGroups';
+import { OfficeGroupNavigation, OfficeWorkstationGroupControls } from './OfficeGroupControls';
+import { OfficeGroupsDialog } from './OfficeGroupsDialog';
+import { officeSeatAtPoint } from './officeRenderer';
 
 interface SceneState { scene: LiveScene; receivedAt: number }
 /** Dedicated local scene. It never imports the chat Webview or exposes task/approval commands. */
@@ -71,6 +76,13 @@ export function LiveOffice() {
   const nativeStorageRef = useRef<OfficeNativeStorage | null>(null);
   const [appearanceOverrides, setAppearanceOverrides] = useState<OfficeAppearanceOverrides>(() => initial?.appearanceOverrides ?? {});
   const [employeeNames, setEmployeeNames] = useState<OfficeEmployeeNames>(() => initial?.employeeNames ?? {});
+  const [organization, setOrganization] = useState<OfficeOrganization>(() => initial?.organization ?? emptyOfficeOrganization());
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [groupError, setGroupError] = useState('');
+  const dragRef = useRef<{ key: string; x: number; y: number; room: string; floor: number; dragging: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const dragGhostRef = useRef<HTMLDivElement>(null);
+  const [dragPosition, setDragPosition] = useState<{ x: number; y: number; name: string } | null>(null);
   const [petChoices, setPetChoices] = useState<OfficePetChoice[]>([{ id: 'builtin', label: 'Built-in robot' }]);
   const [choicesLoading, setChoicesLoading] = useState(false);
   const [choicesError, setChoicesError] = useState(false);
@@ -82,7 +94,7 @@ export function LiveOffice() {
   const [product, setProduct] = useState(initial?.product ?? 'all');
   const [search, setSearch] = useState(initial?.search ?? '');
   const [floor, setFloor] = useState(initial?.floor ?? 0);
-  const [focusDesks, setFocusDesks] = useState(true);
+  const [focusDesks, setFocusDesks] = useState(!initial?.organization.activeGroup);
   const [zoom, setZoom] = useState(initial?.zoom ?? 100);
   const [selected, setSelected] = useState<string | null>(null);
   const { preview, inspect: inspectDesk, dismiss: dismissDesk } = useOfficeDeskHover();
@@ -126,28 +138,33 @@ export function LiveOffice() {
   const poolRef = useRef<OfficeLiveAssetPool | null>(null);
   const backgroundRef = useRef<OfficeBackgroundManager | null>(null);
   const backgroundInput = useRef<HTMLInputElement>(null);
+  const backgroundPickerScope = useRef<{ room: string; floor: number } | null>(null);
   const clockRef = useRef<OfficeAnimationClock | null>(null);
   const hitsRef = useRef<OfficeHitRegion[]>([]);
-  const allocator = useRef(new OfficeSeatAllocator());
+  const allocator = useRef<OfficeSeatMemory>(new Map());
   const nativeRef = useRef(false);
   const pausedRef = useRef(paused || reducedMotion);
   const reducedMotionRef = useRef(reducedMotion);
   const sceneRef = useRef<{ visible: LiveSource[]; selected: string | null; registered: number; stale: boolean; theme: OfficeThemeId; height: number; camera?: OfficeCamera; vectorTheme?: OfficeThemeId;
     presentation: OfficePresentationPreferences; palette: OfficeUiPalette; motion: boolean; transitionContext: string;
-    marginEffects: OfficeMarginPreferences; marginLayout: OfficeMarginLayout; reducedMotion: boolean; employeeNames: OfficeEmployeeNames }>({ visible: [], selected: null, registered: 0, stale: true, theme: 'loft', height: officeSceneHeight([]), presentation, palette: OFFICE_CUSTOM_UI, motion: false, transitionContext: '', marginEffects, marginLayout: officeMarginLayout(0, 0, 0, 1), reducedMotion, employeeNames });
+    marginEffects: OfficeMarginPreferences; marginLayout: OfficeMarginLayout; reducedMotion: boolean; employeeNames: OfficeEmployeeNames; groupBadges: Record<string, string> }>({ visible: [], selected: null, registered: 0, stale: true, theme: 'loft', height: officeSceneHeight([]), presentation, palette: OFFICE_CUSTOM_UI, motion: false, transitionContext: '', marginEffects, marginLayout: officeMarginLayout(0, 0, 0, 1), reducedMotion, employeeNames, groupBadges: {} });
   const pendingNavigation = useRef<{ id: string; startedAt: number; sourceKey: string } | null>(null);
   const stale = !snapshot || now - snapshot.receivedAt >= 15_000;
   const sources = useMemo(() => snapshot?.scene.sources.map(source => presentSource(source, Math.max(0, now - snapshot.receivedAt), stale)) ?? [], [snapshot, now, stale]);
-  const seated = useMemo(() => allocator.current.assign(sources, showIdle), [sources, showIdle]);
-  const filtered = useMemo(() => filterOfficeSources(seated, product, search, employeeNames) as LiveSource[], [seated, product, search, employeeNames]);
-  const floors = Math.max(1, Math.ceil((Math.max(-1, ...seated.map(source => source.seat)) + 1) / OFFICE_FLOOR_CAPACITY));
-  const currentFloor = Math.min(floor, floors - 1);
+  const seated = useMemo(() => seatOfficeSources(sources, organization, allocator.current), [sources, organization]);
+  const activeGroup = organization.groups.find(group => group.id === organization.activeGroup);
+  const roomSources = useMemo(() => seated.filter(source => source.officeGroup === organization.activeGroup), [seated, organization.activeGroup]);
+  const filtered = useMemo(() => filterOfficeSources(roomSources.filter(source => showIdle || source.phase !== 'IDLE'), product, search, employeeNames) as LiveSource[], [roomSources, showIdle, product, search, employeeNames]);
+  const floors = activeGroup ? 1 : Math.max(1, Math.ceil((Math.max(-1, ...roomSources.map(source => source.seat)) + 1) / OFFICE_FLOOR_CAPACITY));
+  const currentFloor = activeGroup ? 0 : Math.min(floor, floors - 1);
+  const backgroundScopeRef = useRef({ room: organization.activeGroup, floor: currentFloor });
+  backgroundScopeRef.current = { room: organization.activeGroup, floor: currentFloor };
   const currentTheme = themePreferences.floors[currentFloor] ?? 'loft';
   const visible = useMemo(() => officeFloorSources(filtered, currentFloor) as LiveSource[], [filtered, currentFloor]);
-  const currentSource = sources.find(source => source.sourceKey === selected);
-  const previewSource = !stale && nativeVisible && !settingsOpen && !diagnosticsOpen ? visible.find(source => source.sourceKey === preview?.sourceKey) : undefined;
+  const currentSource = seated.find(source => source.sourceKey === selected);
+  const previewSource = !stale && nativeVisible && !settingsOpen && !diagnosticsOpen && !groupsOpen && !dragPosition ? visible.find(source => source.sourceKey === preview?.sourceKey) : undefined;
   const selectedSeat = visible.find(source => source.sourceKey === selected)?.seat;
-  const height = officeSceneHeight(visible, !background.custom);
+  const height = officeSceneHeight(visible, !!activeGroup || !background.custom);
   const viewport = useOfficeViewport(viewportRef);
   const vectorTheme = background.custom ? undefined : currentTheme;
   const camera = vectorTheme ? officeArtCamera(visible, vectorTheme, viewport.width / viewport.height, focusDesks, selected)
@@ -159,13 +176,16 @@ export function LiveOffice() {
   const palette = background.custom ? OFFICE_CUSTOM_UI : OFFICE_UI_PALETTES[currentTheme];
   const canAnimate = nativeVisible && !paused && !reducedMotion && !stale;
   const motion = canAnimate && (visible.length > 0 || transitionPending);
-  const transitionContext = JSON.stringify([snapshot?.scene.instanceId, snapshot?.scene.connectionEpoch, currentFloor, vectorTheme, product, search, showIdle]);
+  const transitionContext = JSON.stringify([snapshot?.scene.instanceId, snapshot?.scene.connectionEpoch, organization.activeGroup, currentFloor, vectorTheme, product, search, showIdle]);
   const attention = feedbackRef.current.attention(now, presentation.attention && !stale, false);
   nativeRef.current = nativeVisible;
   pausedRef.current = paused || reducedMotion;
   reducedMotionRef.current = reducedMotion;
   feedbackLabelsRef.current = { SUCCEEDED: t('phase.SUCCEEDED'), FAILED: t('phase.FAILED'), CANCELLED: t('phase.CANCELLED'), WAITING_USER: t('needsAttention') };
-  sceneRef.current = { visible, selected, registered: sources.length, stale, theme: currentTheme, height, camera, vectorTheme, presentation, palette, motion, transitionContext, marginEffects, marginLayout, reducedMotion, employeeNames };
+  const groupBadges = useMemo(() => Object.fromEntries(seated.flatMap(source => {
+    const group = organization.groups.find(group => group.id === source.officeGroup); return group ? [[source.sourceKey, [...group.name][0]]] : [];
+  })), [seated, organization.groups]);
+  sceneRef.current = { visible, selected, registered: sources.length, stale, theme: currentTheme, height, camera, vectorTheme, presentation, palette, motion, transitionContext, marginEffects, marginLayout, reducedMotion, employeeNames, groupBadges };
 
   const paint = useCallback((time: number) => {
     const state = sceneRef.current;
@@ -198,7 +218,7 @@ export function LiveOffice() {
       return { ...actor, frame: actor?.frame ?? (() => null), motion: actorMotions.get(live.sourceKey) };
     }, backgroundRef.current?.visual(), state.theme, state.height, view, state.vectorTheme,
     { palette: state.palette, ambience: state.presentation.ambience, effectTime: time, effects, attention,
-      employeeNames: state.employeeNames, nameplateMotion: moving });
+      employeeNames: state.employeeNames, nameplateMotion: moving, groupBadges: state.groupBadges });
     feedbackLayerRef.current.sync(feedbackRootRef.current, effects, hitsRef.current, view, time, feedbackLabelsRef.current);
   }, []);
 
@@ -227,7 +247,9 @@ export function LiveOffice() {
         if (apply) {
           const p = state.preferences;
           setShowIdle(p.showIdle); setProduct(p.product); setSearch(p.search); setFloor(p.floor); setPaused(p.paused); setPinned(p.topmost); setZoom(p.zoom);
-          setPresentation(p.presentation); setAppearanceOverrides(p.appearanceOverrides); setEmployeeNames(p.employeeNames);
+          setPresentation(p.presentation); setAppearanceOverrides(p.appearanceOverrides);
+          setEmployeeNames(p.employeeNames);
+          setOrganization(p.organization);
           setOfficeNamePreferences({ name: p.officeName, error: false }); setOfficeNameDraft(p.officeName);
           setThemePreferences({ floors: p.floors, error: false }); setCachePreferences({ limitMiB: p.limitMiB, error: false }); setCacheDraft(p.limitMiB);
           cacheBudgetRef.current = p.limitMiB * OFFICE_MIB;
@@ -287,11 +309,20 @@ export function LiveOffice() {
     };
   }, [paint, sharedInitial]);
 
-  const preferences = useMemo(() => ({ officeName, limitMiB: cachePreferences.limitMiB, floors: themePreferences.floors, floor, product, search, showIdle, paused, topmost: pinned, zoom, presentation, appearanceOverrides, employeeNames }),
-    [officeName, cachePreferences.limitMiB, themePreferences.floors, floor, product, search, showIdle, paused, pinned, zoom, presentation, appearanceOverrides, employeeNames]);
+  const preferences = useMemo(() => ({ officeName, limitMiB: cachePreferences.limitMiB, floors: themePreferences.floors, floor, product, search, showIdle, paused, topmost: pinned, zoom, presentation, appearanceOverrides, employeeNames, organization }),
+    [officeName, cachePreferences.limitMiB, themePreferences.floors, floor, product, search, showIdle, paused, pinned, zoom, presentation, appearanceOverrides, employeeNames, organization]);
   useEffect(() => {
     try { sharedRef.current?.save(preferences); } catch { setSharedError(true); }
   }, [preferences]);
+  const changeOrganization = (next: OfficeOrganization) => {
+    if (!sharedInitial || !sharedRef.current) return;
+    const normalized = parseOfficeOrganization(next);
+    parseOfficeSharedState({ ...sharedInitial, preferences: { ...preferences, organization: normalized } });
+    setOrganization(normalized); setGroupError('');
+  };
+  useEffect(() => {
+    if (selected && currentSource?.officeGroup !== organization.activeGroup) { setSelected(null); setNavigation(''); }
+  }, [selected, currentSource?.officeGroup, organization.activeGroup]);
 
   useEffect(() => { document.title = officeTitle; }, [officeTitle]);
 
@@ -335,8 +366,17 @@ export function LiveOffice() {
     finally { if (sharedRef.current === controller) setPresentationPending(false); }
   };
 
+  const importBackground = async (file: File) => {
+    const scope = backgroundPickerScope.current ?? backgroundScopeRef.current;
+    backgroundPickerScope.current = null;
+    const manager = backgroundRef.current;
+    if (!scope || !manager) return;
+    const current = backgroundScopeRef.current;
+    if (current.room === scope.room && current.floor === scope.floor) manager.import(file);
+  };
+
   useEffect(() => { backgroundRef.current?.show(currentFloor); }, [currentFloor]);
-  useEffect(() => { dismissDesk(); }, [currentFloor, currentTheme, search, product, nativeVisible, stale, settingsOpen, diagnosticsOpen, dismissDesk]);
+  useEffect(() => { dismissDesk(); dragRef.current = null; setDragPosition(null); }, [currentFloor, organization.activeGroup, currentTheme, search, product, nativeVisible, stale, settingsOpen, diagnosticsOpen, groupsOpen, dismissDesk]);
   useEffect(() => { if (preview && !previewSource) dismissDesk(); }, [preview?.sourceKey, previewSource?.sourceKey, dismissDesk]);
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -381,8 +421,8 @@ export function LiveOffice() {
     scenery.bind(surfaceRef.current?.querySelector<SVGSVGElement>('.office-vector-environment') ?? null, vectorTheme);
     feedbackRef.current.clearEffects(); feedbackLayerRef.current.clear();
     return () => scenery.dispose();
-  }, [vectorTheme, currentFloor]);
-  useEffect(() => { if (nativeVisible && document.visibilityState === 'visible') paint(performance.now()); }, [visible, selected, assetVersion, currentTheme, nativeVisible, camera.x, camera.y, camera.width, camera.height, presentation, reducedMotion, marginEffects, viewport.width, viewport.height, fitWidth, zoom, paint]);
+  }, [vectorTheme, currentFloor, organization.activeGroup]);
+  useEffect(() => { if (nativeVisible && document.visibilityState === 'visible') paint(performance.now()); }, [visible, selected, assetVersion, currentTheme, nativeVisible, camera.x, camera.y, camera.width, camera.height, presentation, reducedMotion, marginEffects, employeeNames, groupBadges, viewport.width, viewport.height, fitWidth, zoom, paint]);
   useEffect(() => {
     const viewport = viewportRef.current, surface = surfaceRef.current;
     if (!viewport || !surface || selectedSeat === undefined || !focusDesks || !vectorTheme) return;
@@ -402,8 +442,30 @@ export function LiveOffice() {
   }, [paint]);
 
   const selectSource = (key: string) => {
-    const source = seated.find(source => source.sourceKey === key); if (source) setFloor(Math.floor(source.seat / OFFICE_FLOOR_CAPACITY));
+    const source = seated.find(source => source.sourceKey === key);
+    if (source) {
+      const group = source.officeGroup;
+      if (group !== organization.activeGroup) changeOrganization({ ...organization, activeGroup: group });
+      if (!group) setFloor(Math.floor(source.seat / OFFICE_FLOOR_CAPACITY));
+    }
     setSelected(key); setNavigation('');
+  };
+  const enterGroup = (id: string) => {
+    try { changeOrganization({ ...organization, activeGroup: id }); setSelected(null); setNavigation(''); if (id) setFocusDesks(false); }
+    catch (error) { setGroupError(error instanceof Error ? error.message : 'groupsInvalid'); }
+  };
+  const swapSeat = (key: string, seat: number) => {
+    if (stale || presentationPending) return;
+    try {
+      if (seated.find(source => source.sourceKey === key)?.officeGroup !== organization.activeGroup) throw new Error('groupSwapRestricted');
+      const next = swapOfficeSeats(organization, key, { seat }, seated);
+      if (next === organization) return;
+      changeOrganization(next);
+      const other = seated.find(source => source.officeGroup === organization.activeGroup && source.seat === seat);
+      prepareOfficeSeatMove(allocator.current, organization, next, [key, ...(other ? [other.sourceKey] : [])]);
+      if (!organization.activeGroup) setFloor(Math.floor(seat / OFFICE_FLOOR_CAPACITY));
+      setSelected(key);
+    } catch (error) { setGroupError(error instanceof Error ? error.message : 'groupsInvalid'); }
   };
   const navigate = (source: LiveSource | undefined, interaction: boolean) => {
     if (!source || stale || pendingNavigation.current || source.routeStatus !== 'AVAILABLE') return;
@@ -465,7 +527,10 @@ export function LiveOffice() {
         </Popover>
       </div>
       {sharedError ? <p className="office-warning" role="alert">{t('sharedPreferencesError')}</p> : null}
-      <div className="office-workspace"><section className="office-scene-panel"><header className="office-scene-header" onFocusCapture={event => {
+      {groupError ? <p className="office-warning" role="alert">{t(groupError, { defaultValue: t('groupsInvalid') })}</p> : null}
+      <div className="office-workspace"><section className="office-scene-panel">
+        {sharedInitial ? <OfficeGroupNavigation organization={organization} sources={seated} onEnter={enterGroup} onManage={() => setGroupsOpen(true)} /> : null}
+        <header className="office-scene-header" onFocusCapture={event => {
         if (!(event.target instanceof HTMLElement)) return;
         const header = event.currentTarget, control = event.target.closest<HTMLElement>('.ant-btn, .ant-select');
         if (!control || !header.contains(control)) return;
@@ -476,13 +541,13 @@ export function LiveOffice() {
       }}><div className="office-floor-toolbar">
         <div className="office-background-toolbar" title={background.custom ? t('customBackground') : t('themeBackground', { theme: t(`themes.${currentTheme}`) })}>
           <Select<OfficeThemeId> size="small" virtual={false} listHeight={320} popupMatchSelectWidth={240} aria-label={t('sceneTheme')} value={currentTheme} options={OFFICE_THEME_IDS.map(value => ({ value, label: t(`themes.${value}`) }))} onChange={changeTheme} />
-          <div className="office-background-actions"><Button size="small" className={background.custom ? 'has-custom-background' : undefined} aria-label={t('chooseBackground')} title={t('chooseBackground')} loading={background.busy} onClick={() => backgroundInput.current?.click()} icon={<svg aria-hidden="true" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2" /><circle cx="7" cy="7.5" r="1.3" /><path d="m3 15 4-4 3 2 3-5 4 7" /></svg>} /><Button size="small" aria-label={t('resetBackground')} title={t('resetBackground')} disabled={background.busy || !background.custom && !background.error} onClick={() => backgroundRef.current?.reset()} icon={<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 7a6.5 6.5 0 1 1-.2 5M4 3v4h4" /></svg>} /></div>
-          <input ref={backgroundInput} type="file" accept=".png,.jpg,.jpeg,.webp" aria-label={t('chooseBackground')} hidden onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) backgroundRef.current?.import(file); }} />
+          <div className="office-background-actions"><Button size="small" className={background.custom ? 'has-custom-background' : undefined} aria-label={t('chooseBackground')} title={t('chooseBackground')} loading={background.busy} onClick={() => { backgroundPickerScope.current = { room: organization.activeGroup, floor: currentFloor }; backgroundInput.current?.click(); }} icon={<svg aria-hidden="true" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2" /><circle cx="7" cy="7.5" r="1.3" /><path d="m3 15 4-4 3 2 3-5 4 7" /></svg>} /><Button size="small" aria-label={t('resetBackground')} title={t('resetBackground')} disabled={background.busy || !background.custom && !background.error} onClick={() => backgroundRef.current?.reset()} icon={<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 7a6.5 6.5 0 1 1-.2 5M4 3v4h4" /></svg>} /></div>
+          <input ref={backgroundInput} type="file" accept=".png,.jpg,.jpeg,.webp" aria-label={t('chooseBackground')} hidden onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importBackground(file).catch(() => setSharedError(true)); }} />
         </div>
         <div className="office-floor-navigation">
-          <Button size="small" aria-label={t('previous')} title={t('previous')} disabled={currentFloor === 0} onClick={() => setFloor(currentFloor - 1)}>‹</Button>
-          <span className="office-floor-label">{t('floor', { current: currentFloor + 1, total: floors })}</span>
-          <Button size="small" aria-label={t('next')} title={t('next')} disabled={currentFloor >= floors - 1} onClick={() => setFloor(currentFloor + 1)}>›</Button>
+          {!activeGroup ? <Button size="small" aria-label={t('previous')} title={t('previous')} disabled={currentFloor === 0} onClick={() => setFloor(currentFloor - 1)}>‹</Button> : null}
+          <span className="office-floor-label">{activeGroup ? t('groupCapacity', { count: roomSources.length }) : t('floor', { current: currentFloor + 1, total: floors })}</span>
+          {!activeGroup ? <Button size="small" aria-label={t('next')} title={t('next')} disabled={currentFloor >= floors - 1} onClick={() => setFloor(currentFloor + 1)}>›</Button> : null}
         </div>
         <div className="office-scene-actions"><div className="office-view-controls"><Button size="small" className="office-focus-button" aria-pressed={focusDesks} disabled={background.custom} onClick={() => setFocusDesks(value => !value)} title={t('focusHint')}>{t('focusDesks')}</Button><OfficeZoomControl zoom={zoom} onChange={setZoom} compact /></div>
         <OfficeEffectsControl value={marginEffects} error={marginEffectsError} onChange={changeMarginEffects} />
@@ -494,16 +559,46 @@ export function LiveOffice() {
           <div className="office-margin-effects" aria-hidden="true"><canvas className="office-margin-effect is-left" ref={marginLeftRef} width={1} height={1} /><canvas className="office-margin-effect is-right" ref={marginRightRef} width={1} height={1} /></div>
         <div ref={viewportRef} className="office-canvas-wrap"><div ref={surfaceRef} className="office-scene-surface" style={{ width: `${Math.max(1, Math.round(fitWidth * zoom / 100))}px` }}>{vectorTheme ? <OfficeVectorScene theme={vectorTheme} viewBox={viewBox} /> : null}<canvas ref={canvasRef} width={OFFICE_SCENE_WIDTH} height={height} style={{ aspectRatio: `${camera.width} / ${camera.height}` }} aria-label={t('title')}
           onPointerMove={event => {
+            const drag = dragRef.current;
+            if (drag) {
+              const alreadyDragging = drag.dragging;
+              if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) >= 8) drag.dragging = true;
+              if (drag.dragging) {
+                dismissDesk();
+                const x = Math.max(8, Math.min(event.clientX + 12, innerWidth - 252)), y = Math.max(8, Math.min(event.clientY + 12, innerHeight - 72));
+                if (!alreadyDragging) setDragPosition({ x, y, name: employeeNames[drag.key] || seated.find(source => source.sourceKey === drag.key)?.tabLabel || '' });
+                if (dragGhostRef.current) { dragGhostRef.current.style.left = `${x}px`; dragGhostRef.current.style.top = `${y}px`; }
+              }
+              return;
+            }
             if (event.pointerType === 'touch') return;
             const bounds = event.currentTarget.getBoundingClientRect();
             const point = officeCameraPoint(paintedCameraRef.current ?? camera, event.clientX - bounds.left, event.clientY - bounds.top, bounds.width, bounds.height);
             inspectDesk(!stale ? hitTestOffice(hitsRef.current, point.x, point.y) : null, event.clientX, event.clientY);
-          }} onPointerDown={dismissDesk} onPointerLeave={dismissDesk} onClick={event => {
+          }} onPointerDown={event => {
+            dismissDesk(); suppressClickRef.current = false;
+            if (!sharedInitial || stale || presentationPending || event.button !== 0 || event.pointerType === 'touch') return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const point = officeCameraPoint(paintedCameraRef.current ?? camera, event.clientX - bounds.left, event.clientY - bounds.top, bounds.width, bounds.height);
+            const key = hitTestOffice(hitsRef.current, point.x, point.y); if (!key) return;
+            dragRef.current = { key, x: event.clientX, y: event.clientY, room: organization.activeGroup, floor: currentFloor, dragging: false };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }} onPointerUp={event => {
+            const drag = dragRef.current; dragRef.current = null; setDragPosition(null);
+            if (!drag?.dragging) return;
+            suppressClickRef.current = true;
+            if (drag.room !== organization.activeGroup || drag.floor !== currentFloor) { setGroupError('groupSwapCancelled'); return; }
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const point = officeCameraPoint(paintedCameraRef.current ?? camera, event.clientX - bounds.left, event.clientY - bounds.top, bounds.width, bounds.height);
+            const seat = officeSeatAtPoint(point.x, point.y, vectorTheme, height);
+            if (seat !== null) swapSeat(drag.key, seat + (activeGroup ? 0 : currentFloor * OFFICE_FLOOR_CAPACITY));
+          }} onPointerCancel={() => { dragRef.current = null; setDragPosition(null); }} onLostPointerCapture={() => { dragRef.current = null; setDragPosition(null); }} onPointerLeave={dismissDesk} onClick={event => {
+          if (suppressClickRef.current) { suppressClickRef.current = false; return; }
           const bounds = event.currentTarget.getBoundingClientRect(); const point = officeCameraPoint(paintedCameraRef.current ?? camera, event.clientX - bounds.left, event.clientY - bounds.top, bounds.width, bounds.height); const hit = hitTestOffice(hitsRef.current, point.x, point.y); if (hit) selectSource(hit);
-        }} />{vectorTheme ? <OfficeVectorScene theme={vectorTheme} viewBox={viewBox} foreground /> : null}<div ref={feedbackRootRef} className="office-feedback-layer" aria-hidden="true" />{!visible.length && !transitionPending ? <div className="office-scene-empty">{t(!snapshot ? 'syncPending' : seated.length ? 'noMatches' : 'noSessions')}</div> : null}</div></div>
+        }} />{vectorTheme ? <OfficeVectorScene theme={vectorTheme} viewBox={viewBox} foreground /> : null}<div ref={feedbackRootRef} className="office-feedback-layer" aria-hidden="true" />{!visible.length && !transitionPending ? <div className="office-scene-empty">{t(!snapshot ? 'syncPending' : activeGroup ? 'groupRoomEmpty' : seated.length ? 'noMatches' : 'noSessions')}</div> : null}</div></div>
         </div>
-      </section><aside className="office-sidebar"><div className="office-list-heading"><h2>{t('sessionList')}</h2><span>{filtered.length} / {sources.length}</span></div>
-        <div className="office-summary"><span>{t('running')} {sources.filter(source => source.phase === 'RUNNING' || source.phase === 'THINKING').length}</span><span>{t('waiting')} {sources.filter(source => source.phase === 'WAITING_USER').length}</span>
+      </section><aside className="office-sidebar"><div className="office-list-heading"><h2>{activeGroup?.name ?? t('sessionList')}</h2><span>{filtered.length} / {roomSources.length}</span></div>
+        <div className="office-summary"><span>{t('running')} {roomSources.filter(source => source.phase === 'RUNNING' || source.phase === 'THINKING').length}</span><span>{t('waiting')} {roomSources.filter(source => source.phase === 'WAITING_USER').length}</span>
           <Popover content={t('sessionGesture')} trigger={['hover', 'focus', 'click']} placement="left">
             <button type="button" className="office-session-help" aria-label={t('sessionGesture')}><svg aria-hidden="true" focusable="false" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" /><path d="M10 9v5M10 6v.5" /></svg></button>
           </Popover></div>
@@ -517,11 +612,25 @@ export function LiveOffice() {
             {sharedInitial ? <OfficeAppearanceControl value={appearanceOverrides[currentSource.sourceKey]} choices={petChoices} loading={choicesLoading} error={choicesError} disabled={stale || presentationPending} onChange={changeAppearance} onRefresh={() => { void loadPetChoices(); receiverRef.current?.resync(); poolRef.current?.retry(); }} /> : null}
             {sharedInitial ? <OfficeEmployeeNameControl key={currentSource.sourceKey} value={employeeNames[currentSource.sourceKey] ?? ''} fallback={currentSource.tabLabel}
               disabled={stale || presentationPending} onChange={changeEmployeeName} /> : null}
+            {sharedInitial ? <OfficeWorkstationGroupControls organization={organization} sources={seated}
+              source={currentSource} names={employeeNames} disabled={stale || presentationPending}
+              onAssign={group => {
+                try {
+                  const next = assignOfficeGroup(organization, [currentSource.sourceKey], group, seated);
+                  changeOrganization({ ...next, activeGroup: group });
+                  if (!group) setFloor(Math.floor((next.placements[currentSource.sourceKey]?.seat ?? 0) / OFFICE_FLOOR_CAPACITY));
+                  else setFocusDesks(false);
+                }
+                catch (error) { setGroupError(error instanceof Error ? error.message : 'groupsInvalid'); }
+              }} onSwap={seat => swapSeat(currentSource.sourceKey, seat)} /> : null}
             {currentSource.routeStatus !== 'AVAILABLE' ? <small>{t(`route.${currentSource.routeStatus}`)}</small> : null}</> : <p>{t('selectHint')}</p>}
           {navPending && pendingNavigation.current?.sourceKey === selected ? <p>{t('openingTab')}</p> : navigation ? <p>{t(`navigation.${navigation}`)}</p> : null}</div>
-        <OfficeRecentResults results={snapshot?.scene.recentResults ?? []} sources={sources} names={employeeNames} product={product} search={search} stale={stale} pending={navPending} onOpen={source => { selectSource(source.sourceKey); navigate(source, false); }} />
+        <OfficeRecentResults results={snapshot?.scene.recentResults.filter(result => (seated.find(source => source.sourceKey === result.sourceKey)?.officeGroup ?? officeSourceGroup(organization, result.sourceKey)) === organization.activeGroup) ?? []} sources={sources} names={employeeNames} product={product} search={search} stale={stale} pending={navPending} onOpen={source => { selectSource(source.sourceKey); navigate(source, false); }} />
       </aside></div>
       {preview && previewSource ? <OfficeDeskPreview source={previewSource} anchor={preview} /> : null}
+      {dragPosition ? <div ref={dragGhostRef} className="office-seat-drag" role="status" style={{ left: dragPosition.x, top: dragPosition.y }}><strong>{dragPosition.name}</strong><small>{t('groupDragHint')}</small></div> : null}
+      {groupsOpen ? <OfficeGroupsDialog organization={organization} sources={seated} names={employeeNames}
+        stale={stale} disabled={presentationPending} onChange={changeOrganization} onClose={() => setGroupsOpen(false)} /> : null}
       <OfficeSettings open={settingsOpen} onClose={() => setSettingsOpen(false)}
         officeName={{ value: officeName, draft: officeNameDraft, error: officeNamePreferences.error, valid: validOfficeName, onDraft: setOfficeNameDraft, onApply: applyOfficeName }}
         cache={{ limitMiB: cachePreferences.limitMiB, draft: cacheDraft, error: cachePreferences.error, busy: background.busy, onDraft: setCacheDraft, onApply: applyCacheLimit }}

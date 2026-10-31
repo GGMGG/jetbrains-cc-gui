@@ -12,11 +12,14 @@ import type { OfficeAppearanceOverrides } from './officeAppearanceOverrides';
 import { parseOfficeName } from './officeName';
 import { parseOfficeEmployeeNames } from './officeEmployeeNames';
 import type { OfficeEmployeeNames } from './officeEmployeeNames';
+import { emptyOfficeOrganization, parseOfficeOrganization } from './officeGroups';
+import type { OfficeOrganization } from './officeGroups';
 import { officePreferenceBytes } from './officePreferenceBudget';
 
 export interface OfficeSharedPreferences {
   officeName: string; limitMiB: number; floors: OfficeThemeId[]; floor: number; product: string; search: string;
   showIdle: boolean; paused: boolean; topmost: boolean; zoom: number; presentation: OfficePresentationPreferences; appearanceOverrides: OfficeAppearanceOverrides; employeeNames: OfficeEmployeeNames;
+  organization: OfficeOrganization;
 }
 export interface OfficeSharedState {
   schemaVersion: 1; revision: string; preferences: OfficeSharedPreferences;
@@ -28,7 +31,8 @@ export function parseOfficeSharedState(raw: unknown): OfficeSharedState {
   const value = object(raw); keys(value, ['schemaVersion', 'revision', 'preferences', 'bounds']);
   if (value.schemaVersion !== 1 || !/^(initial|[a-f0-9-]{36})$/.test(text(value.revision, 64))) throw new Error('sharedPreferencesError');
   const p = object(value.preferences);
-  keys(p, ['limitMiB', 'floors', 'floor', 'product', 'search', 'showIdle', 'paused', 'topmost', 'zoom', ...('presentation' in p ? ['presentation'] : []), ...('appearanceOverrides' in p ? ['appearanceOverrides'] : []), ...('officeName' in p ? ['officeName'] : []), ...('employeeNames' in p ? ['employeeNames'] : [])]);
+  keys(p, ['limitMiB', 'floors', 'floor', 'product', 'search', 'showIdle', 'paused', 'topmost', 'zoom', ...('presentation' in p ? ['presentation'] : []), ...('appearanceOverrides' in p ? ['appearanceOverrides'] : []), ...('officeName' in p ? ['officeName'] : []), ...('employeeNames' in p ? ['employeeNames'] : []), ...('organization' in p ? ['organization'] : [])]);
+  const organization = 'organization' in p ? parseOfficeOrganization(p.organization) : emptyOfficeOrganization();
   const officeName = 'officeName' in p ? parseOfficeName(p.officeName) : '';
   const presentation = 'presentation' in p ? parseOfficePresentation(p.presentation) : { ...OFFICE_PRESENTATION_DEFAULTS };
   const appearanceOverrides = 'appearanceOverrides' in p ? parseOfficeAppearanceOverrides(p.appearanceOverrides) : {};
@@ -43,7 +47,7 @@ export function parseOfficeSharedState(raw: unknown): OfficeSharedState {
   for (const name of ['x', 'y'] as const) if (typeof b[name] !== 'number' || !Number.isSafeInteger(b[name]) || Math.abs(b[name]) > 32768) throw new Error('sharedPreferencesError');
   if (integer(b.width, 7680) < 320 || integer(b.height, 4320) < 320 || typeof b.placed !== 'boolean') throw new Error('sharedPreferencesError');
   const preferences: OfficeSharedPreferences = { officeName, limitMiB: p.limitMiB, floors, floor: integer(p.floor, OFFICE_MAX_FLOORS - 1), product: text(p.product, 160), search: text(p.search, 160),
-    showIdle: p.showIdle, paused: p.paused, topmost: p.topmost, zoom: p.zoom as number, presentation, appearanceOverrides, employeeNames };
+    showIdle: p.showIdle, paused: p.paused, topmost: p.topmost, zoom: p.zoom as number, presentation, appearanceOverrides, employeeNames, organization };
   if (officePreferenceBytes(preferences) > 48000) throw new Error('groupsStorageFull');
   return { schemaVersion: 1, revision: value.revision as string, preferences,
     bounds: { x: b.x as number, y: b.y as number, width: b.width as number, height: b.height as number, placed: b.placed } };

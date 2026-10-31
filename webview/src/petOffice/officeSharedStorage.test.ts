@@ -9,7 +9,7 @@ import { OFFICE_MAX_FLOORS } from './officeModel';
 const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 function state(revision = 'initial'): OfficeSharedState {
   return { schemaVersion: 1, revision, preferences: { officeName: '', limitMiB: 50, floors: Array.from({ length: OFFICE_MAX_FLOORS }, () => OFFICE_THEME_IDS[0]),
-    floor: 0, product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: false }, appearanceOverrides: {}, employeeNames: {} },
+    floor: 0, product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: false }, appearanceOverrides: {}, employeeNames: {}, organization: { groups: [], placements: {}, activeGroup: '' } },
   bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
 }
 function id(index: number): string { return `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`; }
@@ -28,6 +28,16 @@ function native() {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); delete window.petOfficeStorageResult; });
 
 describe('shared native Office storage', () => {
+  it('migrates older preferences without rooms and round-trips the active room and desk assignments', () => {
+    const original = state(), { organization: _ignored, ...legacy } = original.preferences;
+    expect(parseOfficeSharedState({ ...original, preferences: legacy })).toEqual(original);
+    const organization = { groups: [{ id: 'alpha', name: 'Alpha' }],
+      placements: { 'ide/tab/old': { group: 'alpha', seat: 11 } }, activeGroup: 'alpha' };
+    const changed = { ...original, preferences: { ...original.preferences, organization } };
+    expect(parseOfficeSharedState(changed)).toEqual(changed);
+    expect(() => parseOfficeSharedState({ ...changed, preferences: { ...changed.preferences,
+      organization: { ...organization, activeGroup: 'deleted' } } })).toThrow();
+  });
   it('migrates unnamed employees and round-trips independent binding names', () => {
     const original = state(), { employeeNames: _ignored, ...legacy } = original.preferences;
     expect(parseOfficeSharedState({ ...original, preferences: legacy })).toEqual(original);
@@ -109,6 +119,23 @@ describe('shared native Office storage', () => {
 });
 
 describe('revision-checked Office preferences', () => {
+  it('rejects invalid local rooms without poisoning a pending save and rolls back room conflicts', async () => {
+    const request = vi.fn(async () => ({ ...state(id(1)), preferences: { ...state().preferences, zoom: 125 } }));
+    const changed = vi.fn(), controller = new OfficeSharedPreferencesController(state(), { request }, changed);
+    controller.save({ ...state().preferences, zoom: 125 });
+    expect(() => controller.save({ ...state().preferences, organization: { groups: [], placements: {}, activeGroup: 'missing' } })).toThrow();
+    await controller.flushPending(); expect(request).toHaveBeenCalledOnce();
+    expect(changed.mock.calls.at(-1)?.[0].preferences.zoom).toBe(125); controller.dispose();
+    const authoritative = { ...state(id(2)), preferences: { ...state().preferences, organization: {
+      groups: [{ id: 'b', name: 'Team B' }], placements: {}, activeGroup: 'b' } } };
+    const conflict = vi.fn().mockRejectedValue(new OfficeStorageError('OFFICE_PREFERENCES_CONFLICT', authoritative));
+    const second = new OfficeSharedPreferencesController(state(), { request: conflict }, changed);
+    second.save({ ...state().preferences, organization: {
+      groups: [{ id: 'a', name: 'Team A' }], placements: {}, activeGroup: 'a' } });
+    await second.flushPending();
+    expect(changed.mock.calls.at(-1)?.[0].preferences.organization.activeGroup).toBe('b');
+    expect(changed.mock.calls.at(-1)?.slice(1)).toEqual([true, true]); second.dispose();
+  });
   it('treats native map ordering as equivalent and avoids redundant writes or choice rollback', async () => {
     const ordered = { 'ide/a/binding': 'red.png', 'ide/b/binding': 'blue.png' };
     const reversed = { 'ide/b/binding': 'blue.png', 'ide/a/binding': 'red.png' };
