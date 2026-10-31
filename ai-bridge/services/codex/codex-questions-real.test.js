@@ -200,16 +200,23 @@ test('native async multi-question input keeps choices and multiline free text in
   assert.ok(input.includes('request: native-question'));
 });
 
-test('native async timeout interrupts its waiting turn and permits the next send', asyncOptions, async t => {
+test('native async dismissal wakes its waiting turn without interrupting it and permits the next send', asyncOptions, async t => {
   const f = await fixture(t, { wait: true });
   const request = await waitFor(() => f.events.find(event => event.kind === 'interactionRequested'), 'async question');
   await waitFor(() => f.requests.length >= 2 && f.service.busy, 'native waiting turn');
   const count = f.requests.length;
   assert.deepEqual(await f.service.respondInteraction(request.payload.rpcId, { answers: {} }), { replied: true });
-  assert.equal((await f.operation.promise).outcome, 'interrupted');
+  assert.equal((await f.operation.promise).outcome, 'completed');
   assert.equal(f.service.busy, false);
   assert.equal(f.service.pendingInteractions.size, 0);
-  assert.equal(f.requests.length, count, 'timeout must not submit a synthetic answer');
+  assert.equal(f.requests.length, count + 1, 'The dismissal notice must wake the clock so the agent can finish');
+  const input = JSON.stringify(f.requests.at(-1).input);
+  assert.ok(input.includes('Answers to your questions (request: native-question):'));
+  assert.ok(input.includes('No answer: the user dismissed this question. Continue without waiting for it.'));
+  assert.equal(f.notifications.some(event => event.method === 'turn/completed'
+    && event.params?.turn?.status === 'interrupted'), false);
+  assert.equal(f.events.filter(event => event.kind === 'operationDone').length, 1);
+  assert.equal(f.service.respondInteraction(request.payload.rpcId, { answers: {} }), false);
   const next = f.service.enqueueOperation({ kind: 'send', threadId: f.operation.threadId,
     markerPayload: { input: [{ type: 'text', text: 'Continue after timeout.' }] } });
   assert.equal((await next.promise).outcome, 'completed');
