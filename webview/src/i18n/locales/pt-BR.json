@@ -1148,7 +1148,7 @@
     },
     "hooks": {
       "title": "Hooks",
-      "description": "Veja e edite as fontes de hooks e suas preferências de ativação compatíveis.",
+      "description": "Inspecione e edite com segurança os hooks do Codex e Claude Code.",
       "refresh": "Atualizar",
       "provider": "Provedor",
       "scope": "Escopo",
@@ -1156,7 +1156,6 @@
       "allProviders": "Todos os provedores",
       "allScopes": "Todos os escopos",
       "global": "Usuário",
-      "globalLocal": "Usuário (substituição local)",
       "project": "Projeto",
       "projectLocal": "Projeto (substituição local)",
       "search": "Buscar hooks",
@@ -1187,7 +1186,7 @@
       "sourceEditor": "Editor de fonte",
       "affectedFile": "Arquivo afetado",
       "backupDirectory": "Pasta de backup",
-      "latestBackup": "Último backup",
+      "latestBackup": "Restaurar o último backup desta sessão de edição",
       "lastModified": "Última modificação",
       "event": "Evento",
       "format": "Formato",
@@ -1212,7 +1211,7 @@
       "backupOnSave": "Um backup é criado antes de salvar",
       "save": "Salvar",
       "saving": "Salvando…",
-      "restore": "Restaurar backup",
+      "restore": "Restaurar o último backup desta sessão de edição",
       "saveFailed": "Falha ao salvar",
       "sourceLoadFailed": "Falha ao recarregar fonte",
       "noPreview": "Sem prévia.",
@@ -1245,7 +1244,18 @@
         "CODEX_EVENT_UNSUPPORTED": "Evento incompatível com o esquema verificado",
         "CODEX_HANDLER_UNSUPPORTED": "Tipo de manipulador incompatível",
         "CODEX_HOOK_FILE_FIELDS_INVALID": "Campos do arquivo inválidos",
-        "CODEX_STATE_INLINE_UNSUPPORTED": "Não é possível editar o estado inline com segurança; use uma tabela."
+        "CODEX_STATE_INLINE_UNSUPPORTED": "Não é possível editar o estado inline com segurança; use uma tabela.",
+        "LINKED_SOURCE_READ_ONLY": "Arquivos vinculados são somente leitura. Edite diretamente o arquivo original.",
+        "HOOK_SOURCE_UNAVAILABLE": "O arquivo de origem está indisponível."
+      },
+      "sharedToggleTitle": "Confirmar alteração no projeto compartilhado",
+      "sharedToggleMessage": "Isso altera o arquivo compartilhado .claude/settings.json e pode afetar outros colaboradores. Os dados de restauração ficam apenas neste computador.",
+      "confirmSharedToggle": "Alterar configuração compartilhada",
+      "sensitiveSourceWarning": "Este arquivo pode conter credenciais e configurações confidenciais. Revele-o quando estiver pronto para editar.",
+      "revealSource": "Revelar configuração",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "Confirme primeiro a alteração da configuração compartilhada.",
+        "HOOK_CATALOG_TIMEOUT": "A atualização dos hooks expirou. Atualize antes de alterar outro hook."
       }
     }
   },

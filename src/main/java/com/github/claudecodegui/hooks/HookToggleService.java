@@ -7,24 +7,17 @@ import com.google.gson.JsonParser;
 import com.intellij.openapi.diagnostic.Logger;
 
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.DosFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
-/** Implements reversible CCGUI-managed toggles for Claude and directory-based hooks. */
+/** Implements guarded Claude managed toggles and native Codex hook preferences. */
 public final class HookToggleService {
 
     private static final Logger LOG = Logger.getInstance(HookToggleService.class);
@@ -73,12 +66,6 @@ public final class HookToggleService {
                     return failure(request, "INVALID_HOOK_PATH");
                 }
                 lockDirectory = target.getParent();
-            } else if ("codemoss".equals(provider)) {
-                ScriptLocation script = resolveScriptLocation(project, location, provider);
-                if (script == null) {
-                    return failure(request, "INVALID_HOOK_PATH");
-                }
-                lockDirectory = script.providerDirectory;
             } else {
                 return failure(request, "UNSUPPORTED_HOOK_PROVIDER");
             }
@@ -89,10 +76,7 @@ public final class HookToggleService {
                 if (codexConfig) {
                     return toggleCodexConfig(projectRoot, request, location, expectedRevision, enabled);
                 }
-                if ("claude".equals(provider)) {
-                    return toggleClaude(projectRoot, request, location, expectedRevision, enabled);
-                }
-                return toggleScript(projectRoot, request, location, expectedRevision, enabled, provider);
+                return toggleClaude(projectRoot, request, location, expectedRevision, enabled);
             });
         } catch (RuntimeException e) {
             LOG.debug("[HookToggle] Invalid toggle request", e);
@@ -169,9 +153,18 @@ public final class HookToggleService {
         if (target == null) {
             return failure("INVALID_HOOK_PATH");
         }
+        if (project != null && target.equals(project.resolve(".claude/settings.json"))
+                && (!request.has("confirmSharedChange") || !request.get("confirmSharedChange").isJsonPrimitive()
+                || !request.getAsJsonPrimitive("confirmSharedChange").isBoolean()
+                || !request.get("confirmSharedChange").getAsBoolean())) {
+            return failure(request, "HOOK_SHARED_CONFIRMATION_REQUIRED");
+        }
         String sourceId = requiredString(request, "sourceId");
         String scope = requiredString(request, "scope");
         try {
+            if (Files.size(target) > 128L * 1024L) {
+                return failure(request, "SOURCE_TOO_LARGE");
+            }
             String original = Files.readString(target, StandardCharsets.UTF_8);
             if (!revision(target).equals(expectedRevision)) {
                 return failure("HOOK_REVISION_CONFLICT");
@@ -189,7 +182,34 @@ public final class HookToggleService {
                 if (entry == null) {
                     return failure(request, "HOOK_NOT_DISABLED");
                 }
-                restoreClaudeHook(root, entry, disabled);
+                JsonElement events = root.has("hooks") && root.get("hooks").isJsonObject()
+                        ? root.getAsJsonObject("hooks").get(entry.get("event").getAsString()) : null;
+                if (events != null && !events.isJsonArray()) {
+                    return failure(request, "HOOK_RESTORE_CONFLICT");
+                }
+                if (containsClaudeHook(root, entry)) {
+                    if (entry.get("wrapped").getAsBoolean() && events != null) {
+                        int parentIndex = restoredEventIndex(disabled, entry, entry.get("parentIndex").getAsInt());
+                        JsonArray groups = events.getAsJsonArray();
+                        if (parentIndex >= 0 && parentIndex < groups.size() && groups.get(parentIndex).isJsonObject()
+                                && matchesContainer(groups.get(parentIndex).getAsJsonObject(), entry)) {
+                            markContainerPresent(disabled, entry, true);
+                        }
+                    }
+                    disabled.remove(entry);
+                    store.write(state);
+                    JsonObject present = success();
+                    present.addProperty("sourceId", sourceId);
+                    present.addProperty("location", target.toString());
+                    present.addProperty("enabled", true);
+                    present.addProperty("statusCode", "HOOK_ALREADY_PRESENT");
+                    present.addProperty("revision", expectedRevision);
+                    attachRequestId(present, request);
+                    return present;
+                }
+                if (!restoreClaudeHook(root, entry, disabled)) {
+                    return failure(request, "HOOK_RESTORE_CONFLICT");
+                }
                 mutation = mutationService.write(projectRoot, target.toString(), expectedRevision,
                         HookJsonSource.replaceHooks(original, root.getAsJsonObject("hooks")));
                 if (!mutation.get("success").getAsBoolean()) {
@@ -223,10 +243,21 @@ public final class HookToggleService {
                 }
                 entry.addProperty("wrapped", match.wrapped);
                 entry.addProperty("index", match.index);
-                entry.addProperty("parentIndex", match.parentIndex);
-                entry.addProperty("orderIndex", originalOrderIndex(disabled, entry));
+                entry.addProperty("parentIndex", match.wrapped ? originalEventIndex(disabled, entry, match.parentIndex) : -1);
+                entry.addProperty("orderIndex", match.wrapped ? originalOrderIndex(disabled, entry)
+                        : originalEventIndex(disabled, entry, match.index));
                 entry.add("hook", match.hook.deepCopy());
-                removeClaudeHook(match);
+                if (match.wrapped) {
+                    JsonObject container = root.getAsJsonObject("hooks").getAsJsonArray(match.event)
+                            .get(match.parentIndex).getAsJsonObject().deepCopy();
+                    container.remove("hooks");
+                    entry.add("container", container);
+                    entry.addProperty("containerRemoved", match.parent.size() == 1);
+                    if (match.parent.size() == 1) {
+                        markContainerPresent(disabled, entry, false);
+                    }
+                }
+                removeClaudeHook(root, match);
                 mutation = mutationService.write(projectRoot, target.toString(), expectedRevision,
                         HookJsonSource.replaceHooks(original, root.getAsJsonObject("hooks")));
                 if (!mutation.get("success").getAsBoolean()) {
@@ -251,77 +282,6 @@ public final class HookToggleService {
             return result;
         } catch (IOException | RuntimeException e) {
             LOG.warn("[HookToggle] Failed to toggle Claude hook: " + target, e);
-            return failure(request, "HOOK_TOGGLE_FAILED");
-        }
-    }
-
-    private JsonObject toggleScript(
-            String projectRoot,
-            JsonObject request,
-            String location,
-            String expectedRevision,
-            boolean enabled,
-            String provider
-    ) {
-        Path project = normalizeProject(projectRoot);
-        ScriptLocation script = resolveScriptLocation(project, location, provider);
-        if (script == null) {
-            return failure("INVALID_HOOK_PATH");
-        }
-        String sourceId = requiredString(request, "sourceId");
-        Path movedFrom = null;
-        Path movedTo = null;
-        try {
-            HookToggleStateStore store = new HookToggleStateStore(userHome, script.providerDirectory);
-            JsonObject state = store.readStrict();
-            JsonArray disabled = state.getAsJsonArray("disabledScripts");
-            JsonObject entry = findDisabledScript(disabled, script.original.toString(), sourceId);
-            if (enabled) {
-                if (entry == null) {
-                    return failure(request, "HOOK_NOT_DISABLED");
-                }
-                Path quarantine = Paths.get(entry.get("quarantineLocation").getAsString()).toAbsolutePath().normalize();
-                Path quarantineRoot = script.providerDirectory.resolve(".ccgui-disabled-hooks").normalize();
-                if (!quarantine.startsWith(quarantineRoot) || Files.isSymbolicLink(quarantine)
-                        || !Files.isRegularFile(quarantine) || Files.exists(script.original)) {
-                    return failure(request, "HOOK_RESTORE_CONFLICT");
-                }
-                if (!("disabled:" + entry.get("revision").getAsString()).equals(expectedRevision)) {
-                    return failure(request, "HOOK_REVISION_CONFLICT");
-                }
-                if (!HookSourceRevision.matchesStored(quarantine, entry.get("revision").getAsString())) {
-                    return failure(request, "HOOK_QUARANTINE_MODIFIED");
-                }
-                Files.createDirectories(script.original.getParent());
-                movedFrom = quarantine;
-                movedTo = script.original;
-                moveAtomically(quarantine, script.original);
-                disabled.remove(entry);
-            } else {
-                return failure(request, "HOOK_TOGGLE_UNSUPPORTED");
-            }
-            store.write(state);
-            movedFrom = null;
-            movedTo = null;
-            JsonObject result = success();
-            result.addProperty("location", script.original.toString());
-            result.addProperty("sourceId", sourceId);
-            attachRequestId(result, request);
-            result.addProperty("enabled", enabled);
-            result.addProperty("toggleMode", MANAGED_TOGGLE);
-            result.addProperty("revision", enabled ? revision(script.original) : disabledRevision(entry));
-            return result;
-        } catch (IOException | RuntimeException e) {
-            if (movedFrom != null && movedTo != null) {
-                try {
-                    if (Files.exists(movedTo) && !Files.exists(movedFrom)) {
-                        moveAtomically(movedTo, movedFrom);
-                    }
-                } catch (IOException rollbackError) {
-                    LOG.warn("[HookToggle] Failed to roll back script move: " + location, rollbackError);
-                }
-            }
-            LOG.warn("[HookToggle] Failed to toggle script hook: " + location, e);
             return failure(request, "HOOK_TOGGLE_FAILED");
         }
     }
@@ -387,8 +347,41 @@ public final class HookToggleService {
         return (expected + "-" + shortHash(managedKey)).equals(sourceId);
     }
 
-    private static void removeClaudeHook(HookMatch match) {
+    private static void removeClaudeHook(JsonObject root, HookMatch match) {
         match.parent.remove(match.index);
+        if (match.wrapped && match.parent.isEmpty()) {
+            root.getAsJsonObject("hooks").getAsJsonArray(match.event).remove(match.parentIndex);
+        }
+    }
+
+    private static boolean containsClaudeHook(JsonObject root, JsonObject entry) {
+        JsonElement hooks = root.get("hooks");
+        if (hooks == null || !hooks.isJsonObject()) {
+            return false;
+        }
+        JsonElement event = hooks.getAsJsonObject().get(entry.get("event").getAsString());
+        if (event == null || !event.isJsonArray()) {
+            return false;
+        }
+        boolean wrapped = entry.has("wrapped") && entry.get("wrapped").getAsBoolean();
+        for (JsonElement value : event.getAsJsonArray()) {
+            if (!value.isJsonObject()) {
+                continue;
+            }
+            JsonObject candidate = value.getAsJsonObject();
+            if (!wrapped && candidate.equals(entry.get("hook"))) {
+                return true;
+            }
+            if (wrapped && Objects.equals(stringValue(entry, "matcher"), stringValue(candidate, "matcher"))
+                    && candidate.has("hooks") && candidate.get("hooks").isJsonArray()) {
+                for (JsonElement child : candidate.getAsJsonArray("hooks")) {
+                    if (child.equals(entry.get("hook"))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     // Indices count disabled siblings too, so restore order cannot reorder handlers.
@@ -427,7 +420,7 @@ public final class HookToggleService {
     }
 
     private static boolean sameClaudeContainer(JsonObject first, JsonObject second) {
-        for (String field : new String[] {"location", "event", "wrapped", "parentIndex", "matcher"}) {
+        for (String field : new String[] {"location", "event", "wrapped", "parentIndex"}) {
             if (!Objects.equals(first.get(field), second.get(field))) {
                 return false;
             }
@@ -435,7 +428,50 @@ public final class HookToggleService {
         return true;
     }
 
-    private static void restoreClaudeHook(JsonObject root, JsonObject entry, JsonArray disabled) {
+    private static java.util.SortedSet<Integer> removedEventIndices(JsonArray disabled, JsonObject entry) {
+        var indices = new java.util.TreeSet<Integer>();
+        for (JsonElement value : disabled) {
+            JsonObject sibling = value.getAsJsonObject();
+            if (!Objects.equals(entry.get("location"), sibling.get("location"))
+                    || !Objects.equals(entry.get("event"), sibling.get("event"))) {
+                continue;
+            }
+            if (!sibling.get("wrapped").getAsBoolean()) {
+                indices.add(sibling.get("orderIndex").getAsInt());
+            } else if (sibling.has("containerRemoved") && sibling.get("containerRemoved").getAsBoolean()) {
+                indices.add(sibling.get("parentIndex").getAsInt());
+            }
+        }
+        return indices;
+    }
+
+    private static int originalEventIndex(JsonArray disabled, JsonObject entry, int index) {
+        for (int removed : removedEventIndices(disabled, entry)) {
+            if (removed <= index) { index++; }
+        }
+        return index;
+    }
+
+    private static int restoredEventIndex(JsonArray disabled, JsonObject entry, int original) {
+        return original - removedEventIndices(disabled, entry).headSet(original).size();
+    }
+
+    private static void markContainerPresent(JsonArray disabled, JsonObject entry, boolean present) {
+        for (JsonElement value : disabled) {
+            JsonObject sibling = value.getAsJsonObject();
+            if (sameClaudeContainer(entry, sibling)) {
+                sibling.addProperty("containerRemoved", !present);
+            }
+        }
+    }
+
+    private static boolean matchesContainer(JsonObject candidate, JsonObject entry) {
+        JsonObject metadata = candidate.deepCopy();
+        metadata.remove("hooks");
+        return metadata.equals(entry.get("container")) && candidate.has("hooks") && candidate.get("hooks").isJsonArray();
+    }
+
+    private static boolean restoreClaudeHook(JsonObject root, JsonObject entry, JsonArray disabled) {
         JsonObject hook = entry.getAsJsonObject("hook").deepCopy();
         String event = entry.get("event").getAsString();
         String matcher = entry.has("matcher") ? entry.get("matcher").getAsString() : null;
@@ -451,26 +487,20 @@ public final class HookToggleService {
             hooks.add(event, eventArray);
         }
         if (entry.has("wrapped") && entry.get("wrapped").getAsBoolean()) {
-            int parentIndex = entry.has("parentIndex") ? entry.get("parentIndex").getAsInt() : -1;
-            if (parentIndex >= 0 && parentIndex < eventArray.size()) {
+            int parentIndex = restoredEventIndex(disabled, entry, entry.get("parentIndex").getAsInt());
+            boolean removed = entry.has("containerRemoved") && entry.get("containerRemoved").getAsBoolean();
+            if (!removed && parentIndex >= 0 && parentIndex < eventArray.size()) {
                 JsonElement parent = eventArray.get(parentIndex);
-                if (parent.isJsonObject() && Objects.equals(matcher, stringValue(parent.getAsJsonObject(), "matcher"))
-                        && parent.getAsJsonObject().has("hooks")
-                        && parent.getAsJsonObject().get("hooks").isJsonArray()) {
+                if (parent.isJsonObject() && matchesContainer(parent.getAsJsonObject(), entry)) {
                     insert(parent.getAsJsonObject().getAsJsonArray("hooks"), index, hook);
-                    return;
+                    return true;
                 }
             }
-            for (JsonElement element : eventArray) {
-                if (element.isJsonObject() && Objects.equals(matcher, stringValue(element.getAsJsonObject(), "matcher"))
-                        && element.getAsJsonObject().has("hooks")
-                        && element.getAsJsonObject().get("hooks").isJsonArray()) {
-                    JsonArray nested = element.getAsJsonObject().getAsJsonArray("hooks");
-                    insert(nested, index, hook);
-                    return;
-                }
+            if (!removed) {
+                return false;
             }
-            JsonObject wrapper = new JsonObject();
+            JsonObject wrapper = entry.has("container") && entry.get("container").isJsonObject()
+                    ? entry.getAsJsonObject("container").deepCopy() : new JsonObject();
             if (matcher != null) {
                 wrapper.addProperty("matcher", matcher);
             }
@@ -478,9 +508,11 @@ public final class HookToggleService {
             nested.add(hook);
             wrapper.add("hooks", nested);
             insert(eventArray, parentIndex, wrapper);
-            return;
+            markContainerPresent(disabled, entry, true);
+            return true;
         }
-        insert(eventArray, index, hook);
+        insert(eventArray, restoredEventIndex(disabled, entry, entry.get("orderIndex").getAsInt()), hook);
+        return true;
     }
 
     private static void insert(JsonArray array, int index, JsonElement value) {
@@ -501,28 +533,6 @@ public final class HookToggleService {
         for (JsonElement element : copy) {
             array.add(element);
         }
-    }
-
-    private ScriptLocation resolveScriptLocation(Path project, String location, String provider) {
-        Path target;
-        try {
-            target = Paths.get(location).toAbsolutePath().normalize();
-        } catch (RuntimeException e) {
-            return null;
-        }
-        Path globalDirectory = userHome.resolve("." + provider).resolve("hooks").toAbsolutePath().normalize();
-        if (target.startsWith(globalDirectory) && !target.equals(globalDirectory)) {
-            return new ScriptLocation(target, globalDirectory.getParent(), globalDirectory,
-                    globalDirectory.relativize(target).toString());
-        }
-        if (project != null) {
-            Path projectDirectory = project.resolve("." + provider).resolve("hooks").toAbsolutePath().normalize();
-            if (target.startsWith(projectDirectory) && !target.equals(projectDirectory)) {
-                return new ScriptLocation(target, projectDirectory.getParent(), projectDirectory,
-                        projectDirectory.relativize(target).toString());
-            }
-        }
-        return null;
     }
 
     private Path validateClaudeTarget(Path project, String location) {
@@ -561,17 +571,6 @@ public final class HookToggleService {
         return null;
     }
 
-    private static JsonObject findDisabledScript(JsonArray entries, String location, String sourceId) {
-        for (JsonElement element : entries) {
-            JsonObject entry = element.getAsJsonObject();
-            if (sourceId.equals(entry.get("sourceId").getAsString())
-                    && location.equals(entry.get("originalLocation").getAsString())) {
-                return entry;
-            }
-        }
-        return null;
-    }
-
     private void rollback(String projectRoot, Path target, JsonObject mutation, String original) {
         if (!mutation.has("revision")) {
             return;
@@ -582,16 +581,6 @@ public final class HookToggleService {
         } catch (RuntimeException ignored) {
             // The backup remains available when automatic rollback cannot complete.
         }
-    }
-
-    private static void moveAtomically(Path source, Path target) throws IOException {
-        DosFileAttributes attributes = HookMutationService.readDosAttributes(source);
-        try {
-            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-            Files.move(source, target);
-        }
-        HookMutationService.copyDosAttributes(attributes, target);
     }
 
     private JsonObject withLock(
@@ -605,28 +594,15 @@ public final class HookToggleService {
             if (Files.isSymbolicLink(lockPath)) {
                 return failure(request, "HOOK_TOGGLE_LOCK_FAILED");
             }
-            try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE,
-                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
-                FileLock lock;
-                try {
-                    lock = channel.tryLock();
-                } catch (OverlappingFileLockException e) {
-                    return failure(request, "HOOK_TOGGLE_LOCKED");
-                }
+            try (var lock = HookLocalStorage.tryLock(lockPath)) {
                 if (lock == null) {
                     return failure(request, "HOOK_TOGGLE_LOCKED");
                 }
-                try (FileLock ignored = lock) {
-                    return operation.apply();
-                }
+                return operation.apply();
             }
         } catch (IOException e) {
             return failure(request, "HOOK_TOGGLE_LOCK_FAILED");
         }
-    }
-
-    private static String disabledRevision(JsonObject entry) {
-        return "disabled:" + entry.get("revision").getAsString();
     }
 
     private static String requiredString(JsonObject object, String key) {
@@ -721,6 +697,4 @@ public final class HookToggleService {
     ) {
     }
 
-    private record ScriptLocation(Path original, Path providerDirectory, Path hookDirectory, String relativePath) {
-    }
 }

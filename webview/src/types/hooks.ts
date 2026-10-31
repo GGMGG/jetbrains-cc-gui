@@ -1,5 +1,5 @@
-export type HookProvider = 'codex' | 'claude' | 'codemoss';
-export type HookScope = 'GLOBAL' | 'GLOBAL_LOCAL' | 'PROJECT' | 'PROJECT_LOCAL';
+export type HookProvider = 'codex' | 'claude';
+export type HookScope = 'GLOBAL' | 'PROJECT' | 'PROJECT_LOCAL';
 
 export interface HookItem {
   sourceId: string;
@@ -17,6 +17,7 @@ export interface HookItem {
   nativeStateRevision?: string;
   toggleReason?: string;
   editSupported?: boolean;
+  readOnlyReason?: string;
   rawLocation: string;
   relativePath?: string;
   schemaVersion: number;
@@ -54,6 +55,7 @@ export interface HookCapability {
 }
 
 export interface HookCatalog {
+  requestId?: string;
   schemaVersion: number;
   items: HookItem[];
   sources: HookSource[];

@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { HookEditorTarget } from '../../../types/hooks';
+import type { HookEditorTarget, HookItem } from '../../../types/hooks';
 import ConfirmDialog from '../../ConfirmDialog';
 import type { UseHookManagementReturn } from '../hooks';
 import HookEditorDialog from './HookEditorDialog';
@@ -44,6 +44,7 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
   const [draft, setDraft] = useState('');
   const [showDiff, setShowDiff] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [sharedToggle, setSharedToggle] = useState<{ item: HookItem; enabled: boolean } | null>(null);
   const preserveDraftOnReloadRef = useRef(false);
   const activeEditor = selected && editor && targetLocation(editor.item) === targetLocation(selected) ? editor : null;
   const hasDraftChanges = activeEditor?.content !== null && activeEditor?.content !== undefined
@@ -124,7 +125,6 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
     all: scopedAndSearchedItems.length,
     codex: scopedAndSearchedItems.filter((item) => item.provider === 'codex').length,
     claude: scopedAndSearchedItems.filter((item) => item.provider === 'claude').length,
-    codemoss: scopedAndSearchedItems.filter((item) => item.provider === 'codemoss').length,
   }), [scopedAndSearchedItems]);
   const filteredItems = useMemo(
     () => provider === 'all' ? scopedAndSearchedItems
@@ -145,6 +145,14 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
       setDraft(preserveHookLineEndings(nextDraft, activeEditor?.content ?? ''));
     }
   }, [activeEditor?.content, mutationLoading]);
+
+  const requestToggle = useCallback((item: HookItem, enabled: boolean) => {
+    if (item.provider === 'claude' && item.scope === 'PROJECT') {
+      setSharedToggle({ item, enabled });
+      return;
+    }
+    toggleHook?.(item, enabled);
+  }, [toggleHook]);
 
   return (
     <section className={styles.container}>
@@ -202,7 +210,7 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
               items={group.items}
               toggleLoadingId={toggleLoadingId}
               onEdit={openEditor}
-              onToggle={toggleHook ?? NOOP_TOGGLE}
+              onToggle={toggleHook ? requestToggle : NOOP_TOGGLE}
             />
           ))}
         </div>
@@ -210,6 +218,7 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
 
       {selected && (
         <HookEditorDialog
+          key={targetLocation(selected)}
           selected={selected}
           activeEditor={activeEditor}
           draft={draft}
@@ -230,6 +239,18 @@ export default function HooksSettingsSection({ management }: HooksSettingsSectio
         />
       )}
 
+      <ConfirmDialog
+        isOpen={sharedToggle !== null}
+        title={t('settings.hooks.sharedToggleTitle')}
+        message={t('settings.hooks.sharedToggleMessage')}
+        confirmText={t('settings.hooks.confirmSharedToggle')}
+        cancelText={t('common.cancel')}
+        onConfirm={() => {
+          if (sharedToggle) toggleHook?.(sharedToggle.item, sharedToggle.enabled, true);
+          setSharedToggle(null);
+        }}
+        onCancel={() => setSharedToggle(null)}
+      />
       <ConfirmDialog
         isOpen={discardConfirmOpen}
         title={t('settings.hooks.discardChangesTitle')}

@@ -163,6 +163,7 @@ describe('HooksSettingsSection', () => {
     } });
     render(<HooksSettingsSection management={management} />);
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'first\nchanged\n' } });
     fireEvent.click(screen.getByText('settings.hooks.reviewChanges'));
     fireEvent.click(screen.getByRole('button', { name: /settings.hooks.save/ }));
@@ -175,6 +176,7 @@ describe('HooksSettingsSection', () => {
     } });
     const { rerender } = render(<HooksSettingsSection management={management} />);
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'submitted draft' } });
     rerender(<HooksSettingsSection management={{ ...management, mutationLoading: true }} />);
     const textarea = screen.getByLabelText('settings.hooks.sourceEditor') as HTMLTextAreaElement;
@@ -183,13 +185,32 @@ describe('HooksSettingsSection', () => {
     expect(textarea.value).toBe('submitted draft');
   });
 
-  it('explains shared project changes and unverified script execution', () => {
-    const script: HookItem = { ...claudeItem, provider: 'codemoss', scope: 'PROJECT',
-      executionStateKnown: false, toggleSupported: false, managedToggleSupported: false };
-    render(<HooksSettingsSection management={createManagement({ catalog: { ...catalog, items: [script] } })} />);
+  it('requires confirmation before toggling a shared Claude project file', () => {
+    const shared: HookItem = { ...claudeItem, scope: 'PROJECT', managedToggleSupported: true };
+    const management = createManagement({ catalog: { ...catalog, items: [shared] } });
+    render(<HooksSettingsSection management={management} />);
     expect(screen.getByText('settings.hooks.sharedProjectWarning')).toBeTruthy();
-    expect(screen.getByText('settings.hooks.executionUnknown')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'settings.hooks.disable' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Codemoss/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.disable' }));
+    expect(management.toggleHook).not.toHaveBeenCalled();
+    expect(screen.getByText('settings.hooks.sharedToggleMessage')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.confirmSharedToggle' }));
+    expect(management.toggleHook).toHaveBeenCalledWith(shared, false, true);
+  });
+
+  it('hides sensitive source content until explicitly revealed', () => {
+    const management = createManagement({ editor: {
+      item: claudeItem, content: '{"env":{"API_KEY":"fixture-secret"}}', revision: '1',
+      backupDirectory: null, lastModified: null,
+    } });
+    render(<HooksSettingsSection management={management} />);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.editSource: PreToolUse' }));
+    expect(screen.getByText('settings.hooks.sensitiveSourceWarning')).toBeTruthy();
+    expect(screen.queryByLabelText('settings.hooks.sourceEditor')).toBeNull();
+    expect(document.body.textContent).not.toContain('fixture-secret');
+    expect((screen.getByRole('button', { name: /settings.hooks.save/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
+    expect((screen.getByLabelText('settings.hooks.sourceEditor') as HTMLTextAreaElement).value).toContain('fixture-secret');
   });
 
   it('keeps save disabled when review shows no source changes', () => {
@@ -205,6 +226,7 @@ describe('HooksSettingsSection', () => {
 
     render(<HooksSettingsSection management={management} />);
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     fireEvent.click(screen.getByText('settings.hooks.reviewChanges'));
 
     expect(screen.getByText('settings.hooks.noChanges')).toBeTruthy();
@@ -226,6 +248,7 @@ describe('HooksSettingsSection', () => {
     const { rerender } = render(<HooksSettingsSection management={baseManagement} />);
 
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'echo local draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.keepDraft' }));
     expect(baseManagement.reloadHookSource).toHaveBeenCalledTimes(1);
@@ -255,6 +278,7 @@ describe('HooksSettingsSection', () => {
     const { rerender } = render(<HooksSettingsSection management={baseManagement} />);
 
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'echo local draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.reloadExternal' }));
     expect(baseManagement.reloadHookSource).toHaveBeenCalledTimes(1);
@@ -284,6 +308,7 @@ describe('HooksSettingsSection', () => {
     const { rerender } = render(<HooksSettingsSection management={management} />);
 
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     const technicalDetails = screen.getByText('settings.hooks.technicalInfo').closest('details')!;
     expect(technicalDetails.open).toBe(false);
     fireEvent.click(screen.getByText('settings.hooks.technicalInfo'));
@@ -317,6 +342,7 @@ describe('HooksSettingsSection', () => {
     render(<HooksSettingsSection management={management} />);
 
     fireEvent.click(screen.getByTitle('settings.hooks.editSource'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.hooks.revealSource' }));
     fireEvent.change(screen.getByLabelText('settings.hooks.sourceEditor'), { target: { value: 'echo changed' } });
     fireEvent.click(screen.getByTitle('common.close'));
     expect(screen.getByText('settings.hooks.discardChangesTitle')).toBeTruthy();

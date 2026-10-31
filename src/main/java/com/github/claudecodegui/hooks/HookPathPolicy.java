@@ -42,13 +42,12 @@ final class HookPathPolicy {
         if (isCodexConfig(target, project) || isCodexHooksJson(target, project)) {
             return target;
         }
-        return isUnderAnyHookRoot(target, project) ? target : null;
+        return null;
     }
 
     boolean isClaudeSettings(Path target, Path project) {
         Path normalized = target.toAbsolutePath().normalize();
-        if (normalized.equals(userHome.resolve(".claude/settings.json"))
-                || normalized.equals(userHome.resolve(".claude/settings.local.json"))) {
+        if (normalized.equals(userHome.resolve(".claude/settings.json"))) {
             return true;
         }
         if (project == null) {
@@ -86,10 +85,4 @@ final class HookPathPolicy {
         return target.toAbsolutePath().normalize().equals(codexHome.resolve("config.toml"));
     }
 
-    boolean isUnderAnyHookRoot(Path target, Path project) throws IOException {
-        if (isUnderHookRoot(target, userHome.resolve(".codemoss/hooks"))) {
-            return true;
-        }
-        return project != null && isUnderHookRoot(target, project.resolve(".codemoss/hooks"));
-    }
 }

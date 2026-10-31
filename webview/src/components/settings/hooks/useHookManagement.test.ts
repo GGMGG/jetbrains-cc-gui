@@ -146,7 +146,7 @@ describe('useHookManagement correlated source operations', () => {
     mutationResponse(result);
     expect(result.current.editor?.content).toBe('echo ready');
     expect(result.current.mutationError).toBe('HOOK_MUTATION_CONFIRMED_LATE');
-    expect(window.sendToJava).toHaveBeenLastCalledWith('get_hooks:');
+    expect(request('get_hooks').requestId).toBeTruthy();
   });
 
   it('bounds restore waits and reports failed restore delivery', () => {
@@ -180,8 +180,11 @@ describe('useHookManagement correlated source operations', () => {
     const secondId = request('toggle_hook').requestId;
     act(() => result.current.updateHookToggleResult?.({ success: true, requestId: firstId }));
     expect(result.current.toggleLoadingId).toBe(item.sourceId);
-    expect(window.sendToJava).toHaveBeenLastCalledWith('get_hooks:');
+    expect(request('get_hooks').requestId).toBeTruthy();
     act(() => result.current.updateHookToggleResult?.({ success: true, requestId: secondId }));
+    expect(result.current.toggleLoadingId).toBe(item.sourceId);
+    act(() => result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [],
+      requestId: request('get_hooks').requestId }));
     expect(result.current.toggleLoadingId).toBeNull();
   });
 
@@ -197,6 +200,9 @@ describe('useHookManagement correlated source operations', () => {
     act(() => second.result.current.updateHookToggleResult?.({ success: true, requestId: firstId }));
     expect(second.result.current.toggleLoadingId).toBe(item.sourceId);
     act(() => second.result.current.updateHookToggleResult?.({ success: true, requestId: secondId }));
+    expect(second.result.current.toggleLoadingId).toBe(item.sourceId);
+    act(() => second.result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [],
+      requestId: request('get_hooks').requestId }));
     expect(second.result.current.toggleLoadingId).toBeNull();
   });
 
@@ -206,5 +212,33 @@ describe('useHookManagement correlated source operations', () => {
       event: 'PreToolUse', managedKey: 'C:/project/.codex/hooks.json:pre_tool_use:0:0', format: 'hooks-json', nativeStateRevision: 'user:revision' };
     act(() => result.current.toggleHook?.(native, false));
     expect(request('toggle_hook')).toMatchObject({ nativeStateRevision: 'user:revision', managedKey: native.managedKey, enabled: false });
+  });
+
+  it('keeps all toggles pending until the correlated catalog refresh completes', () => {
+    const { result } = renderHook(useHookManagement);
+    act(() => result.current.loadHooks());
+    const stale = request('get_hooks').requestId;
+    act(() => result.current.toggleHook?.(item, false));
+    act(() => result.current.updateHookToggleResult?.({ success: true, requestId: request('toggle_hook').requestId }));
+    const fresh = request('get_hooks').requestId;
+    expect(fresh).not.toBe(stale);
+    act(() => result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [item], requestId: stale }));
+    expect(result.current.toggleLoadingId).toBe(item.sourceId);
+    act(() => result.current.toggleHook?.(other, true, true));
+    expect(vi.mocked(window.sendToJava!).mock.calls.filter(([text]) => text.startsWith('toggle_hook:'))).toHaveLength(1);
+    act(() => result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [], requestId: fresh }));
+    expect(result.current.toggleLoadingId).toBeNull();
+    expect(result.current.catalog.items).toEqual([]);
+  });
+
+  it('releases a pending toggle with an error when its catalog refresh times out', () => {
+    const { result } = renderHook(useHookManagement);
+    act(() => result.current.toggleHook?.(item, false));
+    act(() => result.current.updateHookToggleResult?.({ success: true, requestId: request('toggle_hook').requestId }));
+    act(() => vi.advanceTimersByTime(5000));
+    expect(result.current.toggleLoadingId).toBeNull();
+    expect(result.current.toggleError).toBe('HOOK_CATALOG_TIMEOUT');
+    act(() => result.current.toggleHook?.(other, false, true));
+    expect(request('toggle_hook').confirmSharedChange).toBe(true);
   });
 });
