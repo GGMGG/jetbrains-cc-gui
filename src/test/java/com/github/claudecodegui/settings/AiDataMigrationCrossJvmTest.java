@@ -23,6 +23,67 @@ public class AiDataMigrationCrossJvmTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void failedLocalExclusiveAttemptsCannotDropAnExistingSharedOsLock() throws Exception {
+        Path coordination = temporaryFolder.getRoot().toPath().resolve("shared-coordination");
+        var coordinator = new AiDataMigrationCoordinator(coordination);
+        try (var first = coordinator.tryAcquireProcessLock()) {
+            assertNotNull(first);
+            assertNull(new AiDataMigrationCoordinator(coordination).tryAcquire("migrate"));
+            try (var second = coordinator.tryAcquireProcessLock()) {
+                assertNotNull(second);
+                assertBusyFromSeparateJvm(coordination);
+            }
+            assertBusyFromSeparateJvm(coordination);
+        }
+        try (var exclusive = coordinator.tryAcquire("migrate")) {
+            assertNotNull(exclusive);
+        }
+    }
+
+    @Test
+    public void failedLocalSharedAndExclusiveAttemptsCannotDropAnExclusiveOsLock() throws Exception {
+        Path coordination = temporaryFolder.getRoot().toPath().resolve("exclusive-coordination");
+        var coordinator = new AiDataMigrationCoordinator(coordination);
+        try (var exclusive = coordinator.tryAcquire("migrate")) {
+            assertNotNull(exclusive);
+            assertNull(new AiDataMigrationCoordinator(coordination).tryAcquireProcessLock());
+            assertNull(new AiDataMigrationCoordinator(coordination).tryAcquire("cleanup"));
+            assertBusyFromSeparateJvm(coordination);
+        }
+    }
+
+    @Test
+    public void separateJvmCancellationIsScopedToThePrecommitOwner() throws Exception {
+        Path coordination = temporaryFolder.getRoot().toPath().resolve("cancel-coordination");
+        var coordinator = new AiDataMigrationCoordinator(coordination);
+        try (var exclusive = coordinator.tryAcquire("migrate")) {
+            assertNotNull(exclusive);
+            try (Peer requester = start(coordination, "cancel")) {
+                assertEquals("READY", requester.readMarker());
+                requester.signal();
+                assertEquals("CANCELLED", requester.readMarker());
+            }
+            assertTrue(exclusive.isCancellationRequested());
+            assertFalse(exclusive.beginCommit());
+        }
+        try (var next = coordinator.tryAcquire("migrate")) {
+            assertNotNull(next);
+            assertFalse(next.isCancellationRequested());
+            assertTrue(next.beginCommit());
+            coordinator.requestMigrationCancellation();
+            assertFalse(next.isCancellationRequested());
+        }
+    }
+
+    private static void assertBusyFromSeparateJvm(Path coordination) throws Exception {
+        try (Peer peer = start(coordination)) {
+            assertEquals("READY", peer.readMarker());
+            peer.signal();
+            assertEquals("BUSY", peer.readMarker());
+        }
+    }
+
+    @Test
     public void simultaneousJvmMigrationsHaveOneOwnerAndHardDeathAllowsReacquisition() throws Exception {
         Path coordination = temporaryFolder.getRoot().toPath().resolve("shared-coordination");
         ExecutorService readers = Executors.newFixedThreadPool(2);
@@ -62,7 +123,7 @@ public class AiDataMigrationCrossJvmTest {
         }
     }
 
-    private static Peer start(Path coordination) throws Exception {
+    private static Peer start(Path coordination, String... mode) throws Exception {
         LinkedHashSet<String> locations = new LinkedHashSet<>();
         for (Class<?> type : List.of(AiDataMigrationOwnerProcess.class, AiDataMigrationCoordinator.class,
                 Gson.class, com.intellij.openapi.diagnostic.Logger.class, com.intellij.openapi.util.SystemInfoRt.class,
@@ -83,7 +144,7 @@ public class AiDataMigrationCrossJvmTest {
         String executable = System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java";
         return new Peer(new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", executable).toString(),
                 "-cp", String.join(File.pathSeparator, locations), AiDataMigrationOwnerProcess.class.getName(),
-                coordination.toString()).redirectErrorStream(true).start());
+                coordination.toString(), mode.length == 0 ? "migrate" : mode[0]).redirectErrorStream(true).start());
     }
 
     private static final class Peer implements AutoCloseable {
@@ -104,7 +165,7 @@ public class AiDataMigrationCrossJvmTest {
             String line;
             StringBuilder diagnostics = new StringBuilder();
             while ((line = output.readLine()) != null) {
-                if (List.of("READY", "OWNED", "BUSY").contains(line)) {
+                if (List.of("READY", "OWNED", "BUSY", "CANCELLED").contains(line)) {
                     return line;
                 }
                 diagnostics.append(line).append('\n');
