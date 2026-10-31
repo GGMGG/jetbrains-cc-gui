@@ -33,10 +33,11 @@ import { join } from 'node:path';
 import { CodexPrivacyIndex } from './codex-privacy-index.js';
 import { readNativeHistoryPage } from './codex-native-history.js';
 import { createNativeHistoryCounter } from './codex-history-message-count.js';
+import { readCodexSessionEdits } from './codex-session-edits.js';
 import { readNativeSubagent } from './codex-native-subagents.js';
 import { projectCodexItemMessages } from './codex-item-projection.js';
 import { isGuardianReviewThread } from './codex-thread-visibility.js';
-import { settleCodexSessionTitle } from './codex-session-title.js';
+import { settleCodexSessionTitle, readCodexCustomTitles, applyCodexCustomTitles } from './codex-session-title.js';
 import { generateCodexText } from './codex-text-service.js';
 import { prepareCodexRuntimeEnvironment } from './codex-native-runtime-env.js';
 
@@ -639,7 +640,7 @@ export async function codexListThreadsPersistent(stdinData) {
   };
   delete params.projectPath;
   const result = await codexReadOnlyPersistent('thread/list', { ...stdinData, params });
-  return { ...result, data: filterCodexProjectThreads(result.data, projectPath) };
+  return { ...result, data: applyCodexCustomTitles(filterCodexProjectThreads(result.data, projectPath), await readCodexCustomTitles()) };
 }
 
 /** Counts history independently so listing metadata never waits for full transcripts. */
@@ -712,12 +713,30 @@ export async function codexReadSubagentPersistent(stdinData) {
 
 export async function codexReadThreadPersistent(stdinData) {
   const { fileChangesOnly, ...params } = stdinData?.params ?? {};
+  if (fileChangesOnly === true) {
+    const { service } = ensureSessionService(stdinData);
+    let generation = null;
+    let client = null;
+    const assertOwner = () => {
+      if (retiredSessionServices.has(service) || generation !== null && (service.runtimeGeneration !== generation
+          || service.client !== client || ['failed', 'stopped', 'draining'].includes(service.state))) {
+        throw new Error('Native session-edits runtime changed; retry the read');
+      }
+    };
+    return await readCodexSessionEdits(async (method, nativeParams) => {
+      assertOwner();
+      await service.ensureRuntime();
+      if (generation === null) { generation = service.runtimeGeneration; client = service.client; }
+      assertOwner();
+      const response = await service.readOnly(method, nativeParams);
+      assertOwner();
+      return response;
+    }, { threadId: stdinData.threadId ?? params.threadId });
+  }
   const result = await codexReadOnlyPersistent('thread/read', { ...stdinData, params });
   if (params.includeTurns !== true || !result?.thread) return result;
   const fileChangeMessages = projectThreadFileChanges(result.thread);
-  // Avoid copying the command transcript merely to populate the file list.
-  return fileChangesOnly ? { thread: { id: result.thread?.id,
-    ...(result.thread?.name ? { name: result.thread.name } : {}) }, fileChangeMessages } : { ...result, fileChangeMessages };
+  return { ...result, fileChangeMessages };
 }
 
 /** Keeps the edit ledger independent of the visible conversation's pagination. */
@@ -771,13 +790,13 @@ function serviceAwaitingReply(stdinData) {
 /** Control operation (bypasses queue): reply to a native interaction. */
 export async function codexRespondInteractionPersistent(stdinData) {
   const service = serviceAwaitingReply(stdinData);
-  const replied = service.respondInteraction(stdinData.rpcId, stdinData.result ?? {});
+  const replied = await service.respondInteraction(stdinData.rpcId, stdinData.result ?? {});
   if (!replied) {
     const error = new Error('invalid native Codex interaction result');
     error.code = 'INVALID_INTERACTION_RESULT';
     throw error;
   }
-  return { replied: true };
+  return typeof replied === 'object' ? replied : { replied: true };
 }
 
 /** Control operation (bypasses queue): typed error reply. */
@@ -860,6 +879,11 @@ export async function codexReleaseThreadPersistent(stdinData) {
     return { released: null };
   }
   const entry = sessionServices.get(sessionKeyOf(stdinData));
+  const onlyIfIdle = stdinData?.onlyIfIdle === true;
+  // Reject before changing registry/count/title ownership. A busy channel must
+  // remain available to its active turn and to a later, non-destructive retry.
+  if (onlyIfIdle) service.assertIdleForRelease();
+  const releasing = service.releaseThread(stdinData?.threadId || null, { onlyIfIdle });
   entry?.titleAbort?.abort();
   // An in-flight count must not keep paging (or cold-start) a runtime this
   // release is retiring; release does not bump the runtime generation, so the
@@ -867,7 +891,7 @@ export async function codexReleaseThreadPersistent(stdinData) {
   nativeHistoryCounters.delete(service);
   retiredSessionServices.add(service);
   try {
-    return await service.releaseThread(stdinData?.threadId || null);
+    return await releasing;
   } finally {
     await entry?.titleTask;
     if (sessionServices.get(sessionKeyOf(stdinData))?.service === service) sessionServices.delete(sessionKeyOf(stdinData));
