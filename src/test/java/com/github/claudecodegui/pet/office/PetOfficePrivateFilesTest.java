@@ -35,4 +35,15 @@ public class PetOfficePrivateFilesTest {
             assertEquals(previous, files.readPrivate("settings.json"));
         }
     }
+
+    @Test
+    public void memberWritesCannotMutateCoordinatorOrPreferenceAuthority() throws Exception {
+        var root = PetOfficeTestRoot.create(temporary);
+        var files = new PetOfficePrivateFiles(root, Map.of("coordinator-v1.json", 1024));
+        assertThrows(IOException.class, () -> files.writeMember("coordinator-v1.json", new JsonObject()));
+        assertThrows(IOException.class, () -> files.removeMember("coordinator-v1.json"));
+        var members = new PetOfficeMemberFiles(root);
+        assertThrows(IOException.class, () -> members.write("../preferences-v1", new JsonObject()));
+        assertThrows(IOException.class, () -> members.remove("UPPERCASE"));
+    }
 }
