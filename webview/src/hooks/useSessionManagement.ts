@@ -223,7 +223,6 @@ export function useSessionManagement({
   // thread, and an optimistic new session would force-release the very work
   // that refusal protects, so Codex leaves a deleted session only once the
   // backend reports that its files are gone.
-  const awaitsDeletionResult = currentProvider === 'codex';
   /** requestId -> provider of this window's delete requests still awaiting an outcome. */
   const pendingDeletionsRef = useRef(new Map<string, string | undefined>());
   const localSessionIdRef = useRef(currentSessionId);
@@ -232,7 +231,7 @@ export function useSessionManagement({
   }, [currentSessionId]);
 
   /** Send a delete request; returns false when the bridge refused it. */
-  const requestHistoryDeletion = useCallback((type: 'delete_session' | 'delete_sessions', sessionIds: string[], provider = currentProvider) => {
+  const requestHistoryDeletion = useCallback((type: 'delete_session' | 'delete_sessions', sessionIds: string[], provider: string) => {
     const requestId = createDeletionRequestId();
     // The provider travels with the request: native Codex history never tells
     // the backend which history view is open.
@@ -246,7 +245,7 @@ export function useSessionManagement({
     pendingDeletionsRef.current.delete(requestId);
     addToast(t('history.deleteFailed'), 'error');
     return false;
-  }, [addToast, currentProvider, t]);
+  }, [addToast, t]);
 
   const handleHistoryDeleteResult = useCallback((json: string) => {
     let result: HistoryDeleteResult;
@@ -446,14 +445,23 @@ export function useSessionManagement({
         total: sumKnownHistoryMessages(previous.sessions.filter(session => !removed.includes(session))),
       };
     });
-    const transition = currentProvider === 'codex' && currentSessionId !== null && ids.has(currentSessionId);
+    const activeSessionId = (currentSessionIdRef ?? localSessionIdRef).current;
+    const transition = currentProvider === 'codex' && activeSessionId !== null && ids.has(activeSessionId);
     if (transition) {
       beginSessionTransition(null, null);
       suppressNextStatusToastRef.current = true;
       sendBridgeEvent('create_new_session');
     }
-    showSessionDeletedToast(transition || window.__sessionTransitioning === true);
-  }), [beginSessionTransition, currentProvider, currentSessionId, setHistoryData, showSessionDeletedToast]);
+    if (operation.result?.warning) {
+      const toast = { message: t(`settings.codexStorage.errors.${operation.result.warning}`, {
+        defaultValue: t('settings.codexStorage.errors.STORAGE_OPERATION_FAILED'),
+      }), type: 'warning' as const };
+      if (transition || window.__sessionTransitioning === true) window.__pendingSessionTransitionToast = toast;
+      else addToast(toast.message, toast.type);
+    } else {
+      showSessionDeletedToast(transition || window.__sessionTransitioning === true);
+    }
+  }), [addToast, beginSessionTransition, currentProvider, currentSessionIdRef, setHistoryData, showSessionDeletedToast, t]);
 
   const deleteCodexHistorySessions = useCallback(async (ids: string[]) => {
     const reason = (code: string) => t(`settings.codexStorage.errors.${code}`, {
@@ -469,12 +477,15 @@ export function useSessionManagement({
       const operation = await requestCodexHistoryDeletion(ids);
       if (!mounted.current) return;
       if (!operationSucceeded(operation)) {
-        addToast(reason(operation.error ?? 'STORAGE_OPERATION_FAILED'), 'error');
-      } else if (operation.result?.warning) {
+        addToast(reason(operation.error ?? 'STORAGE_OPERATION_FAILED'), operation.error === 'SESSION_RUNNING' ? 'warning' : 'error');
+      } else if (operation.result?.warning && !operation.result.deletedSessionIds?.length) {
         addToast(reason(operation.result.warning), 'warning');
       }
     } catch (error) {
-      if (mounted.current) addToast(reason(error instanceof CodexStorageError ? error.code : 'STORAGE_OPERATION_FAILED'), 'error');
+      if (mounted.current) {
+        const code = error instanceof CodexStorageError ? error.code : 'STORAGE_OPERATION_FAILED';
+        addToast(reason(code), code === 'SESSION_RUNNING' ? 'warning' : 'error');
+      }
     } finally {
       ids.forEach(id => pendingCodexDeletions.current.delete(id));
     }
@@ -488,7 +499,7 @@ export function useSessionManagement({
       return;
     }
     // Send delete request to Java backend
-    if (!requestHistoryDeletion('delete_session', [sessionId], provider)) return;
+    if (!requestHistoryDeletion('delete_session', [sessionId], provider || 'claude')) return;
     let startedSessionTransition = false;
 
     // Immediately update frontend state, remove session from history list
@@ -509,8 +520,8 @@ export function useSessionManagement({
       });
 
       // If deleted session is current session, clear messages and reset state.
-      // Codex waits for onHistoryDeleteResult instead.
-      if (sessionId === currentSessionId && !awaitsDeletionResult) {
+      // Codex waits for the confirmed storage receipt instead.
+      if (sessionId === currentSessionId) {
         // [FIX] Send interrupt signal if AI is responding
         if (loading) {
           sendBridgeEvent('interrupt_session');
@@ -533,11 +544,16 @@ export function useSessionManagement({
       (historyDataRef.current?.sessions?.find(session => session.sessionId === id)?.provider || currentProvider) === 'codex');
     if (codexIds.length > 0) void deleteCodexHistorySessions(codexIds);
     const codexSet = new Set(codexIds);
-    const uniqueSessionIds = selectedIds.filter(id => !codexSet.has(id));
+    const providerBatches = new Map<string, string[]>();
+    for (const id of selectedIds.filter(id => !codexSet.has(id))) {
+      const provider = historyDataRef.current?.sessions?.find(session => session.sessionId === id)?.provider || currentProvider || 'claude';
+      const batch = providerBatches.get(provider) ?? [];
+      batch.push(id);
+      providerBatches.set(provider, batch);
+    }
+    const uniqueSessionIds = [...providerBatches].flatMap(([provider, ids]) =>
+      requestHistoryDeletion('delete_sessions', ids, provider) ? ids : []);
     if (uniqueSessionIds.length === 0) return;
-
-    const provider = historyDataRef.current?.sessions?.find(session => session.sessionId === uniqueSessionIds[0])?.provider || currentProvider;
-    if (!requestHistoryDeletion('delete_sessions', uniqueSessionIds, provider)) return;
     let startedSessionTransition = false;
 
     if (historyData && historyData.sessions) {
@@ -560,7 +576,7 @@ export function useSessionManagement({
         };
       });
 
-      if (currentSessionId && deletedSessionIds.has(currentSessionId) && !awaitsDeletionResult) {
+      if (currentSessionId && deletedSessionIds.has(currentSessionId)) {
         if (loading) {
           sendBridgeEvent('interrupt_session');
         }
