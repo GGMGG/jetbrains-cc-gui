@@ -35,7 +35,8 @@ public class ProcessManager implements AiDataProcessGate.IdleRuntime {
 
     @Override
     public boolean hasActiveWork() {
-        return pendingStarts.get() > 0 || activeChannelProcesses.values().stream().anyMatch(Process::isAlive);
+        return pendingStarts.get() > 0 || activeChannelProcesses.values().stream().anyMatch(Process::isAlive)
+                || processPermits.values().stream().anyMatch(AiDataProcessGate.ProcessPermit::hasLiveDescendants);
     }
 
     @Override
@@ -44,7 +45,6 @@ public class ProcessManager implements AiDataProcessGate.IdleRuntime {
             return false;
         }
         for (Map.Entry<Process, AiDataProcessGate.ProcessPermit> entry : processPermits.entrySet()) {
-            entry.getValue().terminateProcessTree(3000L);
             releaseProcessPermit(entry.getKey());
         }
         return true;
