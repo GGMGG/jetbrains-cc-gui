@@ -219,7 +219,7 @@ public final class PetOfficeLocalService implements Disposable {
             String bootstrap = "<script>window.__PET_OFFICE_PAGE__=" + JSON.toJson(page.token)
                     + ";window.__PET_OFFICE_BOOTSTRAP__=" + bootstrap(page, language)
                     + ";window.__PET_OFFICE_LANGUAGE__=" + JSON.toJson(language)
-                    + ";window.__PET_OFFICE_SEND__=function(request){" + page.query.inject("request") + ";return true;};</script>";
+                    + ";window.__PET_OFFICE_SEND__=function(request){" + page.query.inject("request") + ";return true;};window.petOfficeNativeBridge=window.__PET_OFFICE_SEND__;</script>";
             page.browser.loadHTML(html.replace("<!-- OFFICE_BOOTSTRAP -->", bootstrap), page.url);
             page.window.setVisible(page.initiallyVisible);
             page.sceneRefresh = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(() -> {
