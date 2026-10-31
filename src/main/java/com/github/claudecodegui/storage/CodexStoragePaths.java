@@ -44,7 +44,7 @@ public final class CodexStoragePaths {
     }
 
     public void revalidate() throws IOException {
-        if (!canonical.toRealPath().equals(root) || !identity(canonical).equals(identity)) {
+        if (!canonical.toRealPath().equals(root) || !identity(root).equals(identity)) {
             throw new IOException("STORAGE_IDENTITY_CHANGED");
         }
     }
