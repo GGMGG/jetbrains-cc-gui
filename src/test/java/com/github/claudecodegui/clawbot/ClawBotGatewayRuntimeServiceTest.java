@@ -772,12 +772,12 @@ public class ClawBotGatewayRuntimeServiceTest {
 
     @Test
     public void followerLoadsCheckpointOnlyAfterAcquiringLeadership() throws Exception {
-        Path runtime = temporaryFolder.newFolder("checkpoint-ownership-runtime").toPath();
+        Path runtime = ClawBotTestFiles.privateRoot(temporaryFolder.newFolder("checkpoint-ownership-runtime").toPath());
         ClawBotGatewayRuntimeService first = new ClawBotGatewayRuntimeService(runtime, "first", testHandoff());
         ClawBotGatewayRuntimeService second = new ClawBotGatewayRuntimeService(runtime, "second", testHandoff());
         try {
             assertTrue(first.start());
-            Files.writeString(runtime.resolve("transport-state.json"), "invalid checkpoint");
+            ClawBotTestFiles.writeString(runtime.resolve("transport-state.json"), "invalid checkpoint", StandardCharsets.UTF_8);
             assertFalse(second.start());
             first.stop();
             new ClawBotTransportStateStore(runtime).save("latest-cursor", List.of("latest-message"));
