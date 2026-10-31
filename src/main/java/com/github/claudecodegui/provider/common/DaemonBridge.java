@@ -181,7 +181,7 @@ public class DaemonBridge implements AiDataProcessGate.IdleRuntime {
             return false;
         }
         // Migration intent already prevents new starts and request registration.
-        stop();
+        stop(false);
         return true;
     }
 
@@ -456,6 +456,10 @@ public class DaemonBridge implements AiDataProcessGate.IdleRuntime {
      * Stop the daemon process gracefully.
      */
     public void stop() {
+        stop(true);
+    }
+
+    private void stop(boolean terminateDescendants) {
         LOG.info("[DaemonBridge] Stopping daemon...");
         DaemonGenerationContext context;
         synchronized (startLock) {
@@ -473,13 +477,18 @@ public class DaemonBridge implements AiDataProcessGate.IdleRuntime {
             }
         }
         if (context == null) {
-            stopOwnedProcesses();
+            stopOwnedProcesses(terminateDescendants);
             return;
         }
 
         // Cancel all pending requests
         for (RequestHandler handler : context.drainRequests()) {
             handler.onError("Daemon stopped");
+        }
+
+        // Retain descendants before the cooperative parent exit makes them undiscoverable.
+        if (context.processPermit != null) {
+            context.processPermit.hasLiveDescendants();
         }
 
         // Send shutdown command before closing stdin (allows daemon to flush)
@@ -503,8 +512,16 @@ public class DaemonBridge implements AiDataProcessGate.IdleRuntime {
             LOG.debug("[DaemonBridge] Error closing stdin: " + e.getMessage());
         }
 
+        if (!terminateDescendants) {
+            try {
+                context.process.waitFor(3, TimeUnit.SECONDS);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         // Kill process if still alive and wait for termination
-        if (context.processPermit != null) {
+        if (context.processPermit != null && terminateDescendants) {
             context.processPermit.terminateProcessTree(3000L);
         } else if (context.process.isAlive()) {
             context.process.destroyForcibly();
@@ -534,12 +551,18 @@ public class DaemonBridge implements AiDataProcessGate.IdleRuntime {
         }
 
         LOG.info("[DaemonBridge] Daemon stopped");
-        stopOwnedProcesses();
+        stopOwnedProcesses(terminateDescendants);
     }
 
-    private void stopOwnedProcesses() {
-        for (AiDataProcessGate.ProcessPermit permit : ownedProcesses.values()) {
-            permit.terminateProcessTree(3000L);
+    private void stopOwnedProcesses(boolean terminateDescendants) {
+        for (Map.Entry<Process, AiDataProcessGate.ProcessPermit> entry : ownedProcesses.entrySet()) {
+            AiDataProcessGate.ProcessPermit permit = entry.getValue();
+            if (terminateDescendants) {
+                permit.terminateProcessTree(3000L);
+            } else if (entry.getKey().isAlive()) {
+                permit.hasLiveDescendants();
+                entry.getKey().destroyForcibly();
+            }
             permit.close();
         }
     }
