@@ -64,6 +64,21 @@ final class PetOfficePrivateFiles {
         }
     }
 
+    void removePrivate(String name, PetOfficeRuntimeLease lease) throws IOException {
+        java.util.Objects.requireNonNull(lease, "lease");
+        synchronized (lease) {
+            if (!lease.isValid()) {
+                throw new IOException("OFFICE_LEADER_LOST");
+            }
+            UserPrincipal owner = validateDirectory();
+            Path file = privatePath(name);
+            if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+                validateFile(file, owner);
+                Files.delete(file);
+            }
+        }
+    }
+
     private void writePrivateOwned(String name, byte[] bytes, PetOfficeRuntimeLease lease) throws IOException {
         if (!lease.isValid()) {
             throw new IOException("OFFICE_LEADER_LOST");

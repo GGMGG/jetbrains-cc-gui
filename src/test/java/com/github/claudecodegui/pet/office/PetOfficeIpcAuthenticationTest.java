@@ -29,9 +29,9 @@ public class PetOfficeIpcAuthenticationTest {
         assertEquals(ENDPOINT, PetOfficeEndpoint.decode(PetOfficeEndpoint.encode(ENDPOINT)));
         assertFalse(ENDPOINT.toString().contains(ENDPOINT.token()));
         JsonObject value = PetOfficeEndpoint.encode(ENDPOINT);
-        value.addProperty("schemaVersion", 4);
+        value.addProperty("schemaVersion", PetOfficeEndpoint.VERSION + 1);
         assertThrows(IOException.class, () -> PetOfficeEndpoint.decode(value));
-        value.addProperty("schemaVersion", 3);
+        value.addProperty("schemaVersion", PetOfficeEndpoint.VERSION);
         value.addProperty("port", 0);
         assertThrows(IOException.class, () -> PetOfficeEndpoint.decode(value));
         value.addProperty("port", 12345);
