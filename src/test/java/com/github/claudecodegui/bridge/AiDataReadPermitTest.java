@@ -58,6 +58,12 @@ public class AiDataReadPermitTest {
         Path root = temporary.newFile("blocked-parent").toPath().resolve("coordination");
         AiDataProcessGate gate = new AiDataProcessGate(new AiDataMigrationCoordinator(root));
         assertThrows(IllegalStateException.class, gate::tryAcquireReadPermit);
-        assertNotNull(gate.tryAcquireMigrationPermit());
+        assertNull(gate.tryAcquireMigrationPermit());
+        assertFalse(gate.isCoordinationAvailable());
+        assertThrows(IllegalStateException.class, gate::tryAcquireReadPermit);
+        assertThrows(IllegalStateException.class, gate::tryAcquireMaintenancePermit);
+        try (var ordinarySession = gate.acquireProcessPermit()) {
+            assertNotNull(ordinarySession);
+        }
     }
 }
