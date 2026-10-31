@@ -2,6 +2,8 @@
  * Global window interface extensions for IDEA plugin communication
  */
 interface Window {
+  onClawBotStatus?: (json: string) => void;
+  onClawBotOperation?: (json: string) => void;
   /**
    * Send message to Java backend
    */
