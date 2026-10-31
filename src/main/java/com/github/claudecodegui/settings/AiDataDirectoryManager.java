@@ -116,7 +116,7 @@ public final class AiDataDirectoryManager {
 
     public JsonObject snapshot() throws IOException {
         synchronized (OPERATION_LOCK) {
-            if (!isSupported()) {
+            if (!isSupported() || !processGate.isCoordinationAvailable()) {
                 return buildSnapshot(false);
             }
             if (!needsExclusiveSnapshot()) {
@@ -129,9 +129,9 @@ public final class AiDataDirectoryManager {
                     }
                 }
             }
-            try (AiDataProcessGate.MigrationPermit ignored = acquireRecoveryPermitIfNeeded()) {
-                AiDataMigrationCoordinator.LockHandle migrationLock = migrationCoordinator.tryAcquire("status");
-                if (migrationLock == null) {
+            try (AiDataProcessGate.MigrationPermit recovery = acquireRecoveryPermitIfNeeded()) {
+                AiDataMigrationCoordinator.LockHandle migrationLock = recovery == null ? migrationCoordinator.tryAcquire("status") : null;
+                if (recovery == null && migrationLock == null) {
                     return buildBusySnapshot();
                 }
                 try (migrationLock) {
@@ -171,11 +171,8 @@ public final class AiDataDirectoryManager {
             if (scanExternalProcesses && DshHostProcessCoordinator.getInstance().hasRunningHost()) {
                 throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
             }
-            AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
-            if (migrationPermit == null) {
-                throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
-            }
-            try (migrationPermit; AiDataMigrationCoordinator.LockHandle migrationLock = acquireMigrationLock("migrate")) {
+            AiDataProcessGate.MigrationPermit migrationPermit = acquireMigrationPermit("migrate");
+            try (migrationPermit) {
                 importLegacyState();
                 if (hasExternalAiProcess()) {
                     throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
@@ -250,11 +247,8 @@ public final class AiDataDirectoryManager {
     public JsonObject cleanupBackups() throws IOException {
         synchronized (OPERATION_LOCK) {
             requireSupported();
-            AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
-            if (migrationPermit == null) {
-                throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
-            }
-            try (migrationPermit; AiDataMigrationCoordinator.LockHandle migrationLock = acquireMigrationLock("cleanup")) {
+            AiDataProcessGate.MigrationPermit migrationPermit = acquireMigrationPermit("cleanup");
+            try (migrationPermit) {
                 importLegacyState();
                 if (hasExternalAiProcess()) {
                     throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
@@ -495,23 +489,22 @@ public final class AiDataDirectoryManager {
                     || !Files.exists(legacyStateDirectory.resolve(JOURNAL_FILE), LinkOption.NOFOLLOW_LINKS))) {
             return null;
         }
-        AiDataProcessGate.MigrationPermit migrationPermit = processGate.tryAcquireQuiescentMigrationPermit();
-        if (migrationPermit == null) {
-            throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
-        }
-        return migrationPermit;
+        return acquireMigrationPermit("recovery");
     }
 
-    private AiDataMigrationCoordinator.LockHandle acquireMigrationLock(String operation) throws IOException {
-        AiDataMigrationCoordinator.LockHandle migrationLock = migrationCoordinator.tryAcquire(operation);
-        if (migrationLock == null) {
+    private AiDataProcessGate.MigrationPermit acquireMigrationPermit(String operation) throws IOException {
+        AiDataProcessGate.MigrationPermit permit = processGate.tryAcquireCoordinatedMigrationPermit(migrationCoordinator, operation);
+        if (permit == null) {
+            if (!processGate.isCoordinationAvailable()) {
+                throw new AiDataDirectoryException("AI_DATA_COORDINATION_UNAVAILABLE");
+            }
             JsonObject owner = migrationCoordinator.readActiveOwner();
             if (owner != null) {
                 throw new AiDataDirectoryException("AI_DATA_MIGRATION_ACTIVE", owner);
             }
             throw new AiDataDirectoryException("AI_PROCESSES_ACTIVE");
         }
-        return migrationLock;
+        return permit;
     }
 
     private boolean hasExternalAiProcess() {
@@ -727,7 +720,7 @@ public final class AiDataDirectoryManager {
 
     private JsonObject buildSnapshot(boolean recovered) throws IOException {
         JsonObject result = new JsonObject();
-        result.addProperty("supported", isSupported());
+        result.addProperty("supported", isSupported() && processGate.isCoordinationAvailable());
         result.addProperty("platform", platform.name().toLowerCase());
         result.addProperty("wsl", wsl);
         result.addProperty("homeDirectory", userHome.toString());
@@ -736,6 +729,8 @@ public final class AiDataDirectoryManager {
             result.addProperty("error", "WSL_NOT_SUPPORTED");
         } else if (!isSupported()) {
             result.addProperty("error", "PLATFORM_NOT_SUPPORTED");
+        } else if (!processGate.isCoordinationAvailable()) {
+            result.addProperty("error", "AI_DATA_COORDINATION_UNAVAILABLE");
         }
 
         JsonArray entries = new JsonArray();
