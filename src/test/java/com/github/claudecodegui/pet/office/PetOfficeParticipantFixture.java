@@ -23,4 +23,7 @@ final class PetOfficeParticipantFixture {
         return new PetOfficeSessionRegistry.CompleteSnapshot(1, owner, "local-epoch", watermark, 1, sources, List.of(), false);
     }
 
+    static byte[] bytes(PetOfficeParticipantRegistry.Connection connection, int count, long watermark, long observation) throws java.io.IOException {
+        return PetOfficeSnapshotCodec.encode(snapshot(connection.instanceId(), count, watermark, observation), connection.epoch());
+    }
 }
