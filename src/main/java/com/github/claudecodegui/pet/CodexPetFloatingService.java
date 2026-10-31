@@ -253,6 +253,21 @@ public final class CodexPetFloatingService
         return result;
     }
 
+    /** Immutable visual configuration; does not attach an overlay, advance animation or read Pet files. */
+    public synchronized VisualConfiguration visualConfiguration() {
+        String scope = normalizeScope(state.scope);
+        // Read a newer global configuration without consuming the overlay's pending reload/version.
+        PetState current = SCOPE_GLOBAL.equals(scope)
+                ? (observedGlobalStateVersion == GLOBAL_STATE_VERSION.get() ? globalState() : loadGlobalState()) : state;
+        Map<String, List<String>> mappings = new LinkedHashMap<>();
+        sanitizeActionMappings(current.actionMappings).forEach((key, value) -> mappings.put(key, List.copyOf(value)));
+        return new VisualConfiguration(sanitizePetId(current.selectedPetId), scope, current.opacity,
+                Map.copyOf(mappings), assetGeneration.get());
+    }
+
+    public record VisualConfiguration(String selectedPetId, String scope, double opacity,
+                                      Map<String, List<String>> actionMappings, long generation) { }
+
     static void addProjectPosition(JsonObject result, PetState projectState) {
         // Position belongs to the current project window even when visual settings are global.
         result.addProperty("positionX", projectState.positionX);
