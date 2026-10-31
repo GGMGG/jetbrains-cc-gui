@@ -172,6 +172,7 @@ public class ClaudeChatWindow {
     private final AtomicReference<RestoredHistoryLoadRequest> activeRestoredHistoryLoad =
             new AtomicReference<>();
     private final RestoredHistorySession<ClaudeSession> restoredHistory = new RestoredHistorySession<>();
+    private volatile JsonObject restoredHistoryLoadState;
 
     // Shared serializer for structured bridges (Gson instances are thread-safe).
     private static final Gson GSON = new Gson();
@@ -1664,6 +1665,7 @@ public class ClaudeChatWindow {
         }
         session.setSessionInfo(restoredSessionId, restoredCwd);
         restoredHistory.bind(session, restoredSessionId);
+        restoredHistoryLoadState = null;
         persistTabSessionState();
 
         LOG.info("[TabRestore] Restored tab session state: provider=" + savedState.provider
@@ -1679,8 +1681,22 @@ public class ClaudeChatWindow {
         }
     }
 
-    public void loadRestoredHistoryIfNeeded() {
+    public synchronized void loadRestoredHistoryIfNeeded() {
         if (!isRestoredHistorySessionCurrent() || !frontendReady) {
+            return;
+        }
+        RestoredHistoryLoadRequest active = activeRestoredHistoryLoad.get();
+        if (active != null) {
+            publishRestoredHistoryState("loading", active, null, null, 0, false);
+            return;
+        }
+        if (restoredHistory.wasAttempted()) {
+            // Activation or a reloaded webview may replay an outcome, but retry
+            // remains an explicit user action after failure, timeout or cancel.
+            JsonObject previous = restoredHistoryLoadState;
+            if (previous != null) {
+                callJavaScript("updateStartupHistoryLoadState", JsUtils.escapeJs(previous.toString()));
+            }
             return;
         }
         if (!settingsService.isLoadHistoryOnStartup()) {
@@ -1691,12 +1707,11 @@ public class ClaudeChatWindow {
     }
 
     private void loadRestoredHistoryIfNeeded(TabStateService.TabSessionState savedState) {
-        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady)
-                || !settingsService.isLoadHistoryOnStartup()
+        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady, settingsService.isLoadHistoryOnStartup())
                 || session == null || !isNonEmpty(session.getSessionId())) {
             return;
         }
-        startRestoredHistoryLoad();
+        loadRestoredHistoryIfNeeded();
     }
 
     public void loadRestoredHistoryManually() {
@@ -1736,6 +1751,7 @@ public class ClaudeChatWindow {
             return;
         }
         restoredHistoryLoadGeneration.set(generation);
+        restoredHistory.markAttempted();
 
         publishRestoredHistoryState("loading", request, null, null, 0, false);
         long loadStartedNanos = System.nanoTime();
@@ -1776,7 +1792,8 @@ public class ClaudeChatWindow {
             sessionId = resolveExposedSessionId(null, permissionServiceKey);
             persistTabSessionState();
             callJavaScript("historyLoadComplete", "0");
-            publishRestoredHistoryState("loaded", request, null, null, 0, false);
+            publishRestoredHistoryState("missing", request, "HISTORY_LOAD_NOT_FOUND",
+                    "The session history no longer exists. A new session is ready.", 0, false);
             restoredHistory.complete(restoringSession, restoringSessionId);
             return;
         }
@@ -1835,6 +1852,7 @@ public class ClaudeChatWindow {
         if (message != null) {
             payload.addProperty("message", message);
         }
+        restoredHistoryLoadState = payload;
         callJavaScript("updateStartupHistoryLoadState", JsUtils.escapeJs(payload.toString()));
     }
 

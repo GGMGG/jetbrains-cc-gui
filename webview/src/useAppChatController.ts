@@ -30,7 +30,7 @@ import { useSession } from './contexts/SessionContext';
 import { useUIState } from './contexts/UIStateContext';
 import { useDialogs } from './contexts/DialogContext';
 import type { ApplyHistoryModel } from './applyHistoryModel';
-import type { StartupHistoryLoadState } from './types/startupHistory';
+import { startupHistoryStateForSession, type StartupHistoryLoadState } from './types/startupHistory';
 import { useCodexPlanState } from './hooks/useCodexPlanState';
 
 /**
@@ -152,10 +152,7 @@ export const useAppChatController = ({
   const [startupHistoryLoadState, setStartupHistoryLoadState] = useState<StartupHistoryLoadState | null>(null);
 
   useEffect(() => {
-    if (!currentSessionId) return;
-    setStartupHistoryLoadState((previous) => (
-      previous && previous.sessionId !== currentSessionId ? null : previous
-    ));
+    setStartupHistoryLoadState(previous => startupHistoryStateForSession(previous, currentSessionId));
   }, [currentSessionId]);
 
   const {
