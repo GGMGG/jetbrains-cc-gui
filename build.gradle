@@ -201,6 +201,11 @@ tasks.withType(JavaCompile).configureEach {
     options.release.set(17)
 }
 
+tasks.named('test', Test) {
+    // Keep native skill fixtures isolated from the host's live configuration.
+    environment 'CODEX_HOME', ''
+}
+
 // Ensure plugin.xml is patched with the correct since/until build and change notes
 patchPluginXml {
     // plugin compatibility range

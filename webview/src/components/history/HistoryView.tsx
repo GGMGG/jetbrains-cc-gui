@@ -51,10 +51,10 @@ const HistoryView = ({ historyData, currentProvider, currentSessionId, currentSe
 
   const { sessions: listedSessions, infoBar } = useHistorySessions(historyData, searchQuery, t);
   const sessions = useMemo(() => listedSessions.map(session => {
-    const isCurrent = currentProvider === 'codex' && session.sessionId === currentSessionId;
-    return isCurrent && currentSessionBusy
-      ? { ...session, running: true }
-      : session;
+    if (currentProvider !== 'codex' || session.sessionId !== currentSessionId) return session;
+    // This window tracks its own turn live; a listed snapshot can outlive it.
+    const running = Boolean(currentSessionBusy) || session.ownedElsewhere === true;
+    return Boolean(session.running) === running ? session : { ...session, running };
   }), [listedSessions, currentProvider, currentSessionId, currentSessionBusy]);
   const {
     isSelectionMode,

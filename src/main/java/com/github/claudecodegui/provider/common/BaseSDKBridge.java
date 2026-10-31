@@ -354,6 +354,7 @@ public abstract class BaseSDKBridge {
 
                     if (wasInterrupted) {
                         result.success = false;
+                        // A clean exit after Stop is not an abort acknowledgement.
                         result.cancelled = exitCode != 0;
                         result.error = "User interrupted";
                         callback.onComplete(result);
