@@ -61,6 +61,17 @@
     "currentMode": "当前模式: {{mode}}",
     "currentModel": "当前模型: {{model}}",
     "removeAttachment": "移除附件",
+    "queue": {
+      "edit": "编辑排队消息",
+      "remove": "从队列移除",
+      "editLabel": "编辑排队消息 {{position}}",
+      "removeLabel": "从队列移除消息 {{position}}",
+      "reorderLabel": "重新排序消息 {{position}}",
+      "reorderHint": "拖动可排序，聚焦后可用方向键调整",
+      "mergedIntoDraft": "排队消息已合并到当前草稿",
+      "attachmentsNotRestored": "排队消息的附件未能回填到草稿",
+      "editBlockedAttachments": "该消息的附件无法回填，已保留在队列中"
+    },
     "closePreview": "关闭预览",
     "loadingDropdown": "加载中...",
     "modelsLoadFailed": "模型列表加载失败，点击重试",
@@ -75,6 +86,8 @@
     "usagePercentage": "上下文: {{percentage}}",
     "planUsage": {
       "title": "Claude 额度详情",
+      "grokTitle": "Grok 额度详情",
+      "staleIdle": "这是上次读取的额度，下次使用 Grok 时会自动刷新",
       "loading": "正在获取额度…",
       "unavailable": "额度暂不可用",
       "dash": "额度 —",

@@ -83,7 +83,8 @@ export async function applyReasoningEffortToSession(client, sessionId, reasoning
  * These allow init+auth+session to be done once, then prompt() reused.
  */
 
-export async function initializeAndAuthenticate(client, { apiKey = '', baseUrl = '', hasApiKeyFromEnv = false, authMethod = '' } = {}) {
+export async function initializeAndAuthenticate(client, { apiKey = '', baseUrl = '', hasApiKeyFromEnv = false, authMethod = '', timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false } = {}) {
+  const effectiveTimeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
   const init = await client.request('initialize', {
     protocolVersion: 1,
     clientCapabilities: {
@@ -95,7 +96,7 @@ export async function initializeAndAuthenticate(client, { apiKey = '', baseUrl =
       name: 'codemoss-jetbrains',
       version: '0.4.6',
     },
-  });
+  }, effectiveTimeout);
 
   const authMethodList = init.authMethods ?? [];
   const authMethods = new Set(authMethodList.map((m) => m.id));
@@ -130,21 +131,28 @@ export async function initializeAndAuthenticate(client, { apiKey = '', baseUrl =
     );
   }
 
-  console.error(
-    '[GROK-ACP] authenticate methodId=' +
+  if (!quiet) {
+    const logLine =
+      '[GROK-ACP] authenticate methodId=' +
       methodId +
       ' preferred=' +
       preferred +
       ' hasApiKey=' +
       hasApiKey +
       ' authReason=' +
-      resolved.reason
-  );
+      resolved.reason +
+      '\n';
+    if (process.stderr && typeof process.stderr._originalStderrWrite === 'function') {
+      process.stderr._originalStderrWrite(logLine, 'utf8');
+    } else {
+      console.error(logLine.trimEnd());
+    }
+  }
 
   await client.request('authenticate', {
     methodId,
     _meta: { headless: true },
-  });
+  }, effectiveTimeout);
 
   client.initResult = init;
   return { init, methodId, resolvedAuth: resolved };
