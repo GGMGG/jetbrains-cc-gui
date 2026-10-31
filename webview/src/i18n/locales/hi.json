@@ -1225,7 +1225,11 @@
     "timeoutWarning": "कृपया जल्द उत्तर दें, डायलॉग {{seconds}} सेकंड में स्वचालित रूप से बंद हो जाएगा",
     "expand": "विस्तार करें",
     "collapse": "संक्षिप्त करें",
-    "clickToAnswer": "उत्तर देने के लिए क्लिक करें"
+    "clickToAnswer": "उत्तर देने के लिए क्लिक करें",
+    "recordTitle": "Codex के प्रश्न",
+    "recordAnswer": "आपका उत्तर",
+    "recordSkipped": "छोड़ा गया (बिना उत्तर दिए बंद किया गया)",
+    "answerNotSent": "Codex के प्रश्न का आपका उत्तर नहीं भेजा गया, क्योंकि अभी कोई दूसरी चैट खुली है। उस चैट पर लौटें और उत्तर फिर से भेजें।"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

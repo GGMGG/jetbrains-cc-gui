@@ -33,7 +33,8 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as pause } from 'node:timers/promises';
 import { dressContextForTurn } from './codex-ide-context.js';
 import { projectCodexItemMessages } from './codex-item-projection.js';
-import { ASYNC_QUESTION_METHOD, normalizeAsyncQuestions, asyncQuestionAnswer } from './codex-async-questions.js';
+import { ASYNC_QUESTION_METHOD, normalizeAsyncQuestions, asyncQuestionAnswer, asyncQuestionDismissal }
+  from './codex-async-questions.js';
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { buildProjectDocFallbackConfig } from './codex-native-runtime-config.js';
 
@@ -69,6 +70,9 @@ export const STOP_CONFIRMATION_BUDGET_MS = 10_000;
  */
 export const COMPACT_ANNOUNCEMENT_BUDGET_MS = 60_000;
 
+/** How long an async answer waits for Codex to accept it into the running turn. */
+export const ASYNC_QUESTION_STEER_TIMEOUT_MS = 5_000;
+
 const TERMINAL_TURN_STATUSES = new Set(['completed', 'failed', 'interrupted']);
 
 export class CodexAppServerService extends EventEmitter {
@@ -83,6 +87,7 @@ export class CodexAppServerService extends EventEmitter {
    *        computeCodexRuntimeFingerprint.
    * @param {string} [opts.runtimeFingerprint] precomputed fingerprint.
    * @param {number} [opts.stopBudgetMs]
+   * @param {number} [opts.asyncQuestionSteerTimeoutMs] wait for Codex to accept an async answer.
    * @param {number} [opts.startupAttempts] bounded runtime-start attempts; >1 lets
    *        the daemon fall back to the next resolved CLI when the chosen binary
    *        dies before READY (nothing was dispatched, so a retry replays nothing).
@@ -100,6 +105,7 @@ export class CodexAppServerService extends EventEmitter {
     privacyIndex = null,
     stopBudgetMs = STOP_CONFIRMATION_BUDGET_MS,
     compactAnnouncementBudgetMs = COMPACT_ANNOUNCEMENT_BUDGET_MS,
+    asyncQuestionSteerTimeoutMs = ASYNC_QUESTION_STEER_TIMEOUT_MS,
     startupAttempts = 1,
   } = {}) {
     super();
@@ -167,6 +173,7 @@ export class CodexAppServerService extends EventEmitter {
     // 10s contract; tests may shorten it for deterministic coverage.
     this.stopBudgetMs = stopBudgetMs;
     this.compactAnnouncementBudgetMs = compactAnnouncementBudgetMs;
+    this.asyncQuestionSteerTimeoutMs = asyncQuestionSteerTimeoutMs;
 
     // Bootstrap bookkeeping: resume/start in flight whose outcome is unknown.
     this.bootstrapInFlight = false;
@@ -2137,8 +2144,9 @@ export class CodexAppServerService extends EventEmitter {
   #cancelAsyncQuestion(id, interaction) {
     if (this.pendingInteractions.get(id) !== interaction) return;
     this.#resolveAsyncQuestion(id, interaction);
-    // Closing the dialog alone leaves an agent waiting in its original turn.
-    // Cancel only that tracked turn; an older completed question must never stop a newer send.
+    // A typed error (thread release, expiry) retires the question for good, so the agent
+    // must not keep waiting for it. Cancel only that tracked turn; an older completed
+    // question must never stop a newer send.
     const operation = this.operations.get(interaction.clientOperationId);
     if (operation && !operation.settled && !operation.cancelRequested
         && operation.threadId === interaction.threadId && operation.nativeTurnId === interaction.turnId) {
@@ -2154,34 +2162,51 @@ export class CodexAppServerService extends EventEmitter {
   }
 
   async #answerAsyncQuestion(id, interaction, result) {
-    const text = asyncQuestionAnswer(interaction.questions, result, interaction.itemId);
-    if (text === null || interaction.answering) return false;
-    if (!text) {
-      this.#cancelAsyncQuestion(id, interaction);
-      return { replied: true };
-    }
+    const answer = asyncQuestionAnswer(interaction.questions, result, interaction.itemId);
+    if (answer === null || interaction.answering) return false;
+    // An empty answer set closes the dialog. The agent is told so it stops waiting;
+    // its turn may still be doing other work, so it is never interrupted.
+    const dismissed = answer === '';
+    const text = dismissed ? asyncQuestionDismissal(interaction.questions, interaction.itemId) : answer;
     interaction.answering = true;
     try {
-      const current = () => this.pendingInteractions.get(id) === interaction
-        && this.runtimeGeneration === interaction.generation && this.client?.alive;
-      const active = [...this.operations.values()].find(operation => !operation.settled && !operation.cancelRequested
-        && operation.threadId === interaction.threadId && operation.nativeTurnId === interaction.turnId);
-      if (text && active) {
+      // Steer only the operation that published the question; a later turn may reuse its native id.
+      const owner = this.operations.get(interaction.clientOperationId);
+      const active = owner && !owner.settled && !owner.cancelRequested
+        && owner.threadId === interaction.threadId && owner.nativeTurnId === interaction.turnId;
+      if (active) {
         try {
           await this.client.request('turn/steer', { threadId: interaction.threadId,
-            expectedTurnId: interaction.turnId, input: [{ type: 'text', text }] }, { timeoutMs: 5_000 });
-          if (!current()) return false;
+            expectedTurnId: interaction.turnId, input: [{ type: 'text', text }] },
+          { timeoutMs: this.asyncQuestionSteerTimeoutMs });
+          // Codex accepted the answer, even if the turn ended while it was in flight.
           this.#resolveAsyncQuestion(id, interaction);
           return { replied: true };
         } catch (error) {
+          if (dismissed) {
+            // Closing the question is what the user asked for. A turn that definitively refused
+            // the notice may still wait for an answer, so it is stopped instead (a notice that
+            // timed out may still land and leaves the turn running).
+            if (error?.code === 'RPC_ERROR') this.#cancelAsyncQuestion(id, interaction);
+            else this.#resolveAsyncQuestion(id, interaction);
+            return { replied: true };
+          }
+          if (error?.code === 'RPC_TIMEOUT' && error.phase !== 'notWritten') {
+            // A written steer may still be accepted. Retire the question so the page
+            // cannot ask again and steer a second, possibly different, answer.
+            this.#resolveAsyncQuestion(id, interaction);
+            throw new ClassifiedError('DELIVERY_UNCONFIRMED',
+              'Codex did not confirm the answer in time; it may still take effect');
+          }
           // Only a definitive rejection after a terminal can start a new turn.
-          // A timed-out steer may have been accepted and must never be retried.
           if (error?.code !== 'RPC_ERROR' || !this.completedTurns.has(`${interaction.threadId}:${interaction.turnId}`)) throw error;
         }
       }
-      if (!current()) return false;
+      const current = this.pendingInteractions.get(id) === interaction
+        && this.runtimeGeneration === interaction.generation && this.client?.alive;
+      if (!current && !dismissed) return false;
       this.#resolveAsyncQuestion(id, interaction);
-      return { replied: true, ...(text ? { followUp: { threadId: interaction.threadId, text } } : {}) };
+      return dismissed ? { replied: true } : { replied: true, followUp: { threadId: interaction.threadId, text } };
     } finally {
       interaction.answering = false;
     }

@@ -180,6 +180,20 @@ public class CodexAppServerRequestExecutorTest {
     }
 
     @Test
+    public void anAnswerCodexMayStillAcceptIsNeverOfferedAgain() {
+        CodexAppServerRequestExecutor executor = new CodexAppServerRequestExecutor(
+                Logger.getInstance(CodexAppServerRequestExecutorTest.class), ignored -> { });
+
+        JsonObject result = executor.sendControlCommand(
+                new FailingDaemon("Codex did not confirm the answer in time", "DELIVERY_UNCONFIRMED"),
+                "codex.respondInteraction", new JsonObject(), 1000L);
+
+        assertEquals("DELIVERY_UNCONFIRMED", result.get("code").getAsString());
+        assertEquals(false, result.get("retryable").getAsBoolean());
+        assertEquals(true, result.get("deliveryUnconfirmed").getAsBoolean());
+    }
+
+    @Test
     public void onlyAnswersAreFlaggedAsUnconfirmedWhenTheDaemonIsSlow() {
         CodexAppServerRequestExecutor executor = new CodexAppServerRequestExecutor(
                 Logger.getInstance(CodexAppServerRequestExecutorTest.class), ignored -> { });

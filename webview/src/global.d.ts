@@ -10,7 +10,8 @@ interface Window {
   sendToJava?: (message: string) => void;
 
   /** Legacy windowed-JCEF repaint requested after its IntelliJ content tab is activated. */
-  onTabActivated?: () => void;
+  onTabActivated?: (remote?: boolean | string) => void;
+  __CCGUI_DRAFT_CACHE_KEY__?: string;
 
   /** Strict two-frame OSR damage pulse, owned by a Java frame-fence attempt token. */
   __ccguiSurfaceDamagePhaseA?: (token: string) => boolean;

@@ -1266,7 +1266,11 @@
     "timeoutWarning": "請儘快回答，對話框將在 {{seconds}} 秒後自動關閉",
     "expand": "展開",
     "collapse": "收起",
-    "clickToAnswer": "點擊回答"
+    "clickToAnswer": "點擊回答",
+    "recordTitle": "Codex 提問",
+    "recordAnswer": "你的回答",
+    "recordSkipped": "已略過（未作答就關閉了）",
+    "answerNotSent": "你對 Codex 提問的回答沒有送出，因為目前開啟的是另一個對話。請回到原來的對話，把回答重新傳送一次。"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

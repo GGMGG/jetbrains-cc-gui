@@ -101,20 +101,21 @@ public class CodexSettingsManager {
             return null;
         }
 
+        Map<String, Object> config;
         try {
             String content = Files.readString(configPath, StandardCharsets.UTF_8);
-            Map<String, Object> config = parseToml(content);
-            if (!config.containsKey(MODEL_ALIASES_KEY)) {
-                Map<String, Object> pluginConfig = readPluginConfigUnlocked();
-                if (pluginConfig.containsKey(MODEL_ALIASES_KEY)) {
-                    config.put(MODEL_ALIASES_KEY, pluginConfig.get(MODEL_ALIASES_KEY));
-                }
-            }
-            return config;
+            config = parseToml(content);
         } catch (Exception e) {
             LOG.warn("[CodexSettingsManager] Failed to read config.toml: " + e.getMessage());
             throw new IOException("Failed to read config.toml: " + e.getMessage(), e);
         }
+        if (!config.containsKey(MODEL_ALIASES_KEY)) {
+            Map<String, Object> pluginConfig = readPluginConfigUnlocked();
+            if (pluginConfig.containsKey(MODEL_ALIASES_KEY)) {
+                config.put(MODEL_ALIASES_KEY, pluginConfig.get(MODEL_ALIASES_KEY));
+            }
+        }
+        return config;
     }
 
     /**
@@ -138,6 +139,7 @@ public class CodexSettingsManager {
         }
         FileSnapshot configSnapshot = FileSnapshot.capture(configPath);
         FileSnapshot pluginSnapshot = FileSnapshot.capture(pluginPath);
+        backupNativeAliasesUnlocked(configPath);
         try {
             if (!pluginConfig.isEmpty() || pluginSnapshot.exists()) {
                 writeStringAtomically(pluginPath, generateToml(pluginConfig));
@@ -154,8 +156,28 @@ public class CodexSettingsManager {
 
     private Map<String, Object> readPluginConfigUnlocked() throws IOException {
         Path path = codexDir.resolve(PLUGIN_CONFIG_FILE_NAME);
-        return Files.exists(path)
-                ? parseToml(Files.readString(path, StandardCharsets.UTF_8)) : new LinkedHashMap<>();
+        try {
+            return Files.exists(path)
+                    ? parseToml(Files.readString(path, StandardCharsets.UTF_8)) : new LinkedHashMap<>();
+        } catch (Exception error) {
+            throw new IOException("Failed to read " + PLUGIN_CONFIG_FILE_NAME + ": " + error.getMessage(), error);
+        }
+    }
+
+    private void backupNativeAliasesUnlocked(Path configPath) throws IOException {
+        if (!Files.exists(configPath)) {
+            return;
+        }
+        String originalText = Files.readString(configPath, StandardCharsets.UTF_8);
+        if (!parseToml(originalText).containsKey(MODEL_ALIASES_KEY)) {
+            return;
+        }
+        Path backupPath = codexDir.resolve(CLI_MIGRATION_BACKUP_FILE_NAME);
+        if (Files.exists(backupPath)) {
+            backupPath = codexDir.resolve("config.toml.pre-cli-migration."
+                    + java.time.Instant.now().toEpochMilli() + "-" + java.util.UUID.randomUUID() + ".bak");
+        }
+        writeStringAtomically(backupPath, originalText);
     }
 
     @SuppressWarnings("unchecked")
@@ -176,12 +198,6 @@ public class CodexSettingsManager {
             Map<String, Object> original = parseToml(originalText);
             Map<String, Object> config = readConfigTomlUnlocked();
             if (!original.equals(nativeConfig(config))) {
-                Path backupPath = codexDir.resolve(CLI_MIGRATION_BACKUP_FILE_NAME);
-                if (Files.exists(backupPath)) {
-                    backupPath = codexDir.resolve("config.toml.pre-cli-migration."
-                            + java.time.Instant.now().toEpochMilli() + "-" + java.util.UUID.randomUUID() + ".bak");
-                }
-                writeStringAtomically(backupPath, originalText);
                 writeConfigTomlUnlocked(config);
             }
         });

@@ -2116,7 +2116,9 @@
     "collapse": "收起",
     "clickToAnswer": "点击回答",
     "recordTitle": "Codex 提问",
-    "recordAnswer": "你的回答"
+    "recordAnswer": "你的回答",
+    "recordSkipped": "已跳过（未作答就关闭了）",
+    "answerNotSent": "你对 Codex 提问的回答没有发出，因为当前打开的是另一个对话。请回到原来的对话，把回答重新发送一次。"
   },
   "planApproval": {
     "title": "计划已准备就绪",

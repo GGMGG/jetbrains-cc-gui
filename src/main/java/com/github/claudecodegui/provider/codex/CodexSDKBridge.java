@@ -835,15 +835,19 @@ public class CodexSDKBridge extends BaseSDKBridge {
     /**
      * Whether a reply ack means the native request is over: it was delivered, or Codex reports it
      * no longer waits for it. Keeping the latter registered would let a page refresh show a dialog
-     * that can never be answered. An unconfirmed (timed-out) reply may still land, so it stays.
+     * that can never be answered. A reply Java stopped waiting for may still land, so it stays; one
+     * the daemon itself retired as unconfirmed is no longer pending there and ends here too.
      */
     static boolean endsInteraction(JsonObject acknowledgement) {
         if (!acknowledgement.has("error")) {
             return true;
         }
-        return acknowledgement.has("code") && acknowledgement.get("code").isJsonPrimitive()
-                && CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(
-                        acknowledgement.get("code").getAsString());
+        if (!acknowledgement.has("code") || !acknowledgement.get("code").isJsonPrimitive()) {
+            return false;
+        }
+        String code = acknowledgement.get("code").getAsString();
+        return CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(code)
+                || CodexAppServerRequestExecutor.DELIVERY_UNCONFIRMED.equals(code);
     }
 
     private static boolean sameChannel(String first, String second) {

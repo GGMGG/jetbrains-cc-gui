@@ -58,6 +58,7 @@ import com.github.claudecodegui.ui.WebviewWatchdog;
 import com.github.claudecodegui.ui.detached.DetachedChatFrame;
 import com.github.claudecodegui.ui.detached.DetachedWindowManager;
 import com.github.claudecodegui.util.HtmlLoader;
+import com.github.claudecodegui.util.JBCefBrowserFactory;
 import com.github.claudecodegui.util.JsUtils;
 import com.github.claudecodegui.util.ThemeConfigService;
 import com.google.gson.Gson;
@@ -825,7 +826,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             JBCefBrowser currentBrowser = browser;
             TabActivationSurfaceAction action = decideTabActivationSurfaceAction(
                     currentBrowser != null,
-                    currentBrowser != null && currentBrowser.isOffScreenRendering(),
+                    usesLocalOsrSurface(currentBrowser),
                     hasCurrentUnpublishedPublication());
             switch (action) {
                 case PUBLISH_PENDING:
@@ -839,7 +840,9 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
                     // Windowed JCEF keeps the established activation repaint path. It does not
                     // participate in the OSR publication fence or its sentinel pulse.
                     requestCurrentWindowedSurfaceRefresh("tab_activated");
-                    callJavaScript("window.onTabActivated");
+                    if (!JBCefBrowserFactory.isRemoteDevelopmentBrowser(currentBrowser.getCefBrowser())) {
+                        callJavaScript("window.onTabActivated");
+                    }
                     break;
                 default:
                     break;
@@ -869,17 +872,26 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
                 : TabActivationSurfaceAction.PRESENT_CACHED;
     }
 
+    /** The remote frontend owns its raster backing image and cannot acknowledge backend fences. */
+    private static boolean usesLocalOsrSurface(JBCefBrowser browser) {
+        return browser != null && browser.isOffScreenRendering()
+                && !JBCefBrowserFactory.isRemoteDevelopmentBrowser(browser.getCefBrowser());
+    }
+
     private boolean refreshCurrentWebviewSurface(JBCefBrowser expectedBrowser) {
         if (expectedBrowser == null || browser != expectedBrowser) {
             return false;
         }
 
         try {
+            if (JBCefBrowserFactory.isRemoteDevelopmentBrowser(expectedBrowser.getCefBrowser())) {
+                return callJavaScript("window.onTabActivated", "true");
+            }
             return refreshActivatedWebview(
                     mainPanel,
                     expectedBrowser.getComponent(),
                     expectedBrowser.getCefBrowser(),
-                    expectedBrowser.isOffScreenRendering(),
+                    usesLocalOsrSurface(expectedBrowser),
                     () -> { }
             );
         } catch (Exception | LinkageError e) {
@@ -901,7 +913,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
         if (expectedBrowser == null) {
             return;
         }
-        if (expectedBrowser.isOffScreenRendering()) {
+        if (usesLocalOsrSurface(expectedBrowser)) {
             surfaceFrameFence.request(
                     expectedBrowser,
                     expectedBrowser.getCefBrowser(),
@@ -917,7 +929,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
     private void requestCurrentWindowedSurfaceRefresh(String reason) {
         JBCefBrowser currentBrowser = browser;
         if (disposed || !frontendReady || currentBrowser == null
-                || currentBrowser.isOffScreenRendering()) {
+                || usesLocalOsrSurface(currentBrowser)) {
             return;
         }
         requestSurfaceRefresh(
@@ -947,7 +959,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
         rebindSurfaceRefreshWindow();
         JBCefBrowser currentBrowser = browser;
         long currentReadyEpoch = frontendReadyTransitions.currentEpoch();
-        if (currentBrowser != null && currentBrowser.isOffScreenRendering()) {
+        if (usesLocalOsrSurface(currentBrowser)) {
             return tryArmOsrSurfaceRefresh(
                     currentBrowser, currentReadyEpoch, trigger, replacementSource);
         }
@@ -979,7 +991,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             return false;
         }
         long readyEpoch = frontendReadyTransitions.currentEpoch();
-        if (currentBrowser.isOffScreenRendering()) {
+        if (usesLocalOsrSurface(currentBrowser)) {
             try {
                 return surfaceFrameFence.hasUnpublishedFor(
                         currentBrowser,
@@ -995,7 +1007,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
 
     private void requestCachedSurfacePresentation(JBCefBrowser expectedBrowser) {
         if (disposed || !frontendReady || expectedBrowser == null
-                || browser != expectedBrowser || !expectedBrowser.isOffScreenRendering()) {
+                || browser != expectedBrowser || !usesLocalOsrSurface(expectedBrowser)) {
             return;
         }
         try {
@@ -1020,7 +1032,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             return false;
         }
         JBCefBrowser currentBrowser = browser;
-        if (currentBrowser == null || !currentBrowser.isOffScreenRendering()) {
+        if (currentBrowser == null || !usesLocalOsrSurface(currentBrowser)) {
             return false;
         }
         CefBrowser currentCefBrowser;
@@ -4493,6 +4505,11 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             @Override
             public JPanel getMainPanel() {
                 return mainPanel;
+            }
+
+            @Override
+            public String getDraftCacheKey() {
+                return project.getLocationHash() + ":" + permissionServiceKey;
             }
 
             @Override
