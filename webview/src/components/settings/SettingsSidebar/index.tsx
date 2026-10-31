@@ -1,7 +1,7 @@
 import styles from './style.module.less';
 import { useTranslation } from 'react-i18next';
 
-export type SettingsTab = 'basic' | 'providers' | 'dependencies' | 'usage' | 'permissions' | 'promptEnhancer' | 'commit' | 'mcp' | 'agents' | 'prompts' | 'skills' | 'pet' | 'other' | 'community';
+export type SettingsTab = 'basic' | 'providers' | 'dependencies' | 'usage' | 'permissions' | 'promptEnhancer' | 'commit' | 'mcp' | 'agents' | 'prompts' | 'skills' | 'pet' | 'storage' | 'other' | 'community';
 
 interface SidebarItem {
   key: SettingsTab;
@@ -28,6 +28,7 @@ const sidebarGroups: { key: string; items: SidebarItem[] }[] = [
     { key: 'pet', icon: 'codicon-hubot', labelKey: 'settings.pet.title' },
   ] },
   { key: 'maintenance', items: [
+    { key: 'storage', icon: 'codicon-database', labelKey: 'settings.storage.title' },
     { key: 'usage', icon: 'codicon-graph', labelKey: 'settings.usage' },
     { key: 'other', icon: 'codicon-ellipsis', labelKey: 'settings.other.title' },
   ] },

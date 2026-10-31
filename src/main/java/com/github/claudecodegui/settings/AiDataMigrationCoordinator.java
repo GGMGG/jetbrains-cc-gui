@@ -146,7 +146,10 @@ public final class AiDataMigrationCoordinator {
 
     private void requireRecoveredMigration() throws IOException {
         Path journal = coordinationDirectory.resolve("state").resolve("migration-journal.json");
-        if (Files.exists(journal, LinkOption.NOFOLLOW_LINKS)) {
+        boolean legacyPending = coordinationDirectory.equals(defaultCoordinationDirectory())
+                && Files.exists(Path.of(com.intellij.openapi.application.PathManager.getSystemPath(),
+                        "cc-gui", "ai-data-storage", "migration-journal.json"), LinkOption.NOFOLLOW_LINKS);
+        if (Files.exists(journal, LinkOption.NOFOLLOW_LINKS) || legacyPending) {
             throw new IOException("AI_DATA_RECOVERY_REQUIRED");
         }
     }
