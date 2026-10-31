@@ -1363,7 +1363,11 @@
     "timeoutWarning": "Por favor, responda em breve, o diálogo fechará em {{seconds}} segundos",
     "expand": "Expandir",
     "collapse": "Recolher",
-    "clickToAnswer": "Clique para responder"
+    "clickToAnswer": "Clique para responder",
+    "recordTitle": "Perguntas do Codex",
+    "recordAnswer": "Sua resposta",
+    "recordSkipped": "Ignorada (fechada sem resposta)",
+    "answerNotSent": "Sua resposta à pergunta do Codex não foi enviada porque outro chat está aberto agora. Volte para aquele chat e envie a resposta novamente."
   },
   "planApproval": {
     "title": "Plano Pronto para Aprovação",

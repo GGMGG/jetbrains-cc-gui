@@ -2112,7 +2112,9 @@
     "collapse": "Collapse",
     "clickToAnswer": "Click to answer",
     "recordTitle": "Codex questions",
-    "recordAnswer": "Your answer"
+    "recordAnswer": "Your answer",
+    "recordSkipped": "Skipped (closed without an answer)",
+    "answerNotSent": "Your answer to the Codex question was not sent because another chat is open now. Return to that chat and send the answer again."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

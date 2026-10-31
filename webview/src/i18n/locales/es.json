@@ -1225,7 +1225,11 @@
     "timeoutWarning": "Por favor responde pronto, el diálogo se cerrará en {{seconds}} segundos",
     "expand": "Expandir",
     "collapse": "Contraer",
-    "clickToAnswer": "Haz clic para responder"
+    "clickToAnswer": "Haz clic para responder",
+    "recordTitle": "Preguntas de Codex",
+    "recordAnswer": "Tu respuesta",
+    "recordSkipped": "Omitida (cerrada sin responder)",
+    "answerNotSent": "Tu respuesta a la pregunta de Codex no se envió porque ahora hay otro chat abierto. Vuelve a ese chat y envía la respuesta de nuevo."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
