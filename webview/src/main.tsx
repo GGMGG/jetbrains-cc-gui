@@ -16,7 +16,7 @@ import { applyLinkifyCapabilitiesPayload } from './utils/linkifyCapabilities';
 import { installRuntimeProviderDispatchers } from './utils/runtimeProviderCapabilities';
 import { sendBridgeEvent } from './utils/bridge';
 import { debugLog } from './utils/debug';
-import { forceWebviewRepaint } from './utils/forceWebviewRepaint';
+import { forceWebviewRepaint, repaintRemoteWebview } from './utils/forceWebviewRepaint';
 import { fontSizeLevelToScale } from './utils/fontScale';
 import {
   advanceSurfaceDamagePulse,
@@ -719,8 +719,9 @@ if (typeof window !== 'undefined') {
   window.updateLinkifyCapabilities = (json: string) => {
     applyLinkifyCapabilitiesPayload(json);
   };
-  window.onTabActivated = () => {
-    forceWebviewRepaint('tab-activated');
+  window.onTabActivated = (remote) => {
+    if (remote === true || remote === 'true') repaintRemoteWebview();
+    else forceWebviewRepaint('tab-activated');
   };
 }
 

@@ -2,7 +2,12 @@ package com.github.claudecodegui.clawbot;
 
 import java.util.Set;
 
-/** Immutable session data safe for channel listing and status rendering. */
+/**
+ * Immutable session data safe for channel listing and status rendering.
+ * {@code idleMillis} is cumulative inactive time in this ownership/generation, excluding
+ * activity backed by a renewable lease. It never resets on activity: routing leases use
+ * its difference from their selection baseline so a task pauses their remaining allowance.
+ */
 public record ClawBotSessionSnapshot(
         String sessionHandleId,
         String instanceId,
