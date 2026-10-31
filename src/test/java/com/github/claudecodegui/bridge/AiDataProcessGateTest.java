@@ -24,6 +24,27 @@ public class AiDataProcessGateTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
+    public void pendingRecoveryRejectsStartsAndReadsWithoutLeakingAdmission() throws Exception {
+        Path coordination = temporaryFolder.getRoot().toPath().resolve("coordination");
+        Path state = java.nio.file.Files.createDirectories(coordination.resolve("state"));
+        Path journal = state.resolve("migration-journal.json");
+        java.nio.file.Files.writeString(journal, "{}");
+        AiDataProcessGate gate = new AiDataProcessGate(new AiDataMigrationCoordinator(coordination));
+
+        var start = assertThrows(IllegalStateException.class, gate::acquireProcessPermit);
+        org.junit.Assert.assertEquals("AI_DATA_RECOVERY_REQUIRED", start.getMessage());
+        var read = assertThrows(IllegalStateException.class, gate::tryAcquireReadPermit);
+        org.junit.Assert.assertEquals("AI_DATA_RECOVERY_REQUIRED", read.getMessage());
+        java.nio.file.Files.delete(journal);
+        try (var admitted = gate.acquireProcessPermit()) {
+            assertNotNull(admitted);
+        }
+        try (var migration = gate.tryAcquireMigrationPermit()) {
+            assertNotNull(migration);
+        }
+    }
+
+    @Test
     public void unsupportedPlatformsDoNotRequireCoordinationFilesForAiStarts() throws Exception {
         Path blockedParent = temporaryFolder.newFile("blocked-parent").toPath();
         Path coordination = blockedParent.resolve("coordination");
@@ -35,9 +56,12 @@ public class AiDataProcessGateTest {
                 assertNotNull(ignored);
             }
         }
-        assertThrows(IllegalStateException.class,
-                () -> AiDataProcessGate.forPlatform(PlatformUtils.PlatformType.WINDOWS, coordination)
-                        .acquireProcessPermit());
+        var windows = AiDataProcessGate.forPlatform(PlatformUtils.PlatformType.WINDOWS, coordination);
+        try (var permit = windows.acquireProcessPermit()) {
+            assertNotNull(permit);
+            assertFalse(windows.isCoordinationAvailable());
+            assertNull(windows.tryAcquireMigrationPermit());
+        }
     }
 
     @Test

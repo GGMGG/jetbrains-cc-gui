@@ -46,6 +46,26 @@ public class AiDataMigrationCoordinatorTest {
     }
 
     @Test
+    public void pendingMigrationBlocksNewSharedAdmissionUntilRecoveryClearsItsJournal() throws Exception {
+        Path coordination = temporaryFolder.getRoot().toPath().resolve("coordination");
+        Path state = Files.createDirectories(coordination.resolve("state"));
+        Path journal = state.resolve("migration-journal.json");
+        Files.writeString(journal, "{}", StandardCharsets.UTF_8);
+        AiDataMigrationCoordinator coordinator = new AiDataMigrationCoordinator(coordination);
+
+        var error = assertThrows(java.io.IOException.class, coordinator::tryAcquireProcessLock);
+        assertEquals("AI_DATA_RECOVERY_REQUIRED", error.getMessage());
+        assertThrows(java.io.IOException.class, coordinator::tryAcquireMaintenanceReadLock);
+        try (var recovery = coordinator.tryAcquire("recovery")) {
+            assertNotNull(recovery);
+            Files.delete(journal);
+        }
+        try (var admitted = coordinator.tryAcquireProcessLock()) {
+            assertNotNull(admitted);
+        }
+    }
+
+    @Test
     public void sharedProcessLockBlocksExclusiveMigration() throws Exception {
         Path coordinationDirectory = temporaryFolder.getRoot().toPath().resolve("coordination");
         AiDataMigrationCoordinator first = new AiDataMigrationCoordinator(coordinationDirectory);
@@ -97,9 +117,15 @@ public class AiDataMigrationCoordinatorTest {
         Path coordinationDirectory = temporaryFolder.getRoot().toPath().resolve("coordination");
         Path lockFile = coordinationDirectory.resolve("migration.lock");
         java.nio.file.Files.createDirectories(coordinationDirectory);
-        Path fixture = Path.of("test", "AiDataMigrationLockHolder.java").toAbsolutePath();
-        Path java = Path.of(System.getProperty("java.home"), "bin", "java");
-        Process child = new ProcessBuilder(java.toString(), fixture.toString(), lockFile.toString(),
+        Path classes = temporaryFolder.newFolder("lock-holder-classes").toPath();
+        Path fixture = classes.resolve("com/github/claudecodegui/settings/AiDataMigrationLockHolder.class");
+        Files.createDirectories(fixture.getParent());
+        try (var resource = AiDataMigrationLockHolder.class.getResourceAsStream("AiDataMigrationLockHolder.class")) {
+            assertNotNull(resource);
+            Files.copy(resource, fixture);
+        }
+        Path java = Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java");
+        Process child = new ProcessBuilder(java.toString(), "-cp", classes.toString(), AiDataMigrationLockHolder.class.getName(), lockFile.toString(),
                 shared ? "shared" : "exclusive").start();
         AiDataMigrationCoordinator coordinator = new AiDataMigrationCoordinator(coordinationDirectory);
 
@@ -108,15 +134,21 @@ public class AiDataMigrationCoordinatorTest {
             assertEquals("LOCKED", output.readLine());
             assertNull(coordinator.tryAcquire("migrate"));
         } finally {
-            child.getOutputStream().write(1);
-            child.getOutputStream().flush();
+            child.destroyForcibly();
             if (!child.waitFor(10L, TimeUnit.SECONDS)) {
                 child.destroyForcibly();
             }
         }
 
-        try (AiDataMigrationCoordinator.LockHandle acquired = coordinator.tryAcquire("migrate")) {
-            assertNotNull(acquired);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        AiDataMigrationCoordinator.LockHandle acquired = coordinator.tryAcquire("migrate");
+        while (acquired == null && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+            acquired = coordinator.tryAcquire("migrate");
+        }
+        assertNotNull("The exited JVM must release its OS lock", acquired);
+        try (var released = acquired) {
+            assertNotNull(released);
         }
     }
 }
