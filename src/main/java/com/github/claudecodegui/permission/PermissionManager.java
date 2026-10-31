@@ -118,8 +118,8 @@ public class PermissionManager {
                 String memoryKey = request.getToolName() + ":" + generateInputHash(request.getInputs());
                 toolPermissionMemory.put(memoryKey, allow);
             }
-            applyDecision(request, allow, rejectMessage);
         }
+        applyDecision(request, allow, rejectMessage);
     }
 
     /**
@@ -136,8 +136,8 @@ public class PermissionManager {
                 return;
             }
             toolOnlyPermissionMemory.put(request.getToolName(), allow);
-            applyDecision(request, allow, "Denied by user");
         }
+        applyDecision(request, allow, "Denied by user");
     }
 
     /**
@@ -149,6 +149,7 @@ public class PermissionManager {
      * @param rejectMessage the reason for rejection
      */
     public void handlePermissionDecision(PermissionRequest request, boolean allow, boolean remember, String rejectMessage) {
+        boolean superseded;
         synchronized (request) {
             boolean current = pendingRequests.remove(request.getChannelId(), request);
             if (request.getResultFuture().isDone()) {
@@ -157,13 +158,15 @@ public class PermissionManager {
             if (current && remember) {
                 toolOnlyPermissionMemory.put(request.getToolName(), allow);
             }
-            if (!current && pendingRequests.containsKey(request.getChannelId())) {
-                request.reject(rejectMessage != null ? rejectMessage : "Permission request was superseded", true);
+            superseded = !current && pendingRequests.containsKey(request.getChannelId());
+            if (!current && !superseded) {
                 return;
             }
-            if (!current) {
-                return;
-            }
+        }
+        // Completing the future invokes callbacks that may acquire the dialog lock.
+        if (superseded) {
+            request.reject(rejectMessage != null ? rejectMessage : "Permission request was superseded", true);
+        } else {
             applyDecision(request, allow, rejectMessage);
         }
     }
@@ -185,9 +188,9 @@ public class PermissionManager {
             if (!pendingRequests.remove(request.getChannelId(), request) || request.isResolved()) {
                 return false;
             }
-            applyDecision(request, allow, rejectMessage);
-            return request.isResolved();
         }
+        applyDecision(request, allow, rejectMessage);
+        return request.isResolved();
     }
 
     private void applyDecision(PermissionRequest request, boolean allow, String rejectMessage) {

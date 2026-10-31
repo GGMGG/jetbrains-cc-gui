@@ -337,7 +337,7 @@ public final class ClawBotIdeClient implements AutoCloseable {
             JsonObject payload = ownerPayload(handle);
             payload.addProperty("messageId", requireBoundedValue(
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
-            payload.addProperty("interactionToken", token == null ? ""
+            payload.addProperty("interactionToken", token == null || token.isEmpty() ? ""
                     : requireBoundedValue(token, "interactionToken", 256));
             return readAccepted(send("SESSION_INTERACTION", payload));
         }

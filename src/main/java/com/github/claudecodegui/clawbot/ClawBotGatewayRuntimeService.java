@@ -467,7 +467,6 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         if (state == State.LEADER) {
             return true;
         }
-        ClawBotTransportStateStore.State transportState = transportStateStore.load();
         ClawBotProcessCoordinator.LeaderLease lease = processCoordinator.tryAcquireLeader(
                 LOOPBACK_ENDPOINT_PREFIX + "pending-" + instanceId);
         if (lease == null) {
@@ -475,6 +474,7 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         }
         ClawBotLocalIpcServer server = null;
         try {
+            ClawBotTransportStateStore.State transportState = transportStateStore.load();
             outboundReceiptStore.reload();
             outboundProtection.reload();
             pendingDeliveries.reload();
