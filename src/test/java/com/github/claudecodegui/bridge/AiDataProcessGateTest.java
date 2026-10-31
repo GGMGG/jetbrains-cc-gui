@@ -56,9 +56,12 @@ public class AiDataProcessGateTest {
                 assertNotNull(ignored);
             }
         }
-        assertThrows(IllegalStateException.class,
-                () -> AiDataProcessGate.forPlatform(PlatformUtils.PlatformType.WINDOWS, coordination)
-                        .acquireProcessPermit());
+        var windows = AiDataProcessGate.forPlatform(PlatformUtils.PlatformType.WINDOWS, coordination);
+        try (var permit = windows.acquireProcessPermit()) {
+            assertNotNull(permit);
+            assertFalse(windows.isCoordinationAvailable());
+            assertNull(windows.tryAcquireMigrationPermit());
+        }
     }
 
     @Test
