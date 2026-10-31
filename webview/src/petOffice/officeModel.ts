@@ -33,10 +33,10 @@ export function createOfficeFixtures(count: OfficeFixtureCount): OfficeSource[] 
   }));
 }
 
-export function filterOfficeSources(sources: readonly OfficeSource[], product: OfficeProduct | 'all', search: string): OfficeSource[] {
+export function filterOfficeSources(sources: readonly OfficeSource[], product: OfficeProduct | 'all', search: string, employeeNames?: Readonly<Record<string, string>>): OfficeSource[] {
   const query = search.trim().toLocaleLowerCase();
   return sources.filter(source => (product === 'all' || source.product === product)
-    && (!query || `${source.product} ${source.projectLabel} ${source.tabLabel} ${source.provider}`.toLocaleLowerCase().includes(query)));
+    && (!query || `${employeeNames?.[source.sourceKey] ?? ''} ${source.product} ${source.projectLabel} ${source.tabLabel} ${source.provider}`.toLocaleLowerCase().includes(query)));
 }
 
 /** Filtering preserves source seat/page assignment instead of moving desks. */

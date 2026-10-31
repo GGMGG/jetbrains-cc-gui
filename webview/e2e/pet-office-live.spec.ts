@@ -234,6 +234,7 @@ test('percentage zoom dropdown exposes every option and supports keyboard select
   const options = page.getByRole('option');
   await expect(options).toHaveCount(6);
   await expect(options).toHaveText(values);
+  await expect(options.first()).toBeVisible();
   const optionBounds = await options.evaluateAll(nodes => nodes.map(node => {
     const bounds = node.getBoundingClientRect(), style = getComputedStyle(node);
     return { text: node.textContent?.trim(), y: bounds.y, height: bounds.height,

@@ -9,7 +9,7 @@ import { OFFICE_MAX_FLOORS } from './officeModel';
 const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 function state(revision = 'initial'): OfficeSharedState {
   return { schemaVersion: 1, revision, preferences: { officeName: '', limitMiB: 50, floors: Array.from({ length: OFFICE_MAX_FLOORS }, () => OFFICE_THEME_IDS[0]),
-    floor: 0, product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: false }, appearanceOverrides: {} },
+    floor: 0, product: 'all', search: '', showIdle: false, paused: false, topmost: true, zoom: 100, presentation: { effects: true, attention: true, ambience: true, depth: false }, appearanceOverrides: {}, employeeNames: {} },
   bounds: { x: 0, y: 0, width: 1240, height: 900, placed: false } };
 }
 function id(index: number): string { return `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`; }
@@ -28,6 +28,14 @@ function native() {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); delete window.petOfficeStorageResult; });
 
 describe('shared native Office storage', () => {
+  it('migrates unnamed employees and round-trips independent binding names', () => {
+    const original = state(), { employeeNames: _ignored, ...legacy } = original.preferences;
+    expect(parseOfficeSharedState({ ...original, preferences: legacy })).toEqual(original);
+    const named = { ...original, preferences: { ...original.preferences, employeeNames: { 'ide/tab/old': '夜幕架构师', 'ide/tab/new': '🐾'.repeat(24) } } };
+    expect(parseOfficeSharedState(named)).toEqual(named);
+    expect(() => parseOfficeSharedState({ ...named, preferences: { ...named.preferences, employeeNames: { 'ide/tab': 'Invalid' } } })).toThrow();
+  });
+
   it('restores legacy names and rejects malformed names without losing other preferences', () => {
     const original = state(), { officeName: _ignored, ...legacy } = original.preferences;
     expect(parseOfficeSharedState({ ...original, preferences: legacy })).toEqual(original);

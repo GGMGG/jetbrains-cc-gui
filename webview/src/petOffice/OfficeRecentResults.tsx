@@ -1,14 +1,15 @@
 import { useTranslation } from 'react-i18next';
 import type { LiveSource, RecentOfficeResult } from './officeLiveModel';
 
-export function OfficeRecentResults({ results, sources, product, search, stale, pending, onOpen }: {
+export function OfficeRecentResults({ results, sources, names, product, search, stale, pending, onOpen }: {
   results: readonly RecentOfficeResult[]; sources: readonly LiveSource[]; product: string; search: string; stale: boolean; pending: boolean;
+  names?: Readonly<Record<string, string>>;
   onOpen: (source: LiveSource) => void;
 }) {
   const { t, i18n } = useTranslation('petOffice');
   const query = search.trim().toLocaleLowerCase();
   const filtered = results.filter(result => (product === 'all' || result.product === product)
-    && (!query || `${result.product} ${result.projectLabel} ${result.tabLabel} ${result.provider}`.toLocaleLowerCase().includes(query)))
+    && (!query || `${names?.[result.sourceKey] ?? ''} ${result.product} ${result.projectLabel} ${result.tabLabel} ${result.provider}`.toLocaleLowerCase().includes(query)))
     .slice().sort((a, b) => b.completedAt - a.completedAt);
   const formatter = new Intl.DateTimeFormat(i18n.language, { hour: '2-digit', minute: '2-digit' });
   return <section className="office-recent" aria-label={t('recentResults')}>

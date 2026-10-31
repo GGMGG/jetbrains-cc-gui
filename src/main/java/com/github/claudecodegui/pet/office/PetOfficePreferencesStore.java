@@ -24,7 +24,8 @@ final class PetOfficePreferencesStore {
     private static final Set<String> THEMES = Set.of("loft", "cyberpunk", "cultivation", "space", "forest", "library", "ocean", "zen", "retro");
     record Presentation(boolean effects, boolean attention, boolean ambience, boolean depth) { }
     record Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
-                       boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides, String officeName) {
+                       boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides,
+                       String officeName, Map<String, String> employeeNames) {
         Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
                     boolean showIdle, boolean paused, boolean topmost, int zoom) {
             this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, new Presentation(true, true, true, true));
@@ -37,6 +38,10 @@ final class PetOfficePreferencesStore {
                     boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides) {
             this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, presentation, appearanceOverrides, "");
         }
+        Preferences(int limitMiB, List<String> floors, int floor, String product, String search,
+                    boolean showIdle, boolean paused, boolean topmost, int zoom, Presentation presentation, Map<String, String> appearanceOverrides, String officeName) {
+            this(limitMiB, floors, floor, product, search, showIdle, paused, topmost, zoom, presentation, appearanceOverrides, officeName, Map.of());
+        }
         Preferences {
             var normalized = new ArrayList<>(floors);
             if (normalized.size() == LEGACY_MAX_FLOORS) {
@@ -46,6 +51,7 @@ final class PetOfficePreferencesStore {
             }
             floors = List.copyOf(normalized);
             appearanceOverrides = Map.copyOf(appearanceOverrides);
+            employeeNames = Map.copyOf(employeeNames);
         }
     }
     record Bounds(int x, int y, int width, int height, boolean placed) { }
@@ -109,7 +115,14 @@ final class PetOfficePreferencesStore {
         if (!value.has("officeName")) {
             value.addProperty("officeName", "");
         }
-        fields(value, "limitMiB", "floors", "floor", "product", "search", "showIdle", "paused", "topmost", "zoom", "presentation", "appearanceOverrides", "officeName");
+        if (!value.has("employeeNames")) {
+            value.add("employeeNames", new JsonObject());
+        }
+        fields(value, "limitMiB", "floors", "floor", "product", "search", "showIdle", "paused", "topmost", "zoom", "presentation",
+                "appearanceOverrides", "officeName", "employeeNames");
+        if (JSON.toJson(value).getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 48000) {
+            throw new IOException("OFFICE_PREFERENCES_INVALID");
+        }
         string(value, "officeName", 64);
         if (!value.get("presentation").isJsonObject()) {
             throw new IOException("OFFICE_PREFERENCES_INVALID");
@@ -134,6 +147,26 @@ final class PetOfficePreferencesStore {
             if (parts.length != 3 || java.util.Arrays.stream(parts).anyMatch(part -> !part.matches("[A-Za-z0-9._-]{1,128}")
                     || ".".equals(part) || "..".equals(part)) || !entry.getValue().isJsonPrimitive()
                     || !entry.getValue().getAsJsonPrimitive().isString() || !validPetId(entry.getValue().getAsString())) {
+                throw new IOException("OFFICE_PREFERENCES_INVALID");
+            }
+        }
+        if (!value.get("employeeNames").isJsonObject()) {
+            throw new IOException("OFFICE_PREFERENCES_INVALID");
+        }
+        var names = value.getAsJsonObject("employeeNames");
+        if (names.size() > PetOfficeSessionRegistry.MAX_SOURCES
+                || (JSON.toJson(overrides) + JSON.toJson(names)).getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 32002) {
+            throw new IOException("OFFICE_PREFERENCES_INVALID");
+        }
+        for (var entry : names.entrySet()) {
+            String[] parts = entry.getKey().split("/", -1);
+            if (parts.length != 3 || java.util.Arrays.stream(parts).anyMatch(part -> !part.matches("[A-Za-z0-9._-]{1,128}") || ".".equals(part) || "..".equals(part))) {
+                throw new IOException("OFFICE_PREFERENCES_INVALID");
+            }
+            String name = string(names, entry.getKey(), 24);
+            if (name.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c) || c == 0xfeff)
+                    || name.chars().anyMatch(c -> c >= 0x2028 && c <= 0x202e || c >= 0x2066 && c <= 0x2069)
+                    || name.codePoints().anyMatch(c -> c >= 0xd800 && c <= 0xdfff)) {
                 throw new IOException("OFFICE_PREFERENCES_INVALID");
             }
         }

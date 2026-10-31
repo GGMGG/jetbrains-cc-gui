@@ -65,4 +65,17 @@ public class PetOfficeLiveMessageTest {
         value.addProperty("payload", "{}"); value.addProperty("operation", "send_message"); assertThrows(IOException.class, () -> PetOfficeLiveMessage.parse(value.toString()));
         value.addProperty("operation", "backgroundRead"); value.addProperty("path", "C:/unexpected"); assertThrows(IOException.class, () -> PetOfficeLiveMessage.parse(value.toString()));
     }
+    @Test public void largerRoomPreferencesKeepTheOuterFrameAndOtherOperationLimits() throws Exception {
+        var value = new com.google.gson.JsonObject();
+        value.addProperty("pageGeneration", "page"); value.addProperty("command", "storage");
+        value.addProperty("requestId", java.util.UUID.randomUUID().toString()); value.addProperty("operation", "preferences");
+        value.addProperty("payload", "a".repeat(55000));
+        assertEquals("preferences", PetOfficeLiveMessage.parse(value.toString()).field("operation"));
+        value.addProperty("operation", "backgroundChunk");
+        assertThrows(IOException.class, () -> PetOfficeLiveMessage.parse(value.toString()));
+        value.addProperty("operation", "preferences"); value.addProperty("payload", "a".repeat(56001));
+        assertThrows(IOException.class, () -> PetOfficeLiveMessage.parse(value.toString()));
+        value.addProperty("payload", "\"".repeat(40000));
+        assertThrows(IOException.class, () -> PetOfficeLiveMessage.parse(value.toString()));
+    }
 }

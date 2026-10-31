@@ -33,7 +33,7 @@ final class PetOfficeWindowPreferences {
 
     static PetOfficePreferencesStore.Preferences changed(PetOfficePreferencesStore.Preferences current, Patch patch) {
         return new PetOfficePreferencesStore.Preferences(current.limitMiB(), current.floors(), current.floor(), current.product(), current.search(),
-                current.showIdle(), current.paused(), patch.topmost(), patch.zoom(), current.presentation(), current.appearanceOverrides(), patch.officeName());
+                current.showIdle(), current.paused(), patch.topmost(), patch.zoom(), current.presentation(), current.appearanceOverrides(), patch.officeName(), current.employeeNames());
     }
 
     static JsonObject view(PetOfficePreferencesStore.State state, long generation, boolean recovered) {

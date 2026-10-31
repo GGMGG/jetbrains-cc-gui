@@ -70,7 +70,7 @@ record PetOfficeLiveMessage(String pageGeneration, String command, Metrics metri
                             throw new IOException("OFFICE_REQUEST_INVALID");
                         }
                         String value = readString(reader);
-                        if (value.length() > (name.equals("payload") ? 44000 : 512)) {
+                        if (value.length() > (name.equals("payload") ? 56000 : 512)) {
                             throw new IOException("OFFICE_REQUEST_INVALID");
                         }
                         fields.put(name, value);
@@ -92,6 +92,9 @@ record PetOfficeLiveMessage(String pageGeneration, String command, Metrics metri
                 case "storage":
                     expected.addAll(Set.of("requestId", "operation", "payload"));
                     canonicalUuid(fields.get("requestId"));
+                    if (!"preferences".equals(fields.get("operation")) && fields.getOrDefault("payload", "").length() > 44000) {
+                        throw new IOException("OFFICE_REQUEST_INVALID");
+                    }
                     if (!Set.of("petChoices", "preferences", "backgroundRead", "backgroundBegin", "backgroundChunk", "backgroundCommit", "backgroundRemove").contains(fields.get("operation"))) {
                         throw new IOException("OFFICE_REQUEST_INVALID");
                     }
