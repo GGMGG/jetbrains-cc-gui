@@ -12,6 +12,7 @@ const iconByStatus: Record<StartupHistoryLoadState['status'], string> = {
   unloaded: 'codicon-history',
   loading: 'codicon-loading',
   loaded: 'codicon-check',
+  missing: 'codicon-info',
   timeout: 'codicon-clock',
   cancelled: 'codicon-circle-slash',
   failed: 'codicon-error',
@@ -22,12 +23,12 @@ export function StartupHistoryLoadBanner({ state, currentSessionId }: StartupHis
   const [dismissedGeneration, setDismissedGeneration] = useState<string | null>(null);
   const generationKey = state ? `${state.sessionId}:${state.generation}` : '';
   useEffect(() => {
-    if (state?.status !== 'loaded') return;
+    if (state?.status !== 'loaded' && state?.status !== 'missing') return;
     const timer = window.setTimeout(() => setDismissedGeneration(generationKey), 3000);
     return () => window.clearTimeout(timer);
   }, [generationKey, state?.status]);
-  if (!state || !currentSessionId || state.sessionId !== currentSessionId
-    || (state.status === 'loaded' && dismissedGeneration === generationKey)) return null;
+  if (!state || (state.sessionId !== currentSessionId && !(state.status === 'missing' && !currentSessionId))
+    || ((state.status === 'loaded' || state.status === 'missing') && dismissedGeneration === generationKey)) return null;
 
   const load = () => window.sendToJava?.('load_restored_history:');
   const cancel = () => window.sendToJava?.(`cancel_restored_history:${state.requestId}`);

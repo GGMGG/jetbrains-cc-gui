@@ -56,4 +56,17 @@ describe('StartupHistoryLoadBanner', () => {
       vi.useRealTimers();
     }
   });
+
+  it('explains retired history without offering an impossible retry on the new session', () => {
+    vi.useFakeTimers();
+    try {
+      render(<StartupHistoryLoadBanner state={{ ...baseState, status: 'missing', retryable: false }} currentSessionId={null} />);
+      expect(screen.getByRole('status').textContent).toContain('startupHistory.missing');
+      expect(screen.queryByRole('button')).toBeNull();
+      act(() => vi.advanceTimersByTime(3000));
+      expect(screen.queryByRole('status')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolInput, ToolResultBlock } from '../../types';
-import { transcriptQuestions } from '../../utils/codexQuestionTranscript';
+import { CODEX_QUESTION_DISMISSED, transcriptQuestions } from '../../utils/codexQuestionTranscript';
 import MarkdownBlock from '../MarkdownBlock';
 import GenericToolBlock from './GenericToolBlock';
 import './CodexQuestionBlock.css';
@@ -34,7 +34,9 @@ export const CodexQuestionBlock = memo(function CodexQuestionBlock({ input }: { 
               </div>
             )}
             {typeof answer === 'string' && <div className="codex-question-record-answer">
-              <strong>{t('askUserQuestion.recordAnswer', 'Your answer')}: </strong>{answer}
+              <strong>{t('askUserQuestion.recordAnswer', 'Your answer')}: </strong>
+              {answer === CODEX_QUESTION_DISMISSED
+                ? t('askUserQuestion.recordSkipped', 'Skipped (closed without an answer)') : answer}
             </div>}
           </div>
         );

@@ -26,7 +26,9 @@ public record ClawBotInboundMessage(
         messageId = requireBounded(messageId, "messageId", MAX_MESSAGE_ID_LENGTH);
         fromUserId = requireBounded(fromUserId, "fromUserId", MAX_USER_ID_LENGTH);
         contextToken = requireBounded(contextToken, "contextToken", MAX_CONTEXT_TOKEN_LENGTH);
-        action = Objects.requireNonNull(action, "action");
+        if (action == null) {
+            throw new IllegalArgumentException("Invalid action");
+        }
         interactionToken = interactionToken == null ? "" : interactionToken;
         if (!interactionToken.isEmpty()) {
             requireBounded(interactionToken, "interactionToken", 256);
@@ -69,7 +71,8 @@ public record ClawBotInboundMessage(
             throw new IllegalArgumentException("Invalid inbound action");
         }
         return new ClawBotInboundMessage(
-                source.messageId(), source.fromUserId(), source.contextToken(), source.text(), action);
+                source.messageId(), source.fromUserId(), source.contextToken(), source.text(), action,
+                source.target(), source.routeRevision(), source.interactionToken());
     }
 
     JsonObject toJson() {
@@ -79,12 +82,12 @@ public record ClawBotInboundMessage(
         result.addProperty("contextToken", contextToken);
         result.addProperty("text", text);
         result.addProperty("interactionToken", interactionToken);
+        result.addProperty("routeRevision", routeRevision);
         if (action != ClawBotInboundAction.MESSAGE) {
             result.addProperty("action", action.name());
         }
         if (target != null) {
             result.add("target", target.toJson());
-            result.addProperty("routeRevision", routeRevision);
         }
         return result;
     }
@@ -95,6 +98,9 @@ public record ClawBotInboundMessage(
         }
         try {
             JsonElement targetElement = object.get("target");
+            if (targetElement != null && targetElement.isJsonNull()) {
+                targetElement = null;
+            }
             if (targetElement != null && !targetElement.isJsonObject()) {
                 throw new IllegalArgumentException("Invalid target");
             }
@@ -138,7 +144,7 @@ public record ClawBotInboundMessage(
     }
 
     private static String requireBounded(String value, String name, int maxLength) {
-        if (value == null || value.isEmpty() || value.length() > maxLength
+        if (value == null || value.isBlank() || value.length() > maxLength
                 || value.chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("Invalid " + name);
         }
@@ -147,8 +153,8 @@ public record ClawBotInboundMessage(
 
     private static String requireText(String value) {
         if (value == null || value.isEmpty() || value.length() > MAX_TEXT_LENGTH
-                || value.chars().anyMatch(character -> character < 0x20
-                && character != '\t' && character != '\n' && character != '\r' || character == 0x7F)) {
+                || value.chars().anyMatch(character -> Character.isISOControl(character)
+                && character != '\t' && character != '\n' && character != '\r')) {
             throw new IllegalArgumentException("Invalid text");
         }
         return value;
