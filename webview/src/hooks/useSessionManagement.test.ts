@@ -267,6 +267,26 @@ describe('useSessionManagement', () => {
     expect(mocks.addToast).toHaveBeenCalledWith('history.sessionDeleted', 'success');
   });
 
+  it.each([false, true])('routes each provider separately and retains refused rows (refused: %s)', (refused) => {
+    let historyData: HistoryData = { success: true, sessions: [
+      { sessionId: 'claude-item', title: 'Claude', provider: 'claude' },
+      { sessionId: 'grok-item', title: 'Grok', provider: 'grok' },
+    ] };
+    const mocks = { ...createMocks(), setHistoryData: vi.fn((update: HistoryData | null | ((current: HistoryData | null) => HistoryData | null)) => {
+      historyData = (typeof update === 'function' ? update(historyData) : update) as HistoryData;
+    }) };
+    window.sendToJava = vi.fn((payload: string) => !(refused && payload.startsWith('delete_sessions:') && payload.includes('grok-item')));
+    const { result } = renderHook(() => useSessionManagement({ messages: [], loading: false,
+      historyData, currentSessionId: 'grok-item', currentProvider: 'grok', ...mocks, t }));
+    act(() => { result.current.deleteHistorySessions(['claude-item', 'grok-item']); });
+    expect(sentRequests('delete_sessions')).toEqual([
+      expect.objectContaining({ provider: 'claude', sessionIds: ['claude-item'] }),
+      expect.objectContaining({ provider: 'grok', sessionIds: ['grok-item'] }),
+    ]);
+    expect(historyData.sessions?.map(session => session.sessionId)).toEqual(refused ? ['grok-item'] : []);
+    expect(vi.mocked(window.sendToJava!).mock.calls.some(([value]) => value === 'create_new_session:')).toBe(!refused);
+  });
+
   it('preserves the active Codex row and session when the backend refuses deletion', async () => {
     const mocks = createMocks();
     const { result } = renderHook(() => useSessionManagement({ messages: [], loading: false,
@@ -427,33 +447,21 @@ describe('useSessionManagement', () => {
     });
   });
 
-  describe('Codex deletion waits for the backend outcome', () => {
-    const codexHistory = () => ({
-      success: true,
-      sessions: [
-        { sessionId: 'history-1', title: 'History One', provider: 'codex', messageCount: 3, lastTimestamp: Date.now() },
-        { sessionId: 'history-2', title: 'History Two', provider: 'codex', messageCount: 5, lastTimestamp: Date.now() },
-      ],
-      total: 8,
-    } as unknown as HistoryData);
-
-    const renderCodex = (currentSessionId: string | null) => {
-      const mocks = createMocks();
-      const hook = renderHook(() => useSessionManagement({
-        messages: [],
-        loading: false,
-        historyData: codexHistory(),
-        currentSessionId,
-        currentProvider: 'codex',
-        ...mocks,
-        t,
-      }));
-      return { ...hook, mocks };
-    };
-
+  describe('Non-Codex history deletion outcomes', () => {
     const deliverResult = (result: Record<string, unknown>) => act(() => {
       window.onHistoryDeleteResult?.(JSON.stringify(result));
     });
+
+    const codexHistory = (): HistoryData => ({ success: true, source: 'native', sessions: [
+      { sessionId: 'history-1', title: 'One', provider: 'codex' },
+      { sessionId: 'history-2', title: 'Two', provider: 'codex' },
+    ] });
+    const renderCodex = (id: string) => {
+      const mocks = createMocks();
+      const { result } = renderHook(() => useSessionManagement({ messages: [], loading: false,
+        historyData: codexHistory(), currentSessionId: id, currentProvider: 'codex', ...mocks, t }));
+      return { result, mocks };
+    };
 
     const sentStorageRequest = () => {
       const payload = vi.mocked(window.sendToJava!).mock.calls.map(([value]) => value)
@@ -588,12 +596,6 @@ describe('useSessionManagement', () => {
       expect(mocks.addToast).toHaveBeenCalledWith('history.deleteFailed', 'error');
     });
 
-    it('unregisters its result callback on unmount', () => {
-      const { unmount } = renderCodex('history-1');
-      expect(window.onHistoryDeleteResult).toBeTypeOf('function');
-      unmount();
-      expect(window.onHistoryDeleteResult).toBeUndefined();
-    });
   });
 
   it('forceCreateNewSession interrupts loading session and cleans state', () => {

@@ -5,7 +5,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.Assume;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.charset.StandardCharsets;
@@ -144,77 +143,14 @@ public class HookToggleServiceTest {
     }
 
     @Test
-    public void unverifiedDirectoryScriptsAreEditableButCannotBeQuarantined() throws Exception {
-        Path home = temporaryFolder.getRoot().toPath();
-        Path script = Files.createDirectories(home.resolve(".codemoss/hooks")).resolve("before.sh");
-        Files.writeString(script, "echo keep reference\n");
-        JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
-        assertFalse(item.get("managedToggleSupported").getAsBoolean());
-        assertFalse(item.get("executionStateKnown").getAsBoolean());
-        JsonObject result = new HookToggleService(home).toggle(null, request(item, false));
-        assertFalse(result.get("success").getAsBoolean());
-        assertEquals("HOOK_TOGGLE_UNSUPPORTED", result.get("errorCode").getAsString());
-        assertEquals("echo keep reference\n", Files.readString(script));
-    }
-
-    @Test
-    public void restoresLegacyDisabledScriptRecordsWithoutContentHash() throws Exception {
-        Path home = temporaryFolder.getRoot().toPath();
-        Path provider = Files.createDirectories(home.resolve(".codemoss"));
-        Path script = Files.createDirectories(provider.resolve("hooks")).resolve("before.sh");
-        Files.writeString(script, "echo legacy fixture\n");
-        String legacyRevision = Files.size(script) + ":" + Files.getLastModifiedTime(script).toMillis();
-        HookCatalogService catalog = new HookCatalogService(home);
-        JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
-        HookToggleService service = new HookToggleService(home);
-        legacyDisabledScript(home, script, item);
-        Path statePath = new HookToggleStateStore(home, provider).getStateFile();
-        JsonObject state = JsonParser.parseString(Files.readString(statePath)).getAsJsonObject();
-        state.getAsJsonArray("disabledScripts").get(0).getAsJsonObject().addProperty("revision", legacyRevision);
-        Files.writeString(statePath, state.toString());
-        JsonObject disabled = findDisabled(catalog.scan(null).getAsJsonArray("items"));
-
-        JsonObject result = service.toggle(null, request(disabled, true));
-
-        assertTrue(result.toString(), result.get("success").getAsBoolean());
-        assertEquals("echo legacy fixture\n", Files.readString(script));
-    }
-
-    @Test
-    public void rejectsModifiedQuarantineEvenWhenSizeAndTimestampArePreserved() throws Exception {
-        Path home = temporaryFolder.getRoot().toPath();
-        Path provider = Files.createDirectories(home.resolve(".codemoss"));
-        Path script = Files.createDirectories(provider.resolve("hooks")).resolve("before.sh");
-        Files.writeString(script, "echo before\n");
-        HookCatalogService catalog = new HookCatalogService(home);
-        JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
-        HookToggleService service = new HookToggleService(home);
-        legacyDisabledScript(home, script, item);
-        JsonObject disabled = findDisabled(catalog.scan(null).getAsJsonArray("items"));
-        JsonObject state = JsonParser.parseString(Files.readString(new HookToggleStateStore(home, provider).getStateFile()))
-                .getAsJsonObject();
-        Path quarantine = Path.of(state.getAsJsonArray("disabledScripts").get(0).getAsJsonObject()
-                .get("quarantineLocation").getAsString());
-        var timestamp = Files.getLastModifiedTime(quarantine);
-        Files.writeString(quarantine, "echo edited\n");
-        Files.setLastModifiedTime(quarantine, timestamp);
-
-        JsonObject result = service.toggle(null, request(disabled, true));
-
-        assertFalse(result.toString(), result.get("success").getAsBoolean());
-        assertEquals("HOOK_QUARANTINE_MODIFIED", result.get("errorCode").getAsString());
-        assertFalse(Files.exists(script));
-        assertEquals("echo edited\n", Files.readString(quarantine));
-    }
-
-    @Test
     public void rejectsCorruptStateWithoutOverwritingRecoveryData() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
         Path claude = Files.createDirectories(home.resolve(".claude"));
         Path settings = claude.resolve("settings.json");
         String original = "{\"hooks\":{\"Stop\":[{\"type\":\"command\",\"command\":\"echo done\"}]}}";
         Files.writeString(settings, original, StandardCharsets.UTF_8);
-        Path state = claude.resolve(".ccgui-hooks-state.json");
+        Path state = new HookToggleStateStore(home, claude).getStateFile();
+        HookLocalStorage.prepare(home, state.getParent());
         Files.writeString(state, "not-json", StandardCharsets.UTF_8);
         JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items")
                 .get(0).getAsJsonObject();
@@ -248,44 +184,6 @@ public class HookToggleServiceTest {
         JsonArray rescanned = new HookCatalogService(home).scan(null).getAsJsonArray("items");
         assertTrue(rescanned.size() == 2);
         assertTrue(findDisabled(rescanned) != null);
-    }
-
-    @Test
-    public void keepsDisabledScriptDiscoverableWhenActiveDirectoryIsRemoved() throws Exception {
-        Path home = temporaryFolder.getRoot().toPath();
-        Path hooks = Files.createDirectories(home.resolve(".codemoss").resolve("hooks"));
-        Path script = hooks.resolve("before.sh");
-        Files.writeString(script, "echo ready", StandardCharsets.UTF_8);
-        JsonObject item = new HookCatalogService(home).scan(null).getAsJsonArray("items")
-                .get(0).getAsJsonObject();
-        legacyDisabledScript(home, script, item);
-        Files.delete(hooks);
-
-        JsonObject disabled = findDisabled(new HookCatalogService(home).scan(null).getAsJsonArray("items"));
-        assertNotNull(disabled);
-    }
-
-    @Test
-    public void togglesScriptThroughDirectoryLink() throws Exception {
-        Path realHome = temporaryFolder.newFolder("real-home").toPath();
-        Path aliasHome = temporaryFolder.getRoot().toPath().resolve("home-alias");
-        try {
-            Files.createSymbolicLink(aliasHome, realHome);
-        } catch (UnsupportedOperationException | SecurityException | java.io.IOException e) {
-            Assume.assumeTrue("Directory links are unavailable", false);
-        }
-        Path hook = Files.createDirectories(realHome.resolve(".codemoss").resolve("hooks"))
-                .resolve("before.sh");
-        Files.writeString(hook, "echo ready\n", StandardCharsets.UTF_8);
-        JsonObject item = new HookCatalogService(aliasHome).scan(null).getAsJsonArray("items")
-                .get(0).getAsJsonObject();
-
-        legacyDisabledScript(aliasHome, hook, item);
-        JsonObject disabled = findDisabled(new HookCatalogService(aliasHome).scan(null).getAsJsonArray("items"));
-        JsonObject result = new HookToggleService(aliasHome).toggle(null, request(disabled, true));
-
-        assertTrue(result.toString(), result.get("success").getAsBoolean());
-        assertTrue(Files.exists(hook));
     }
 
     @Test
@@ -380,27 +278,6 @@ public class HookToggleServiceTest {
         assertFalse(result.get("success").getAsBoolean());
         assertEquals("HOOK_REVISION_CONFLICT", result.get("errorCode").getAsString());
         assertEquals(changed, Files.readString(config));
-    }
-
-    static void legacyDisabledScript(Path home, Path script, JsonObject item) throws Exception {
-        Path provider = home.resolve(".codemoss");
-        Path quarantine = Files.createDirectories(provider.resolve(".ccgui-disabled-hooks/legacy")).resolve(script.getFileName());
-        String revision = HookSourceRevision.read(script);
-        var attributes = HookMutationService.readDosAttributes(script);
-        Files.move(script, quarantine);
-        HookMutationService.copyDosAttributes(attributes, quarantine);
-        JsonObject state = HookToggleStateStore.emptyState();
-        JsonObject entry = new JsonObject();
-        entry.addProperty("sourceId", item.get("sourceId").getAsString());
-        entry.addProperty("provider", "codemoss");
-        entry.addProperty("scope", "GLOBAL");
-        entry.addProperty("originalLocation", item.get("rawLocation").getAsString());
-        entry.addProperty("quarantineLocation", quarantine.toString());
-        entry.addProperty("relativePath", script.getFileName().toString());
-        entry.addProperty("revision", revision);
-        entry.addProperty("event", script.getFileName().toString());
-        state.getAsJsonArray("disabledScripts").add(entry);
-        new HookToggleStateStore(home, provider).write(state);
     }
 
     private static JsonObject request(JsonObject item, boolean enabled) {

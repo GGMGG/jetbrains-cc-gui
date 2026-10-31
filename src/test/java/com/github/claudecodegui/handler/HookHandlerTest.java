@@ -9,6 +9,15 @@ import static org.junit.Assert.assertEquals;
 public class HookHandlerTest {
 
     @Test
+    public void nullRequestKeepsFailureResponseAvailable() {
+        JsonObject response = new JsonObject();
+        response.addProperty("success", false);
+        response.addProperty("errorCode", "INVALID_REQUEST");
+        HookHandler.attachRequestedLocation(response, null);
+        assertEquals("INVALID_REQUEST", response.get("errorCode").getAsString());
+    }
+
+    @Test
     public void attachesRequestedLocationToFailureResponse() {
         JsonObject request = new JsonObject();
         request.addProperty("location", "C:/project/.claude/settings.json");

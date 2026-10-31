@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HookEditorTarget } from '../../../types/hooks';
 import type { UseHookManagementReturn } from '../hooks';
@@ -57,12 +57,13 @@ export default function HookEditorDialog({
 }: HookEditorDialogProps) {
   const { t } = useTranslation();
   const titleId = useId();
+  const [sourceRevealed, setSourceRevealed] = useState(false);
   const hasDraftChanges = activeEditor?.content !== null && activeEditor?.content !== undefined
     && draft !== activeEditor.content;
   const diffLines = useMemo(
-    () => showDiff && activeEditor?.content !== null && activeEditor?.content !== undefined
+    () => sourceRevealed && showDiff && activeEditor?.content !== null && activeEditor?.content !== undefined
       ? buildHookSourceDiff(activeEditor.content, draft) : [],
-    [activeEditor?.content, draft, showDiff],
+    [activeEditor?.content, draft, showDiff, sourceRevealed],
   );
   const providerExtensions = isHookItem(selected) && Object.keys(selected.extensions).length > 0
     ? JSON.stringify(selected.extensions, null, 2) : null;
@@ -125,6 +126,14 @@ export default function HookEditorDialog({
           <div className={styles.editorLoading}>
             <span className="codicon codicon-loading codicon-modifier-spin" aria-hidden="true" />
             {t('settings.hooks.loadingSource')}
+          </div>
+        ) : !sourceRevealed ? (
+          <div className={styles.inlineNotice} role="alert">
+            <span>{t('settings.hooks.sensitiveSourceWarning')}</span>
+            <button type="button" className={styles.secondaryButton}
+              onClick={() => setSourceRevealed(true)} disabled={activeEditor?.content == null}>
+              {t('settings.hooks.revealSource')}
+            </button>
           </div>
         ) : (
           <div className={styles.editorWorkspace}>
@@ -222,7 +231,7 @@ export default function HookEditorDialog({
                   <span className="codicon codicon-ellipsis" aria-hidden="true" />
                 </summary>
                 <div className={styles.moreMenuPanel}>
-                  <button type="button" onClick={onRestore} disabled={sourceLoading || mutationLoading}>
+                  <button type="button" onClick={onRestore} disabled={!sourceRevealed || sourceLoading || mutationLoading}>
                     <span className="codicon codicon-history" aria-hidden="true" />
                     {t('settings.hooks.restore')}
                   </button>
@@ -230,7 +239,7 @@ export default function HookEditorDialog({
               </details>
             )}
             <button type="button" className={styles.secondaryButton} onClick={onRequestClose}>{t('common.cancel')}</button>
-            <button type="button" className={styles.secondaryButton} onClick={onToggleDiff} disabled={sourceLoading || mutationLoading}>
+            <button type="button" className={styles.secondaryButton} onClick={onToggleDiff} disabled={!sourceRevealed || sourceLoading || mutationLoading}>
               <span className="codicon codicon-diff" aria-hidden="true" />
               {showDiff ? t('settings.hooks.hideChanges') : t('settings.hooks.reviewChanges')}
             </button>
@@ -238,7 +247,7 @@ export default function HookEditorDialog({
               type="button"
               className={styles.primaryButton}
               onClick={onSave}
-              disabled={sourceLoading || mutationLoading || !activeEditor || !showDiff || !hasDraftChanges
+              disabled={!sourceRevealed || sourceLoading || mutationLoading || !activeEditor || !showDiff || !hasDraftChanges
                 || mutationError === 'HOOK_REVISION_CONFLICT' || Boolean(sourceError)}
             >
               <span className={`codicon ${mutationLoading ? 'codicon-loading codicon-modifier-spin' : 'codicon-save'}`} aria-hidden="true" />

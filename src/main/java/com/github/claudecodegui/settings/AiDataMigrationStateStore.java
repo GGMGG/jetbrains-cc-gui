@@ -269,7 +269,8 @@ final class AiDataMigrationStateStore {
                     || !isGeneratedBackupName(backupName, entry.id, journal.operationId)
                     || overlapsCanonicalHome(targetRoot)
                     || !isValidEnum(entry.sourceKind, SourceKind.class)
-                    || !isValidEnum(entry.phase, Phase.class)) {
+                    || !isValidEnum(entry.phase, Phase.class)
+                    || (entry.targetFingerprint != null && !entry.targetFingerprint.matches("[a-f0-9]{64}"))) {
                 throw new AiDataDirectoryException("MIGRATION_JOURNAL_INVALID");
             }
             SourceKind kind = entry.sourceKind();
@@ -397,6 +398,7 @@ final class AiDataMigrationStateStore {
         String sourcePhysical;
         String sourceKind;
         String phase;
+        String targetFingerprint;
         boolean targetExisted;
 
         MigrationEntry(String id, Path canonical, Path target, Path staging, Path backup,

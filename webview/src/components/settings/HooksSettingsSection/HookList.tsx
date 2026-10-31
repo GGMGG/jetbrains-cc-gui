@@ -19,18 +19,16 @@ interface HookToolbarProps {
   onRefresh: () => void;
 }
 
-const PROVIDER_FILTERS: ProviderFilter[] = ['all', 'codex', 'claude', 'codemoss'];
+const PROVIDER_FILTERS: ProviderFilter[] = ['all', 'codex', 'claude'];
 
 const PROVIDER_ICON_CLASSES: Record<HookProvider, string> = {
   codex: 'codicon-terminal',
   claude: 'codicon-symbol-event',
-  codemoss: 'codicon-file-code',
 };
 
 const PROVIDER_ICON_STYLES: Record<HookProvider, string> = {
   codex: styles.providerIconCodex,
   claude: styles.providerIconClaude,
-  codemoss: styles.providerIconCodemoss,
 };
 
 export function HookToolbar({
@@ -82,7 +80,6 @@ export function HookToolbar({
         >
           <option value="all">{t('settings.hooks.allScopes')}</option>
           <option value="GLOBAL">{t('settings.hooks.global')}</option>
-          <option value="GLOBAL_LOCAL">{t('settings.hooks.globalLocal')}</option>
           <option value="PROJECT">{t('settings.hooks.project')}</option>
           <option value="PROJECT_LOCAL">{t('settings.hooks.projectLocal')}</option>
         </select>
@@ -128,6 +125,7 @@ export const HookGroup = memo(function HookGroup({
             key={item.sourceId}
             item={item}
             toggleLoading={toggleLoadingId === item.sourceId}
+            toggleDisabled={Boolean(toggleLoadingId)}
             onEdit={onEdit}
             onToggle={onToggle}
           />
@@ -140,11 +138,12 @@ export const HookGroup = memo(function HookGroup({
 interface HookRowProps {
   item: HookItem;
   toggleLoading: boolean;
+  toggleDisabled: boolean;
   onEdit: (item: HookItem) => void;
   onToggle: (item: HookItem, enabled: boolean) => void;
 }
 
-const HookRow = memo(function HookRow({ item, toggleLoading, onEdit, onToggle }: HookRowProps) {
+const HookRow = memo(function HookRow({ item, toggleLoading, toggleDisabled, onEdit, onToggle }: HookRowProps) {
   const { t } = useTranslation();
   const validationSummary = item.validationIssues.map((issue) => issueLabel(issue, t)).join('; ');
   const toggleSupported = item.toggleSupported || item.managedToggleSupported;
@@ -158,7 +157,7 @@ const HookRow = memo(function HookRow({ item, toggleLoading, onEdit, onToggle }:
           type="button"
           className={`${styles.toggleButton} ${item.enabled ? styles.toggleButtonEnabled : styles.toggleButtonDisabled}`}
           onClick={() => onToggle(item, !item.enabled)}
-          disabled={toggleLoading}
+          disabled={toggleDisabled}
           aria-busy={toggleLoading}
           aria-pressed={item.enabled}
           aria-label={item.enabled ? t('settings.hooks.disable') : t('settings.hooks.enable')}
@@ -177,7 +176,7 @@ const HookRow = memo(function HookRow({ item, toggleLoading, onEdit, onToggle }:
         className={`${styles.hookCardMain} ${toggleSupported ? styles.hookCardMainWithToggle : ''}`}
         onClick={() => onEdit(item)}
         disabled={!editSupported}
-        title={editSupported ? t('settings.hooks.editSource') : t('settings.hooks.readOnly')}
+        title={editSupported ? t('settings.hooks.editSource') : issueLabel(item.readOnlyReason ?? 'LINKED_SOURCE_READ_ONLY', t)}
         aria-label={`${editSupported ? t('settings.hooks.editSource') : t('settings.hooks.readOnly')}: ${item.event}`}
       >
         <span className={`${styles.providerIcon} ${PROVIDER_ICON_STYLES[item.provider]}`} aria-hidden="true">

@@ -22,7 +22,7 @@ public class HookCatalogServiceTest {
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
-    public void scanDiscoversClaudeAndScriptHooksWithoutExposingSecrets() throws Exception {
+    public void scanDiscoversSupportedHooksWithoutExposingSecrets() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
         Path project = temporaryFolder.newFolder("project").toPath();
         Path claudeDirectory = Files.createDirectories(home.resolve(".claude"));
@@ -65,7 +65,7 @@ public class HookCatalogServiceTest {
 
         assertFalse(catalog.get("readOnly").getAsBoolean());
         JsonArray items = catalog.getAsJsonArray("items");
-        assertEquals(3, items.size());
+        assertEquals(2, items.size());
 
         JsonObject claudeItem = findItem(items, "claude");
         assertNotNull(claudeItem);
@@ -82,11 +82,7 @@ public class HookCatalogServiceTest {
         assertFalse(claudeItem.getAsJsonObject("extensions").get("enabled").getAsBoolean());
         assertTrue(claudeItem.get("enabled").getAsBoolean());
 
-        JsonObject scriptItem = findItem(items, "codemoss");
-        assertNotNull(scriptItem);
-        assertEquals("before.sh", scriptItem.get("event").getAsString());
-        assertFalse(scriptItem.get("rawPreview").getAsString().contains("script-secret"));
-        assertTrue(scriptItem.get("rawPreview").getAsString().contains("<redacted>"));
+        org.junit.Assert.assertNull(findItem(items, "codemoss"));
 
         JsonObject codexItem = findItem(items, "codex");
         assertNotNull(codexItem);
@@ -107,16 +103,8 @@ public class HookCatalogServiceTest {
         assertNotNull(malformedSource);
         assertTrue(malformedSource.getAsJsonArray("validationIssues").size() >= 1);
 
-        JsonObject globalLocalSource = findSource(catalog.getAsJsonArray("sources"), "claude", "GLOBAL_LOCAL",
-                "settings-json");
-        assertNotNull(globalLocalSource);
-        assertFalse(globalLocalSource.get("readOnly").getAsBoolean());
-        assertTrue(globalLocalSource.get("lastModified").getAsLong() > 0);
-
-        JsonObject codemossSource = findSource(catalog.getAsJsonArray("sources"), "codemoss", "GLOBAL",
-                "hook-directory");
-        assertNotNull(codemossSource);
-        assertFalse(codemossSource.get("readOnly").getAsBoolean());
+        org.junit.Assert.assertNull(findSource(catalog.getAsJsonArray("sources"), "claude", "GLOBAL_LOCAL", "settings-json"));
+        org.junit.Assert.assertNull(findSource(catalog.getAsJsonArray("sources"), "codemoss", "GLOBAL", "hook-directory"));
 
         JsonObject codexConfigSource = findSource(catalog.getAsJsonArray("sources"), "codex", "GLOBAL",
                 "config-toml");
@@ -124,7 +112,7 @@ public class HookCatalogServiceTest {
         assertFalse(codexConfigSource.get("readOnly").getAsBoolean());
 
         JsonArray capabilities = catalog.getAsJsonArray("capabilities");
-        assertEquals(4, capabilities.size());
+        assertEquals(3, capabilities.size());
         JsonObject claudeCapability = findCapability(capabilities, "claude", "settings-json");
         assertNotNull(claudeCapability);
         assertTrue(claudeCapability.get("editSupported").getAsBoolean());

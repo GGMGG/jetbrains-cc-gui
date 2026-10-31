@@ -74,6 +74,17 @@
     "currentMode": "Current mode: {{mode}}",
     "currentModel": "Current model: {{model}}",
     "removeAttachment": "Remove attachment",
+    "queue": {
+      "edit": "Edit queued message",
+      "remove": "Remove from queue",
+      "editLabel": "Edit queued message {{position}}",
+      "removeLabel": "Remove queued message {{position}}",
+      "reorderLabel": "Reorder message {{position}}",
+      "reorderHint": "Drag to reorder, or focus and use arrow keys",
+      "mergedIntoDraft": "Queued message added to the current draft",
+      "attachmentsNotRestored": "Attachments from the queued message were not restored",
+      "editBlockedAttachments": "Its attachments cannot be restored here, so the message stays in the queue"
+    },
     "closePreview": "Close preview",
     "loadingDropdown": "Loading...",
     "modelsLoadFailed": "Failed to load models. Click to retry",
@@ -88,6 +99,8 @@
     "usagePercentage": "Usage: {{percentage}}",
     "planUsage": {
       "title": "Claude plan usage",
+      "grokTitle": "Grok plan usage",
+      "staleIdle": "Last reading. It refreshes the next time you use Grok",
       "loading": "Loading usage…",
       "unavailable": "Usage unavailable",
       "dash": "Usage —",
@@ -993,7 +1006,7 @@
     "skillsDesc": "Manage and configure skill modules",
     "hooks": {
       "title": "Hooks",
-      "description": "Inspect and edit hook sources, and change supported enable preferences.",
+      "description": "Inspect and safely edit Codex and Claude Code hooks.",
       "refresh": "Refresh",
       "provider": "Provider",
       "scope": "Scope",
@@ -1001,7 +1014,6 @@
       "allProviders": "All providers",
       "allScopes": "All scopes",
       "global": "User",
-      "globalLocal": "User (local override)",
       "project": "Project",
       "projectLocal": "Project (local override)",
       "search": "Search hooks",
@@ -1032,7 +1044,7 @@
       "sourceEditor": "Hook source editor",
       "affectedFile": "Affected file",
       "backupDirectory": "Backup directory",
-      "latestBackup": "Latest backup",
+      "latestBackup": "Restore last backup from this editor session",
       "lastModified": "Last modified",
       "event": "Event",
       "format": "Format",
@@ -1057,7 +1069,7 @@
       "backupOnSave": "A backup is created before saving",
       "save": "Save",
       "saving": "Saving...",
-      "restore": "Restore backup",
+      "restore": "Restore last backup from this editor session",
       "saveFailed": "Save failed",
       "sourceLoadFailed": "Source reload failed",
       "noPreview": "No preview available.",
@@ -1084,14 +1096,25 @@
         "CODEX_EVENT_UNSUPPORTED": "Event is not supported by the verified Codex schema",
         "CODEX_HANDLER_UNSUPPORTED": "Handler type is not supported by the verified Codex schema",
         "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook file fields are invalid",
-        "CODEX_STATE_INLINE_UNSUPPORTED": "Inline state cannot be safely edited; use a state table"
+        "CODEX_STATE_INLINE_UNSUPPORTED": "Inline state cannot be safely edited; use a state table",
+        "LINKED_SOURCE_READ_ONLY": "Linked files are read-only; edit the original file directly.",
+        "HOOK_SOURCE_UNAVAILABLE": "The source file is unavailable."
       },
       "executionUnknown": "Execution status unknown",
       "sharedProjectWarning": "Project configuration may be committed and affect other users. Review the file diff before sharing.",
       "bridgeUnavailable": "The IDE connection is unavailable. Reopen the settings page and try again.",
       "sourceTimeout": "Reading timed out. Reload the source before editing.",
       "mutationTimeout": "Confirmation timed out. Refresh before retrying because the change may have been saved.",
-      "mutationConfirmedLate": "The delayed save was confirmed. Reload the source to synchronize; your draft was retained."
+      "mutationConfirmedLate": "The delayed save was confirmed. Reload the source to synchronize; your draft was retained.",
+      "sharedToggleTitle": "Confirm shared project change",
+      "sharedToggleMessage": "This changes the shared .claude/settings.json file and may affect other contributors. Disabled-hook recovery data stays on this machine.",
+      "confirmSharedToggle": "Change shared configuration",
+      "sensitiveSourceWarning": "This file may contain credentials and other sensitive configuration. Reveal it only when you are ready to edit it.",
+      "revealSource": "Reveal configuration",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "Confirm the shared project configuration change first.",
+        "HOOK_CATALOG_TIMEOUT": "Hook refresh timed out. Refresh before changing another hook."
+      }
     },
     "other": {
       "title": "Other Settings",
@@ -2148,7 +2171,8 @@
     "invalidJsonConfig": "Invalid JSON config format",
     "providerAdded": "Provider added",
     "providerUpdated": "Provider updated",
-    "providerDeleted": "Provider deleted"
+    "providerDeleted": "Provider deleted",
+    "codexSettingsDispatchFailed": "Cannot send Codex settings to the IDE. Reopen the chat and try again."
   },
   "config": {
     "clickToCopy": "Click to copy",

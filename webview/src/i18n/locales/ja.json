@@ -57,6 +57,17 @@
     "currentMode": "現在のモード: {{mode}}",
     "currentModel": "現在のモデル: {{model}}",
     "removeAttachment": "添付ファイルを削除",
+    "queue": {
+      "edit": "キューのメッセージを編集",
+      "remove": "キューから削除",
+      "editLabel": "キューのメッセージ {{position}} を編集",
+      "removeLabel": "キューのメッセージ {{position}} を削除",
+      "reorderLabel": "メッセージ {{position}} を並べ替え",
+      "reorderHint": "ドラッグで並べ替え、フォーカス後に矢印キーで調整",
+      "mergedIntoDraft": "キューのメッセージを現在の下書きに統合しました",
+      "attachmentsNotRestored": "キューに入れたメッセージの添付ファイルを復元できませんでした",
+      "editBlockedAttachments": "このメッセージの添付ファイルは復元できないため、キューに残したままにします"
+    },
     "closePreview": "プレビューを閉じる",
     "loadingDropdown": "読み込み中...",
     "modelsLoadFailed": "モデルの読み込みに失敗しました。クリックして再試行",
@@ -1004,7 +1015,7 @@
     },
     "hooks": {
       "title": "Hooks",
-      "description": "Hook のソースを確認・編集し、対応する有効設定を変更します。",
+      "description": "Codex と Claude Code のフックを確認し、安全に編集します。",
       "refresh": "更新",
       "provider": "プロバイダー",
       "scope": "範囲",
@@ -1012,7 +1023,6 @@
       "allProviders": "すべてのプロバイダー",
       "allScopes": "すべての範囲",
       "global": "ユーザー",
-      "globalLocal": "ユーザー（ローカル上書き）",
       "project": "プロジェクト",
       "projectLocal": "プロジェクト（ローカル上書き）",
       "search": "Hooks を検索",
@@ -1043,7 +1053,7 @@
       "sourceEditor": "Hook ソースエディター",
       "affectedFile": "対象ファイル",
       "backupDirectory": "バックアップ先",
-      "latestBackup": "最新のバックアップ",
+      "latestBackup": "この編集セッションの直前のバックアップを復元",
       "lastModified": "最終更新",
       "event": "イベント",
       "format": "形式",
@@ -1068,7 +1078,7 @@
       "backupOnSave": "保存前にバックアップを作成します",
       "save": "保存",
       "saving": "保存中…",
-      "restore": "バックアップを復元",
+      "restore": "この編集セッションの直前のバックアップを復元",
       "saveFailed": "保存に失敗しました",
       "sourceLoadFailed": "ソースの再読み込みに失敗しました",
       "noPreview": "プレビューはありません。",
@@ -1101,7 +1111,18 @@
         "CODEX_EVENT_UNSUPPORTED": "確認済み形式で非対応のイベントです",
         "CODEX_HANDLER_UNSUPPORTED": "確認済み形式で非対応の処理種類です",
         "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook ファイルの項目が無効です",
-        "CODEX_STATE_INLINE_UNSUPPORTED": "インライン状態は安全に編集できません。状態テーブルを使用してください。"
+        "CODEX_STATE_INLINE_UNSUPPORTED": "インライン状態は安全に編集できません。状態テーブルを使用してください。",
+        "LINKED_SOURCE_READ_ONLY": "リンクファイルは読み取り専用です。元のファイルを直接編集してください。",
+        "HOOK_SOURCE_UNAVAILABLE": "ソースファイルを利用できません。"
+      },
+      "sharedToggleTitle": "共有プロジェクト設定の変更を確認",
+      "sharedToggleMessage": "共有の .claude/settings.json を変更します。他の共同作業者に影響する場合があります。無効化したフックの復元情報はこの端末だけに保存されます。",
+      "confirmSharedToggle": "共有設定を変更",
+      "sensitiveSourceWarning": "認証情報などの機密設定が含まれる場合があります。編集する準備ができてから表示してください。",
+      "revealSource": "設定を表示",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "共有プロジェクト設定の変更を先に確認してください。",
+        "HOOK_CATALOG_TIMEOUT": "フックの更新がタイムアウトしました。他のフックを変更する前に更新してください。"
       }
     }
   },
@@ -1267,7 +1288,8 @@
     "invalidJsonConfig": "無効なJSON設定形式",
     "providerAdded": "プロバイダーを追加しました",
     "providerUpdated": "プロバイダーを更新しました",
-    "providerDeleted": "プロバイダーを削除しました"
+    "providerDeleted": "プロバイダーを削除しました",
+    "codexSettingsDispatchFailed": "Codex ???? IDE ?????????????????????????????"
   },
   "config": {
     "clickToCopy": "クリックしてコピー",

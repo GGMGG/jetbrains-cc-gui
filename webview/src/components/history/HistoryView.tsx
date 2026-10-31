@@ -60,12 +60,11 @@ const HistoryView = ({ historyData, currentProvider, currentSessionId, currentSe
     return listedSessions.map(session => {
       if (session.provider !== 'codex') return session;
       const isCurrent = session.sessionId === currentSessionId;
-      // Local turn state supersedes an old history snapshot. A confirmed host
-      // snapshot still protects native writers and pending server requests.
-      const running = Boolean(session.ownedElsewhere || (isCurrent && currentSessionBusy)
-        || (activityConfirmed
-          ? runningIds.has(session.sessionId) || (isCurrent && writerIds.has(session.sessionId))
-          : isCurrent && !activityStatus ? false : session.running));
+      // Match native history's cross-tab activity. Other idle tabs may retain a writer lease;
+      // deletion still checks native ownership and running children in the backend.
+      const running = !!(session.ownedElsewhere || (isCurrent && currentSessionBusy) || (activityConfirmed
+        ? runningIds.has(session.sessionId) || (isCurrent && writerIds.has(session.sessionId))
+        : (!isCurrent || activityStatus !== null) && session.running));
       return running === session.running ? session : { ...session, running };
     });
   }, [listedSessions, currentProvider, currentSessionId, currentSessionBusy, activityStatus]);

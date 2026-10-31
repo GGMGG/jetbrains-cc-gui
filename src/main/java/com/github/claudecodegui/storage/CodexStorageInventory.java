@@ -170,6 +170,7 @@ public final class CodexStorageInventory {
                     case "database" -> entry.storageMode.equals("database");
                     case "file" -> entry.storageMode.equals("file");
                     case "archived" -> entry.archived;
+                    case "active" -> !entry.archived;
                     case "running" -> entry.running;
                     case "idle" -> !entry.running && !"SESSION_WRITER_BUSY".equals(entry.deletionUnavailableReason);
                     default -> true;

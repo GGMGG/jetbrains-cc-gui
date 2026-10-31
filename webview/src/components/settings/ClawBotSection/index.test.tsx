@@ -15,6 +15,20 @@ describe('ClawBotSection', () => {
     window.onClawBotOperation = undefined;
   });
 
+  it.each(['refused', 'throws'])('releases the busy state when the bridge %s an operation', failure => {
+    render(<ClawBotSection />);
+    act(() => {
+      window.onClawBotStatus?.('{"state":"LEADER","transport":"MOCK","sessionCount":0,"bindingState":"UNBOUND","bindingRevision":0}');
+    });
+    window.sendToJava = vi.fn(() => {
+      if (failure === 'throws') throw new Error('page replaced');
+      return false;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.clawBot.bind' }));
+    expect(screen.getByText(/settings.clawBot.errors.CLAWBOT_BRIDGE_UNAVAILABLE/)).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'settings.clawBot.bind' }).disabled).toBe(false);
+  });
+
   it('loads recovery through explicit controls and resends only after confirmation', () => {
     render(<ClawBotSection />);
     act(() => {

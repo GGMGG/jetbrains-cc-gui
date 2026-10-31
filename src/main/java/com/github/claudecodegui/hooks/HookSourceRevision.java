@@ -32,11 +32,4 @@ final class HookSourceRevision {
                 + ":" + HexFormat.of().formatHex(digest.digest());
     }
 
-    static boolean matchesStored(Path path, String expected) throws IOException {
-        if (expected != null && expected.matches("[0-9]+:[0-9]+")) {
-            // Old disabled-hook records predate content hashes. Keep them recoverable.
-            return expected.equals(Files.size(path) + ":" + Files.getLastModifiedTime(path).toMillis());
-        }
-        return read(path).equals(expected);
-    }
 }

@@ -31,6 +31,7 @@ const sidebarGroups: { key: string; items: SidebarItem[] }[] = [
     { key: 'clawBot', icon: 'codicon-comment-discussion', labelKey: 'settings.clawBot.title' },
   ] },
   { key: 'maintenance', items: [
+    { key: 'storage', icon: 'codicon-database', labelKey: 'settings.storage.title' },
     { key: 'usage', icon: 'codicon-graph', labelKey: 'settings.usage' },
     { key: 'storage', icon: 'codicon-database', labelKey: 'settings.storage.title' },
     { key: 'other', icon: 'codicon-ellipsis', labelKey: 'settings.other.title' },

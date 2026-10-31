@@ -16,15 +16,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
- * Discovers Codex, Claude Code and Codemoss hooks and reports their supported operations.
+ * Discovers Codex and Claude Code hooks and reports their supported operations.
  *
  * <p>Unknown schemas, malformed configuration and unsupported locations are surfaced as
  * validation issues so the UI cannot imply that an item is safe to edit or toggle.</p>
@@ -33,17 +29,10 @@ public final class HookCatalogService {
 
     private static final Logger LOG = Logger.getInstance(HookCatalogService.class);
     private static final Gson GSON = new Gson();
-    private static final int MAX_FILES = 500;
     private static final int MAX_DEPTH = 4;
     private static final long MAX_PREVIEW_BYTES = 128L * 1024L;
     private static final String CLAUDE_INDIVIDUAL_TOGGLE_UNSUPPORTED = "CLAUDE_INDIVIDUAL_TOGGLE_UNSUPPORTED";
-    private static final String SCRIPT_TOGGLE_UNCONFIRMED = "SCRIPT_TOGGLE_SEMANTICS_UNCONFIRMED";
     private static final String CODEX_CONFIG_HOOKS_SUPPORTED = "CODEX_CONFIG_HOOKS_SUPPORTED";
-    private static final Set<String> IGNORED_DIRECTORIES = Set.of(
-            "__pycache__", ".git", "node_modules", ".ccgui-disabled-hooks");
-    private static final Set<String> IGNORED_EXTENSIONS = Set.of(
-            ".pyc", ".class", ".o", ".obj", ".dll", ".so", ".dylib", ".exe", ".bin",
-            ".bak", ".tmp", ".swp");
     private static final Pattern SECRET_ASSIGNMENT = Pattern.compile(
             "(?i)(\\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|credential)"
                     + "[\\w-]*\\s*(?::|=|\\\\u003d)\\s*)[^\\r\\n,;]+"
@@ -77,16 +66,10 @@ public final class HookCatalogService {
         JsonArray capabilities = capabilityMatrix();
 
         scanClaudeSettings(userHome.resolve(".claude").resolve("settings.json"), "GLOBAL", items, sources);
-        scanClaudeSettings(userHome.resolve(".claude").resolve("settings.local.json"), "GLOBAL_LOCAL", items, sources);
         if (project != null) {
             Path claudeDir = project.resolve(".claude");
             scanClaudeSettings(claudeDir.resolve("settings.json"), "PROJECT", items, sources);
             scanClaudeSettings(claudeDir.resolve("settings.local.json"), "PROJECT_LOCAL", items, sources);
-        }
-
-        scanDirectory("codemoss", "GLOBAL", userHome.resolve(".codemoss").resolve("hooks"), items, sources);
-        if (project != null) {
-            scanDirectory("codemoss", "PROJECT", project.resolve(".codemoss").resolve("hooks"), items, sources);
         }
 
         scanCodexConfig(codexHome.resolve("config.toml"), "GLOBAL", items, sources);
@@ -108,17 +91,21 @@ public final class HookCatalogService {
     private void scanClaudeSettings(Path settingsPath, String scope, JsonArray items, JsonArray sources) {
         JsonObject source = source("claude", scope, settingsPath, "settings-json");
         sources.add(source);
+        collectDisabledClaudeHooks(settingsPath, scope, items, source);
         if (!Files.isRegularFile(settingsPath)) {
             return;
         }
 
         try {
+            if (Files.size(settingsPath) > MAX_PREVIEW_BYTES) {
+                addSourceIssue(source, "SOURCE_TOO_LARGE");
+                return;
+            }
             JsonElement root = JsonParser.parseString(Files.readString(settingsPath, StandardCharsets.UTF_8));
             if (!root.isJsonObject()) {
                 addSourceIssue(source, "SETTINGS_NOT_OBJECT");
                 return;
             }
-            collectDisabledClaudeHooks(settingsPath, scope, items, source);
             JsonElement hooks = root.getAsJsonObject().get("hooks");
             if (hooks == null || hooks.isJsonNull()) {
                 return;
@@ -134,6 +121,15 @@ public final class HookCatalogService {
         } catch (Exception e) {
             addSourceIssue(source, "INVALID_JSON");
             LOG.debug("[HookCatalog] Failed to parse Claude settings: " + settingsPath, e);
+        } finally {
+            if (!source.getAsJsonArray("validationIssues").isEmpty()) {
+                for (JsonElement value : items) {
+                    JsonObject item = value.getAsJsonObject();
+                    if (settingsPath.toAbsolutePath().normalize().toString().equals(stringValue(item, "rawLocation"))) {
+                        item.addProperty("managedToggleSupported", false);
+                    }
+                }
+            }
         }
     }
 
@@ -213,7 +209,7 @@ public final class HookCatalogService {
         // Claude Code has no per-hook enabled field; CCGUI manages individual state separately.
         item.addProperty("enabled", true);
         item.addProperty("toggleSupported", false);
-        item.addProperty("managedToggleSupported", true);
+        item.addProperty("managedToggleSupported", editable(settingsPath));
         item.addProperty("toggleMode", "ccgui-managed");
         item.addProperty("toggleReason", CLAUDE_INDIVIDUAL_TOGGLE_UNSUPPORTED);
         item.addProperty("format", "claude-settings-json");
@@ -221,79 +217,6 @@ public final class HookCatalogService {
         item.add("extensions", unknownFields(object, Set.of("type", "command", "matcher", "hooks")));
         item.addProperty("rawPreview", sanitizePreview(GSON.toJson(object)));
         items.add(item);
-    }
-
-    private void scanDirectory(
-            String provider,
-            String scope,
-            Path directory,
-            JsonArray items,
-            JsonArray sources
-    ) {
-        JsonObject source = source(provider, scope, directory, "hook-directory");
-        sources.add(source);
-        collectDisabledScripts(provider, scope, directory, items, source);
-        if (!Files.isDirectory(directory)) {
-            return;
-        }
-        try (Stream<Path> stream = Files.walk(directory, MAX_DEPTH)) {
-            List<Path> files = stream.filter(Files::isRegularFile)
-                    .filter(file -> !Files.isSymbolicLink(file))
-                    .filter(file -> isHookScriptCandidate(directory, file))
-                    .sorted(Comparator.comparing(Path::toString))
-                    .limit(MAX_FILES)
-                    .toList();
-            if (files.size() >= MAX_FILES) {
-                addSourceIssue(source, "FILE_LIMIT_REACHED");
-            }
-            for (Path file : files) {
-                items.add(scriptItem(provider, scope, directory, file));
-            }
-        } catch (IOException e) {
-            addSourceIssue(source, "SCAN_FAILED");
-            LOG.debug("[HookCatalog] Failed to scan hook directory: " + directory, e);
-        }
-    }
-
-    private JsonObject scriptItem(String provider, String scope, Path root, Path file) {
-        String relative = root.relativize(file).toString();
-        String event = relative;
-        String command = file.toAbsolutePath().normalize().toString();
-        JsonObject item = baseItem(provider, scope, event, file, command, null, revision(file));
-        item.addProperty("enabled", true);
-        item.addProperty("toggleSupported", false);
-        item.addProperty("managedToggleSupported", false);
-        item.addProperty("executionStateKnown", false);
-        item.addProperty("toggleReason", SCRIPT_TOGGLE_UNCONFIRMED);
-        item.addProperty("format", "script-file");
-        item.addProperty("relativePath", relative);
-        JsonArray issues = new JsonArray();
-        item.add("validationIssues", issues);
-        try {
-            long size = Files.size(file);
-            if (size <= MAX_PREVIEW_BYTES) {
-                item.addProperty("rawPreview", sanitizePreview(Files.readString(file, StandardCharsets.UTF_8)));
-            } else {
-                issues.add("PREVIEW_TRUNCATED");
-            }
-        } catch (Exception e) {
-            issues.add("READ_FAILED");
-        }
-        return item;
-    }
-
-    private static boolean isHookScriptCandidate(Path root, Path file) {
-        Path relative = root.relativize(file);
-        for (Path part : relative) {
-            if (IGNORED_DIRECTORIES.contains(part.toString())) {
-                return false;
-            }
-        }
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (name.startsWith(".ccgui-") || name.endsWith("~")) {
-            return false;
-        }
-        return IGNORED_EXTENSIONS.stream().noneMatch(name::endsWith);
     }
 
     private void collectDisabledClaudeHooks(
@@ -333,7 +256,7 @@ public final class HookCatalogService {
             }
             item.addProperty("enabled", false);
             item.addProperty("toggleSupported", false);
-            item.addProperty("managedToggleSupported", true);
+            item.addProperty("managedToggleSupported", editable(settingsPath));
             item.addProperty("toggleMode", "ccgui-managed");
             item.addProperty("toggleReason", "CCGUI_MANAGED_TOGGLE");
             item.addProperty("revision", revision);
@@ -341,59 +264,6 @@ public final class HookCatalogService {
             item.add("validationIssues", new JsonArray());
             item.add("extensions", unknownFields(hook, Set.of("type", "command", "matcher", "hooks")));
             item.addProperty("rawPreview", sanitizePreview(GSON.toJson(hook)));
-            items.add(item);
-        }
-    }
-
-    private void collectDisabledScripts(
-            String provider,
-            String scope,
-            Path directory,
-            JsonArray items,
-            JsonObject source
-    ) {
-        JsonArray entries;
-        try {
-            entries = new HookToggleStateStore(userHome, directory.getParent()).readStrict()
-                    .getAsJsonArray("disabledScripts");
-        } catch (IOException e) {
-            addSourceIssue(source, "TOGGLE_STATE_INVALID");
-            return;
-        }
-        String normalizedDirectory = directory.toAbsolutePath().normalize().toString();
-        for (JsonElement element : entries) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject entry = element.getAsJsonObject();
-            if (!provider.equals(stringValue(entry, "provider"))
-                    || !scope.equals(stringValue(entry, "scope"))) {
-                continue;
-            }
-            Path original;
-            try {
-                original = Path.of(entry.get("originalLocation").getAsString()).toAbsolutePath().normalize();
-            } catch (RuntimeException e) {
-                continue;
-            }
-            if (!original.startsWith(directory.toAbsolutePath().normalize())
-                    || original.toString().equals(normalizedDirectory)) {
-                continue;
-            }
-            JsonObject item = baseItem(provider, scope, stringValue(entry, "event"), original,
-                    original.toString(), null, "disabled:" + stringValue(entry, "revision"));
-            item.addProperty("sourceId", stringValue(entry, "sourceId"));
-            item.addProperty("enabled", false);
-            item.addProperty("toggleSupported", false);
-            item.addProperty("managedToggleSupported", true);
-            item.addProperty("toggleMode", "ccgui-managed");
-            item.addProperty("toggleReason", "CCGUI_MANAGED_TOGGLE");
-            item.addProperty("editSupported", false);
-            item.addProperty("format", "script-file");
-            item.addProperty("relativePath", stringValue(entry, "relativePath"));
-            item.addProperty("revision", "disabled:" + stringValue(entry, "revision"));
-            item.add("validationIssues", new JsonArray());
-            item.add("extensions", new JsonObject());
             items.add(item);
         }
     }
@@ -436,7 +306,8 @@ public final class HookCatalogService {
                 item.addProperty("managedKey", entry.managedKey());
                 item.addProperty("nativeStateRevision", Files.isRegularFile(stateConfig) ? HookSourceRevision.read(stateConfig) : "missing");
                 item.addProperty("enabled", Boolean.TRUE.equals(entry.enabled()));
-                boolean toggleSupported = entry.enabled() != null && entry.validationIssues().isEmpty();
+                boolean toggleSupported = entry.enabled() != null && entry.validationIssues().isEmpty()
+                        && editable(configPath) && !Files.isSymbolicLink(stateConfig);
                 item.addProperty("toggleSupported", toggleSupported);
                 item.addProperty("managedToggleSupported", false);
                 item.addProperty("toggleMode", "native");
@@ -461,8 +332,6 @@ public final class HookCatalogService {
                 true, CLAUDE_INDIVIDUAL_TOGGLE_UNSUPPORTED, "UNVERIFIED"));
         capabilities.add(capability("codex", "hooks-json", true, true,
                 false, CODEX_CONFIG_HOOKS_SUPPORTED, "UNVERIFIED"));
-        capabilities.add(capability("codemoss", "hook-directory", true, false,
-                false, SCRIPT_TOGGLE_UNCONFIRMED, "UNVERIFIED"));
         capabilities.add(capability("codex", "config-toml", true, true,
                 false, CODEX_CONFIG_HOOKS_SUPPORTED, "UNVERIFIED"));
         return capabilities;
@@ -497,7 +366,7 @@ public final class HookCatalogService {
         source.addProperty("location", path.toAbsolutePath().normalize().toString());
         source.addProperty("format", format);
         source.addProperty("exists", Files.exists(path));
-        source.addProperty("readOnly", false);
+        source.addProperty("readOnly", !editable(path));
         source.addProperty("revision", revision(path));
         addLastModified(source, path);
         source.add("validationIssues", new JsonArray());
@@ -520,9 +389,16 @@ public final class HookCatalogService {
         item.addProperty("schemaVersion", 1);
         item.addProperty("revision", sourceRevision);
         addLastModified(item, location);
-        item.addProperty("editSupported", true);
+        item.addProperty("editSupported", editable(location));
+        if (!editable(location)) {
+            item.addProperty("readOnlyReason", Files.isSymbolicLink(location) ? "LINKED_SOURCE_READ_ONLY" : "HOOK_SOURCE_UNAVAILABLE");
+        }
         item.add("extensions", new JsonObject());
         return item;
+    }
+
+    private static boolean editable(Path path) {
+        return Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path);
     }
 
     private static JsonObject unknownFields(JsonObject object, Set<String> known) {

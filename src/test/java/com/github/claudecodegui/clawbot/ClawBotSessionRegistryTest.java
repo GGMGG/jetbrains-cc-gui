@@ -58,6 +58,11 @@ public class ClawBotSessionRegistryTest {
                 "message-1", "user-1", "context-1", "hello");
         assertTrue(registry.enqueueInbound("session", message));
 
+        assertFalse(registry.register(new ClawBotSessionRegistration(
+                "session", "ide-b", "project", "Project", "codex",
+                Set.of("STATUS", "INBOUND"), ClawBotSessionStatus.ONLINE, 2)));
+        assertEquals(message, registry.pollInbound("session", "ide-a", 1));
+        assertTrue(registry.unregister("session", "ide-a", 1));
         assertTrue(registry.register(new ClawBotSessionRegistration(
                 "session", "ide-b", "project", "Project", "codex",
                 Set.of("STATUS", "INBOUND"), ClawBotSessionStatus.ONLINE, 2)));
@@ -112,7 +117,7 @@ public class ClawBotSessionRegistryTest {
         assertTrue(registry.register(controlRegistration));
         ClawBotInboundMessage command = ClawBotInboundMessage.command(
                 new ClawBotInboundMessage("command", "user", "context", "stop"),
-                ClawBotInboundAction.INTERRUPT);
+                ClawBotInboundAction.INTERRUPT).forTarget(registry.snapshot().get(0));
         assertTrue(registry.enqueueCommand("control", command));
         assertTrue(registry.markCommandDispatched("control", "ide-a", 1, "command"));
         assertTrue(registry.isCommandDispatched("control", "ide-a", 1, "command"));
@@ -131,7 +136,7 @@ public class ClawBotSessionRegistryTest {
                 "message", "user", "context", "long task");
         ClawBotInboundMessage command = ClawBotInboundMessage.command(
                 new ClawBotInboundMessage("command", "user", "context", "stop"),
-                ClawBotInboundAction.INTERRUPT);
+                ClawBotInboundAction.INTERRUPT).forTarget(registry.snapshot().get(0));
         assertTrue(registry.enqueueInbound("session", inbound));
         assertTrue(registry.enqueueCommand("session", command));
 

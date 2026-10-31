@@ -1,16 +1,14 @@
 import type { HookEditorTarget, HookItem, HookProvider, HookScope } from '../../../types/hooks';
 
-export const PROVIDER_ORDER: HookProvider[] = ['codex', 'claude', 'codemoss'];
+export const PROVIDER_ORDER: HookProvider[] = ['codex', 'claude'];
 
 export const PROVIDER_LABELS: Record<HookProvider, string> = {
   codex: 'Codex',
   claude: 'Claude Code',
-  codemoss: 'Codemoss',
 };
 
 const SCOPE_KEYS: Record<HookScope, string> = {
   GLOBAL: 'settings.hooks.global',
-  GLOBAL_LOCAL: 'settings.hooks.globalLocal',
   PROJECT: 'settings.hooks.project',
   PROJECT_LOCAL: 'settings.hooks.projectLocal',
 };
@@ -65,5 +63,8 @@ const OPERATION_MESSAGES: Record<string, string> = {
 
 export function hookOperationMessage(error: string, translate: (key: string) => string): string {
   const key = OPERATION_MESSAGES[error];
-  return key ? translate(`settings.hooks.${key}`) : error;
+  if (key) return translate(`settings.hooks.${key}`);
+  const errorKey = `settings.hooks.errors.${error}`;
+  const translated = translate(errorKey);
+  return translated === errorKey ? error : translated;
 }

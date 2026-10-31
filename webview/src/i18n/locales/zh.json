@@ -74,6 +74,17 @@
     "currentMode": "当前模式: {{mode}}",
     "currentModel": "当前模型: {{model}}",
     "removeAttachment": "移除附件",
+    "queue": {
+      "edit": "编辑排队消息",
+      "remove": "从队列移除",
+      "editLabel": "编辑排队消息 {{position}}",
+      "removeLabel": "从队列移除消息 {{position}}",
+      "reorderLabel": "重新排序消息 {{position}}",
+      "reorderHint": "拖动可排序，聚焦后可用方向键调整",
+      "mergedIntoDraft": "排队消息已合并到当前草稿",
+      "attachmentsNotRestored": "排队消息的附件未能回填到草稿",
+      "editBlockedAttachments": "该消息的附件无法回填，已保留在队列中"
+    },
     "closePreview": "关闭预览",
     "loadingDropdown": "加载中...",
     "modelsLoadFailed": "模型列表加载失败，点击重试",
@@ -88,6 +99,8 @@
     "usagePercentage": "上下文: {{percentage}}",
     "planUsage": {
       "title": "Claude 额度详情",
+      "grokTitle": "Grok 额度详情",
+      "staleIdle": "这是上次读取的额度，下次使用 Grok 时会自动刷新",
       "loading": "正在获取额度…",
       "unavailable": "额度暂不可用",
       "dash": "额度 —",
@@ -999,7 +1012,7 @@
       "nativeToggleHint": "修改 Codex 用户级启用偏好；实际执行仍受信任、功能开关和策略控制。",
       "toggleFailed": "Hook 启停失败",
       "title": "Hooks 管理",
-      "description": "查看和编辑 Hook 源文件，并调整已支持的启用偏好。",
+      "description": "查看并安全编辑 Codex 和 Claude Code Hooks。",
       "refresh": "刷新",
       "provider": "Provider",
       "scope": "范围",
@@ -1007,7 +1020,6 @@
       "allProviders": "全部 Provider",
       "allScopes": "全部范围",
       "global": "用户级",
-      "globalLocal": "用户级（本地覆盖）",
       "project": "项目级",
       "projectLocal": "项目级（本地覆盖）",
       "search": "搜索 Hooks",
@@ -1031,7 +1043,7 @@
       "sourceEditor": "Hook 源文件编辑器",
       "affectedFile": "影响文件",
       "backupDirectory": "备份目录",
-      "latestBackup": "最近备份",
+      "latestBackup": "恢复本次编辑会话的上次备份",
       "lastModified": "最后修改时间",
       "event": "事件",
       "format": "格式",
@@ -1056,7 +1068,7 @@
       "backupOnSave": "保存前会创建备份",
       "save": "保存",
       "saving": "保存中...",
-      "restore": "恢复备份",
+      "restore": "恢复本次编辑会话的上次备份",
       "saveFailed": "保存失败",
       "sourceLoadFailed": "重新读取源文件失败",
       "noPreview": "暂无预览。",
@@ -1083,14 +1095,25 @@
         "CODEX_EVENT_UNSUPPORTED": "已校验的 Codex 格式不支持此事件",
         "CODEX_HANDLER_UNSUPPORTED": "已校验的 Codex 格式不支持此处理器类型",
         "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook 文件字段无效",
-        "CODEX_STATE_INLINE_UNSUPPORTED": "无法安全编辑内联状态，请使用状态配置表"
+        "CODEX_STATE_INLINE_UNSUPPORTED": "无法安全编辑内联状态，请使用状态配置表",
+        "LINKED_SOURCE_READ_ONLY": "链接文件为只读，请直接编辑原始文件。",
+        "HOOK_SOURCE_UNAVAILABLE": "源文件不可用。"
       },
       "executionUnknown": "执行状态未知",
       "sharedProjectWarning": "项目配置可能被提交并影响其他用户。分享前请检查文件差异。",
       "bridgeUnavailable": "与 IDE 的连接不可用，请重新打开设置页后重试。",
       "sourceTimeout": "读取超时，请重新加载源文件后再编辑。",
       "mutationTimeout": "等待确认超时；修改可能已经保存，请刷新后再重试。",
-      "mutationConfirmedLate": "已收到延迟的保存确认。草稿已保留，请重新加载源文件以同步。"
+      "mutationConfirmedLate": "已收到延迟的保存确认。草稿已保留，请重新加载源文件以同步。",
+      "sharedToggleTitle": "确认修改共享项目配置",
+      "sharedToggleMessage": "此操作会修改共享的 .claude/settings.json，可能影响其他协作者。已停用 Hook 的恢复记录仅保存在本机。",
+      "confirmSharedToggle": "修改共享配置",
+      "sensitiveSourceWarning": "此文件可能含有凭证和其他敏感配置。准备编辑时再点击查看。",
+      "revealSource": "查看配置内容",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "请先确认修改共享项目配置。",
+        "HOOK_CATALOG_TIMEOUT": "Hooks 刷新超时，请刷新后再修改其他 Hook。"
+      }
     },
     "skillsDesc": "管理和配置技能模块",
     "other": {
@@ -2152,7 +2175,8 @@
     "invalidJsonConfig": "配置 JSON 格式错误，请修正后再保存",
     "providerAdded": "供应商添加成功",
     "providerUpdated": "供应商更新成功",
-    "providerDeleted": "供应商删除成功"
+    "providerDeleted": "供应商删除成功",
+    "codexSettingsDispatchFailed": "??? IDE ?? Codex ??????????????"
   },
   "config": {
     "clickToCopy": "点击复制",

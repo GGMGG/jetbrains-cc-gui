@@ -27,6 +27,7 @@ public final class ClawBotProcessCoordinator {
     private static final String LEADER_FILE = "leader.json";
     private static final long MAX_LEADER_FILE_BYTES = 4096L;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final java.util.Set<Path> LOCAL_LEADERS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private final Path runtimeDirectory;
     private final String instanceId;
@@ -59,10 +60,16 @@ public final class ClawBotProcessCoordinator {
         if (Files.exists(lockPath(), LinkOption.NOFOLLOW_LINKS)) {
             files.validateFile(lockPath());
         }
-        FileChannel channel = FileChannel.open(lockPath(), StandardOpenOption.CREATE,
-                StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        Path lockIdentity = runtimeDirectory.toRealPath().resolve(LOCK_FILE);
+        if (!LOCAL_LEADERS.add(lockIdentity)) {
+            return null;
+        }
+        FileChannel channel = null;
         FileLock lock = null;
+        boolean acquired = false;
         try {
+            channel = FileChannel.open(lockPath(), StandardOpenOption.CREATE,
+                    StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
             ClawBotRuntimeFiles.restrict(lockPath(), false);
             try {
                 lock = channel.tryLock();
@@ -75,13 +82,23 @@ public final class ClawBotProcessCoordinator {
                 return null;
             }
             writeLeader(safeEndpoint);
-            return new LeaderLease(this, channel, lock, instanceId, leaderPath());
+            LeaderLease lease = new LeaderLease(this, channel, lock, instanceId, leaderPath(), lockIdentity);
+            acquired = true;
+            return lease;
         } catch (IOException | RuntimeException error) {
-            if (lock != null) {
-                lock.release();
+            try {
+                if (lock != null) {
+                    lock.release();
+                }
+            } catch (IOException releaseError) {
+                error.addSuppressed(releaseError);
             }
             closeQuietly(channel);
             throw error;
+        } finally {
+            if (!acquired) {
+                LOCAL_LEADERS.remove(lockIdentity);
+            }
         }
     }
 
@@ -142,6 +159,9 @@ public final class ClawBotProcessCoordinator {
     }
 
     private static void closeQuietly(FileChannel channel) {
+        if (channel == null) {
+            return;
+        }
         try {
             channel.close();
         } catch (IOException ignored) {
@@ -166,6 +186,7 @@ public final class ClawBotProcessCoordinator {
         private final FileLock lock;
         private final String ownerId;
         private final Path leaderPath;
+        private final Path lockIdentity;
         private boolean closed;
 
         private LeaderLease(
@@ -173,13 +194,15 @@ public final class ClawBotProcessCoordinator {
                 FileChannel channel,
                 FileLock lock,
                 String ownerId,
-                Path leaderPath
+                Path leaderPath,
+                Path lockIdentity
         ) {
             this.coordinator = coordinator;
             this.channel = channel;
             this.lock = lock;
             this.ownerId = ownerId;
             this.leaderPath = leaderPath;
+            this.lockIdentity = lockIdentity;
         }
 
         /** Replaces the temporary endpoint after the authenticated server is bound. */
@@ -206,7 +229,11 @@ public final class ClawBotProcessCoordinator {
                 try {
                     lock.release();
                 } finally {
-                    channel.close();
+                    try {
+                        channel.close();
+                    } finally {
+                        LOCAL_LEADERS.remove(lockIdentity);
+                    }
                 }
             }
         }

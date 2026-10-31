@@ -53,26 +53,6 @@ public class HookWindowsAttributesTest {
     }
 
     @Test
-    public void legacyScriptRestorePreservesContentAclOwnerAndDosFlags() throws Exception {
-        Path home = windowsHome();
-        Path script = Files.createDirectories(home.resolve(".codemoss/hooks/nested")).resolve("guard.ps1");
-        String original = "Write-Output 'isolated hook fixture'\n";
-        Files.writeString(script, original);
-        Attributes expected = customizeAndCapture(script);
-        HookCatalogService catalog = new HookCatalogService(home);
-        JsonObject item = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
-        HookToggleService toggles = new HookToggleService(home);
-
-        HookToggleServiceTest.legacyDisabledScript(home, script, item);
-        assertFalse(Files.exists(script));
-        JsonObject disabledItem = catalog.scan(null).getAsJsonArray("items").get(0).getAsJsonObject();
-        JsonObject enabled = toggles.toggle(null, request(disabledItem, true));
-        assertTrue(enabled.toString(), enabled.get("success").getAsBoolean());
-        assertEquals(original, Files.readString(script));
-        assertAttributes(expected, script);
-    }
-
-    @Test
     public void claudeToggleRoundTripPreservesAttributesAndUnrelatedFields() throws Exception {
         Path home = windowsHome();
         Path settings = Files.createDirectories(home.resolve(".claude")).resolve("settings.json");
