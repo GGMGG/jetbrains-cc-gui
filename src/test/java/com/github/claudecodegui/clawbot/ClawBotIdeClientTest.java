@@ -39,6 +39,8 @@ public class ClawBotIdeClientTest {
             var endpoint = server.start();
             try (var old = new ClawBotIdeClient(endpoint, "idea", 1); var latest = new ClawBotIdeClient(endpoint, "pycharm", 2)) {
                 assertTrue(old.register(registration("tab", "idea", 1)));
+                assertFalse(latest.register(registration("tab", "pycharm", 2)));
+                assertTrue(registry.unregister("tab", "idea", 1));
                 assertTrue(latest.register(registration("tab", "pycharm", 2)));
                 assertFalse(old.heartbeat("tab", ClawBotSessionStatus.ONLINE));
                 assertEquals("CLAWBOT_SESSION_SNAPSHOT_RECOVERY_FAILED",
