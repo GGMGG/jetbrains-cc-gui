@@ -47,7 +47,8 @@ final class ClawBotRuntimeFiles {
 
     Path path(String name) throws IOException {
         if (!Set.of("gateway.auth", "leader.json", "gateway.lock", "progress-settings.json", "execution-journal.json",
-                "ide-execution-journal.json", "ide-execution-journal.json.lock", "transport-state.json").contains(name)) {
+                "ide-execution-journal.json", "ide-execution-journal.json.lock", "transport-state.json", "pending-deliveries.enc",
+                "reply-recovery.enc", "reply-capabilities.enc", "outbound-protection.json", "outbound-receipts.json").contains(name)) {
             throw new IOException("CLAWBOT_RUNTIME_FILE_INVALID");
         }
         return root.resolve(name);
