@@ -9,6 +9,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -21,6 +22,7 @@ public final class ClawBotSessionRegistry {
     private static final Duration DEFAULT_STALE_AFTER = Duration.ofSeconds(30);
     private static final int MAX_PENDING_MESSAGES_PER_SESSION = 64;
     private static final int MAX_SESSIONS = 256;
+    private static final int MAX_RECENT_MESSAGE_IDS = 256;
 
     private final Clock clock;
     private final long staleAfterMillis;
@@ -29,6 +31,7 @@ public final class ClawBotSessionRegistry {
     private final Map<String, Deque<ClawBotInboundMessage>> pendingCommands = new HashMap<>();
     private final Map<String, Set<String>> dispatchedMessages = new HashMap<>();
     private final Map<String, Set<String>> dispatchedCommands = new HashMap<>();
+    private final Map<String, LinkedHashSet<String>> recentMessageIds = new HashMap<>();
     private final Map<String, ClawBotSessionIdleClock> idleClocks = new HashMap<>();
     private final Map<String, Long> heartbeatTicks = new HashMap<>();
     private final LongSupplier ticker;
@@ -51,9 +54,10 @@ public final class ClawBotSessionRegistry {
         }
     }
 
-    /** Registers a session unless an older or equal connection epoch owns it. */
+    /** Only the existing instance may renew a handle; epochs are scoped to that instance. */
     public synchronized boolean register(ClawBotSessionRegistration registration) {
         Objects.requireNonNull(registration, "registration");
+        markStale();
         ClawBotSessionSnapshot current = sessions.get(registration.sessionHandleId());
         if (current != null && !isNewer(registration, current)) {
             return false;
@@ -84,6 +88,7 @@ public final class ClawBotSessionRegistry {
                 pendingCommands.remove(handle);
                 dispatchedMessages.remove(handle);
                 dispatchedCommands.remove(handle);
+                recentMessageIds.remove(handle);
             }
             idleClocks.remove(registration.sessionHandleId());
         }
@@ -105,6 +110,7 @@ public final class ClawBotSessionRegistry {
             throw new IllegalArgumentException("connectionEpoch must not be negative");
         }
         Objects.requireNonNull(registrations, "registrations");
+        markStale();
         if (registrations.size() > MAX_SESSIONS) {
             return false;
         }
@@ -157,6 +163,7 @@ public final class ClawBotSessionRegistry {
                     pendingCommands.remove(handle);
                     dispatchedMessages.remove(handle);
                     dispatchedCommands.remove(handle);
+                    recentMessageIds.remove(handle);
                 }
                 idleClocks.remove(registration.sessionHandleId());
             }
@@ -167,6 +174,7 @@ public final class ClawBotSessionRegistry {
         pendingCommands.keySet().removeIf(sessionHandleId -> !updated.containsKey(sessionHandleId));
         dispatchedMessages.keySet().removeIf(sessionHandleId -> !updated.containsKey(sessionHandleId));
         dispatchedCommands.keySet().removeIf(sessionHandleId -> !updated.containsKey(sessionHandleId));
+        recentMessageIds.keySet().removeIf(sessionHandleId -> !updated.containsKey(sessionHandleId));
         idleClocks.keySet().removeIf(sessionHandleId -> !updated.containsKey(sessionHandleId));
         heartbeatTicks.keySet().removeIf(sessionHandleId -> !updated.containsKey(sessionHandleId));
         for (ClawBotSessionRegistration registration : registrations) {
@@ -212,6 +220,7 @@ public final class ClawBotSessionRegistry {
         pendingCommands.remove(sessionHandleId);
         dispatchedMessages.remove(sessionHandleId);
         dispatchedCommands.remove(sessionHandleId);
+        recentMessageIds.remove(sessionHandleId);
         idleClocks.remove(sessionHandleId);
         heartbeatTicks.remove(sessionHandleId);
         return true;
@@ -224,23 +233,7 @@ public final class ClawBotSessionRegistry {
 
     /** Queues a control action only for a session that explicitly advertises control capability. */
     public synchronized boolean enqueueCommand(String sessionHandleId, ClawBotInboundMessage message) {
-        requireId(sessionHandleId, "sessionHandleId");
-        Objects.requireNonNull(message, "message");
-        markStale();
-        ClawBotSessionSnapshot current = sessions.get(sessionHandleId);
-        if (current == null || (current.status() != ClawBotSessionStatus.ONLINE
-                && current.status() != ClawBotSessionStatus.BUSY)
-                || !current.capabilities().contains("CONTROL")
-                || message.target() != null && !message.target().matches(current)) {
-            return false;
-        }
-        Deque<ClawBotInboundMessage> queue = pendingCommands.computeIfAbsent(
-                sessionHandleId, ignored -> new ArrayDeque<>());
-        if (queue.size() >= MAX_PENDING_MESSAGES_PER_SESSION) {
-            return false;
-        }
-        queue.addLast(message);
-        return true;
+        return enqueue(sessionHandleId, message, "CONTROL");
     }
 
     /** Removes gateway-queued inbound messages from a sender whose access was revoked. */
@@ -274,11 +267,20 @@ public final class ClawBotSessionRegistry {
         pendingCommands.values().forEach(java.util.Deque::clear);
         dispatchedMessages.values().forEach(Set::clear);
         dispatchedCommands.values().forEach(Set::clear);
+        recentMessageIds.clear();
     }
 
     private boolean enqueue(String sessionHandleId, ClawBotInboundMessage message, String capability) {
         requireId(sessionHandleId, "sessionHandleId");
         Objects.requireNonNull(message, "message");
+        boolean control = "CONTROL".equals(capability);
+        boolean ordinary = message.action() == ClawBotInboundAction.MESSAGE
+                || message.action() == ClawBotInboundAction.UNSUPPORTED_MEDIA;
+        boolean interaction = message.action() == ClawBotInboundAction.APPROVE
+                || message.action() == ClawBotInboundAction.DENY || message.action() == ClawBotInboundAction.ANSWER;
+        if (control == ordinary || interaction && (message.target() == null || message.interactionToken().isEmpty())) {
+            return false;
+        }
         markStale();
         ClawBotSessionSnapshot current = sessions.get(sessionHandleId);
         if (current == null || (current.status() != ClawBotSessionStatus.ONLINE
@@ -287,13 +289,27 @@ public final class ClawBotSessionRegistry {
                 || message.target() != null && !message.target().matches(current)) {
             return false;
         }
-        Deque<ClawBotInboundMessage> queue = pendingMessages.computeIfAbsent(
+        LinkedHashSet<String> recent = recentMessageIds.computeIfAbsent(sessionHandleId, ignored -> new LinkedHashSet<>());
+        if (recent.contains(message.messageId()) || containsMessage(pendingMessages.get(sessionHandleId), message.messageId())
+                || containsMessage(pendingCommands.get(sessionHandleId), message.messageId())) {
+            return true;
+        }
+        Deque<ClawBotInboundMessage> queue = (control ? pendingCommands : pendingMessages).computeIfAbsent(
                 sessionHandleId, ignored -> new ArrayDeque<>());
         if (queue.size() >= MAX_PENDING_MESSAGES_PER_SESSION) {
             return false;
         }
-        queue.addLast(message);
+        // Even a legacy control without an explicit target is bound before it can be polled.
+        queue.addLast(control && message.target() == null ? message.forTarget(current) : message);
+        recent.add(message.messageId());
+        if (recent.size() > MAX_RECENT_MESSAGE_IDS) {
+            recent.remove(recent.iterator().next());
+        }
         return true;
+    }
+
+    private static boolean containsMessage(Deque<ClawBotInboundMessage> queue, String id) {
+        return queue != null && queue.stream().anyMatch(message -> message.messageId().equals(id));
     }
 
     /** Returns the head message until the owner confirms its reply. */
@@ -304,7 +320,7 @@ public final class ClawBotSessionRegistry {
         markStale();
         ClawBotSessionSnapshot current = sessions.get(sessionHandleId);
         if (current == null || !current.instanceId().equals(instanceId)
-                || current.connectionEpoch() != connectionEpoch) {
+                || current.connectionEpoch() != connectionEpoch || !isAvailable(current, "INBOUND")) {
             return null;
         }
         Deque<ClawBotInboundMessage> queue = pendingMessages.get(sessionHandleId);
@@ -317,7 +333,7 @@ public final class ClawBotSessionRegistry {
     /** Removes only the message currently at the head of the owner's queue. */
     public synchronized boolean acknowledgeInbound(
             String sessionHandleId, String instanceId, long connectionEpoch, String messageId) {
-        requireId(messageId, "messageId");
+        requireMessageId(messageId);
         ClawBotInboundMessage current = pollInbound(sessionHandleId, instanceId, connectionEpoch);
         if (current == null || !current.messageId().equals(messageId)) {
             return false;
@@ -359,7 +375,7 @@ public final class ClawBotSessionRegistry {
         markStale();
         ClawBotSessionSnapshot current = sessions.get(sessionHandleId);
         if (current == null || !current.instanceId().equals(instanceId)
-                || current.connectionEpoch() != connectionEpoch) {
+                || current.connectionEpoch() != connectionEpoch || !isAvailable(current, "CONTROL")) {
             return null;
         }
         Deque<ClawBotInboundMessage> queue = pendingCommands.get(sessionHandleId);
@@ -372,7 +388,7 @@ public final class ClawBotSessionRegistry {
     /** Acknowledges only the current control action for its owning IDE connection. */
     public synchronized boolean acknowledgeCommand(
             String sessionHandleId, String instanceId, long connectionEpoch, String messageId) {
-        requireId(messageId, "messageId");
+        requireMessageId(messageId);
         ClawBotInboundMessage current = pollCommand(sessionHandleId, instanceId, connectionEpoch);
         if (current == null || !current.messageId().equals(messageId)) {
             return false;
@@ -415,14 +431,14 @@ public final class ClawBotSessionRegistry {
                 && current.connectionEpoch() == connectionEpoch;
     }
 
-    /** Marks expired online sessions stale and returns the number changed. */
+    /** Every nonterminal registration has a heartbeat lease, including unauthorized entries. */
     public synchronized int markStale() {
         long now = ticker.getAsLong();
         int changed = 0;
         for (Map.Entry<String, ClawBotSessionSnapshot> entry : sessions.entrySet()) {
             ClawBotSessionSnapshot current = entry.getValue();
-            if ((current.status() == ClawBotSessionStatus.ONLINE
-                    || current.status() == ClawBotSessionStatus.BUSY)
+            if ((current.status() != ClawBotSessionStatus.STALE
+                    && current.status() != ClawBotSessionStatus.OFFLINE)
                     && (now < heartbeatTicks.get(entry.getKey())
                     || now - heartbeatTicks.get(entry.getKey()) >= TimeUnit.MILLISECONDS.toNanos(staleAfterMillis))) {
                 entry.setValue(current.withStatus(ClawBotSessionStatus.STALE));
@@ -462,6 +478,9 @@ public final class ClawBotSessionRegistry {
     public synchronized boolean reportActivity(String sessionHandleId, String instanceId, long connectionEpoch,
             String generation, String activeTurnId) {
         requireId(generation, "generation");
+        if (activeTurnId == null) {
+            throw new IllegalArgumentException("Invalid activeTurnId");
+        }
         if (!activeTurnId.isEmpty()) {
             requireId(activeTurnId, "activeTurnId");
         }
@@ -499,9 +518,19 @@ public final class ClawBotSessionRegistry {
 
     private static boolean isNewer(
             ClawBotSessionRegistration registration, ClawBotSessionSnapshot current) {
-        return registration.connectionEpoch() > current.connectionEpoch()
-                || registration.connectionEpoch() == current.connectionEpoch()
-                && registration.instanceId().equals(current.instanceId());
+        return registration.instanceId().equals(current.instanceId())
+                && registration.connectionEpoch() >= current.connectionEpoch();
+    }
+
+    private static boolean isAvailable(ClawBotSessionSnapshot session, String capability) {
+        return (session.status() == ClawBotSessionStatus.ONLINE || session.status() == ClawBotSessionStatus.BUSY)
+                && session.capabilities().contains(capability);
+    }
+
+    private static void requireMessageId(String value) {
+        if (value == null || value.isBlank() || value.length() > ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH || containsControl(value)) {
+            throw new IllegalArgumentException("Invalid messageId");
+        }
     }
 
     private static void requireId(String value, String name) {
