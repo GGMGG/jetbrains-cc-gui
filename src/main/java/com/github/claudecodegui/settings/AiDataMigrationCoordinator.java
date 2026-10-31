@@ -107,7 +107,6 @@ public final class AiDataMigrationCoordinator {
 
     private ProcessLock tryAcquireSharedLock() throws IOException {
         prepareDirectory();
-        requireRecoveredMigration();
         Path path = lockPath();
         SharedProcessLock shared = lockState();
         synchronized (shared) {
