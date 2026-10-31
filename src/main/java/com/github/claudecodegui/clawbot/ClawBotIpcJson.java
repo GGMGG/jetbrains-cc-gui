@@ -20,7 +20,7 @@ final class ClawBotIpcJson {
     private ClawBotIpcJson() { }
 
     static JsonObject parse(byte[] bytes) throws IOException {
-        JsonElement result = parseValue(bytes, 64, 256);
+        JsonElement result = parseValue(bytes, 64, 256, 512);
         if (!result.isJsonObject()) {
             throw new IOException("CLAWBOT_IPC_JSON_INVALID");
         }
@@ -36,16 +36,21 @@ final class ClawBotIpcJson {
         if (bytes.length > 4 * 1024 * 1024) {
             throw new IOException("CLAWBOT_STORE_JSON_INVALID");
         }
-        return parseValue(bytes, 256, 512);
+        return parseValue(bytes, 256, 512, 512);
     }
 
-    private static JsonElement parseValue(byte[] bytes, int fieldLimit, int nameLimit) throws IOException {
+    static JsonElement parseJournal(byte[] bytes) throws IOException {
+        if (bytes.length > 2 * 1024 * 1024) { throw new IOException("CLAWBOT_JOURNAL_JSON_INVALID"); }
+        return parseValue(bytes, 256, 512, 2048);
+    }
+
+    private static JsonElement parseValue(byte[] bytes, int fieldLimit, int nameLimit, int arrayLimit) throws IOException {
         try {
             String json = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
             try (var reader = new JsonReader(new StringReader(json))) {
                 reader.setLenient(false);
-                JsonElement result = value(reader, 0, fieldLimit, nameLimit);
+                JsonElement result = value(reader, 0, fieldLimit, nameLimit, arrayLimit);
                 if (reader.peek() != JsonToken.END_DOCUMENT) {
                     throw new IOException("CLAWBOT_IPC_JSON_INVALID");
                 }
@@ -56,7 +61,7 @@ final class ClawBotIpcJson {
         }
     }
 
-    private static JsonElement value(JsonReader reader, int depth, int fieldLimit, int nameLimit) throws IOException {
+    private static JsonElement value(JsonReader reader, int depth, int fieldLimit, int nameLimit, int arrayLimit) throws IOException {
         if (depth > 24) {
             throw new IOException("CLAWBOT_IPC_JSON_INVALID");
         }
@@ -70,7 +75,7 @@ final class ClawBotIpcJson {
                 if (name.length() > nameLimit || names.size() >= fieldLimit || !names.add(name)) {
                     throw new IOException("CLAWBOT_IPC_JSON_INVALID");
                 }
-                object.add(name, value(reader, depth + 1, fieldLimit, nameLimit));
+                object.add(name, value(reader, depth + 1, fieldLimit, nameLimit, arrayLimit));
             }
             reader.endObject();
             return object;
@@ -78,10 +83,10 @@ final class ClawBotIpcJson {
             reader.beginArray();
             var array = new JsonArray();
             while (reader.hasNext()) {
-                if (array.size() >= 512) {
+                if (array.size() >= arrayLimit) {
                     throw new IOException("CLAWBOT_IPC_JSON_INVALID");
                 }
-                array.add(value(reader, depth + 1, fieldLimit, nameLimit));
+                array.add(value(reader, depth + 1, fieldLimit, nameLimit, arrayLimit));
             }
             reader.endArray();
             return array;
