@@ -19,6 +19,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('./CodexStoragePanel', () => ({ default: () => null }));
+vi.mock('./CodexDatabaseMaintenance', () => ({ default: () => null }));
 
 vi.mock('./aiDataStorageBridge', () => ({
   aiDataStorageBridge: {

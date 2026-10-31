@@ -1,3 +1,4 @@
+import CodexDatabaseMaintenance from './CodexDatabaseMaintenance';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -344,6 +345,7 @@ export default function AiDataStorageSection({ addToast }: AiDataStorageSectionP
       </details>
 
       <CodexStoragePanel />
+      <CodexDatabaseMaintenance />
 
       {confirmation ? createPortal(<div className={styles.dialog}><ConfirmDialog
         isOpen={confirmation !== null}
