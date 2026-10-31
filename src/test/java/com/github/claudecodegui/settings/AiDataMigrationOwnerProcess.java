@@ -9,6 +9,12 @@ public final class AiDataMigrationOwnerProcess {
         System.out.println("READY");
         System.out.flush();
         System.in.read();
+        if (args.length > 1 && "cancel".equals(args[1])) {
+            coordinator.requestMigrationCancellation();
+            System.out.println("CANCELLED");
+            System.out.flush();
+            return;
+        }
         try (AiDataMigrationCoordinator.LockHandle permit = coordinator.tryAcquire("migrate")) {
             System.out.println(permit == null ? "BUSY" : "OWNED");
             System.out.flush();

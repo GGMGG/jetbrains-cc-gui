@@ -17,6 +17,9 @@ import java.util.concurrent.locks.ReentrantLock;
 /** Coordinates AI process starts with exclusive AI data directory operations. */
 public final class AiDataProcessGate {
 
+    private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(AiDataProcessGate.class.getName());
+    private static final long COORDINATION_RETRY_MILLIS = 100L;
+
     private static final AiDataProcessGate INSTANCE = forPlatform(
             PlatformUtils.getPlatformType(), AiDataMigrationCoordinator.defaultCoordinationDirectory());
 
@@ -30,6 +33,8 @@ public final class AiDataProcessGate {
     private boolean cancellationRequested;
     private boolean cancellationAllowed;
     private final AiDataMigrationCoordinator migrationCoordinator;
+    private final long admissionTimeoutNanos;
+    private volatile boolean coordinationUnavailable;
     private final List<WeakReference<IdleRuntime>> runtimes = new CopyOnWriteArrayList<>();
 
     public AiDataProcessGate() {
@@ -37,7 +42,15 @@ public final class AiDataProcessGate {
     }
 
     public AiDataProcessGate(AiDataMigrationCoordinator migrationCoordinator) {
+        this(migrationCoordinator, java.time.Duration.ofSeconds(30));
+    }
+
+    AiDataProcessGate(AiDataMigrationCoordinator migrationCoordinator, java.time.Duration admissionTimeout) {
         this.migrationCoordinator = migrationCoordinator;
+        admissionTimeoutNanos = admissionTimeout.toNanos();
+        if (admissionTimeoutNanos <= 0) {
+            throw new IllegalArgumentException("Admission timeout must be positive");
+        }
     }
 
     static AiDataProcessGate forPlatform(PlatformUtils.PlatformType platform, Path coordinationDirectory) {
@@ -54,16 +67,20 @@ public final class AiDataProcessGate {
         lock.lockInterruptibly();
         boolean waiting = false;
         AiDataMigrationCoordinator.ProcessLock processLock = null;
+        long started = System.nanoTime();
         try {
             while (true) {
-                if (!migrationIntent && !migrationActive && migrationCoordinator != null) {
+                if (!migrationIntent && !migrationActive && migrationCoordinator != null && !coordinationUnavailable) {
                     try {
                         processLock = migrationCoordinator.tryAcquireProcessLock();
                     } catch (java.io.IOException error) {
-                        throw coordinationFailure(error);
+                        if (requiresRecovery(error)) {
+                            throw coordinationFailure(error);
+                        }
+                        disableRelocation(error);
                     }
                 }
-                if (!migrationIntent && !migrationActive && (migrationCoordinator == null || processLock != null)) {
+                if (!migrationIntent && !migrationActive && (migrationCoordinator == null || coordinationUnavailable || processLock != null)) {
                     break;
                 }
                 if (!waiting) {
@@ -77,7 +94,16 @@ public final class AiDataProcessGate {
                 if (migrationCoordinator == null) {
                     stateChanged.await();
                 } else {
-                    stateChanged.await(50L, TimeUnit.MILLISECONDS);
+                    if (System.nanoTime() - started >= admissionTimeoutNanos) {
+                        throw new IllegalStateException("AI_DATA_MIGRATION_BUSY");
+                    }
+                    try {
+                        migrationCoordinator.requestMigrationCancellation();
+                    } catch (java.io.IOException error) {
+                        // Contention is not an I/O failure: keep exclusion until admission or timeout.
+                        LOG.log(java.util.logging.Level.WARNING, "Unable to request AI data migration cancellation", error);
+                    }
+                    stateChanged.await(COORDINATION_RETRY_MILLIS, TimeUnit.MILLISECONDS);
                 }
             }
             activeProcesses++;
@@ -111,10 +137,16 @@ public final class AiDataProcessGate {
                 return null;
             }
             AiDataMigrationCoordinator.ProcessLock shared = null;
-            if (migrationCoordinator != null) {
+            if (coordinationUnavailable) {
+                throw new IllegalStateException("AI_DATA_COORDINATION_UNAVAILABLE");
+            }
+            if (migrationCoordinator != null && !coordinationUnavailable) {
                 try {
                     shared = maintenance ? migrationCoordinator.tryAcquireMaintenanceReadLock() : migrationCoordinator.tryAcquireProcessLock();
                 } catch (java.io.IOException error) {
+                    if (!requiresRecovery(error)) {
+                        disableRelocation(error);
+                    }
                     throw coordinationFailure(error);
                 }
                 if (shared == null) {
@@ -129,22 +161,40 @@ public final class AiDataProcessGate {
     }
 
     private static IllegalStateException coordinationFailure(java.io.IOException error) {
-        String code = "AI_DATA_RECOVERY_REQUIRED".equals(error.getMessage())
-                ? "AI_DATA_RECOVERY_REQUIRED" : "AI_DATA_COORDINATION_UNAVAILABLE";
+        String code = requiresRecovery(error) ? error.getMessage() : "AI_DATA_COORDINATION_UNAVAILABLE";
         return new IllegalStateException(code, error);
+    }
+
+    private static boolean requiresRecovery(java.io.IOException error) {
+        return "AI_DATA_RECOVERY_REQUIRED".equals(error.getMessage()) || "AI_DATA_MAINTENANCE_PENDING".equals(error.getMessage());
+    }
+
+    private void disableRelocation(java.io.IOException error) {
+        if (!coordinationUnavailable) {
+            coordinationUnavailable = true;
+            LOG.log(java.util.logging.Level.WARNING, "AI data relocation is disabled because coordination is unavailable; ordinary AI sessions remain available", error);
+        }
+    }
+
+    public boolean isCoordinationAvailable() {
+        return !coordinationUnavailable;
     }
 
     /** Attempts to begin an exclusive migration without waiting for active processes or byte snapshots. */
     public MigrationPermit tryAcquireMigrationPermit() {
         lock.lock();
         try {
-            if (migrationIntent || migrationActive || activeProcesses > 0 || activeReaders > 0 || waitingProcesses > 0) {
+            if (coordinationUnavailable || migrationIntent || migrationActive || activeProcesses > 0 || activeReaders > 0 || waitingProcesses > 0) {
+                return null;
+            }
+            AiDataMigrationCoordinator.LockHandle coordination = acquireMigrationLock(migrationCoordinator, "migrate");
+            if (migrationCoordinator != null && coordination == null) {
                 return null;
             }
             migrationActive = true;
             cancellationRequested = false;
             cancellationAllowed = true;
-            return new MigrationPermit(this);
+            return new MigrationPermit(this, coordination);
         } finally {
             lock.unlock();
         }
@@ -161,9 +211,14 @@ public final class AiDataProcessGate {
      * the admission lock, so process exit and new-start cancellation can make progress.
      */
     public MigrationPermit tryAcquireQuiescentMigrationPermit() {
+        return tryAcquireCoordinatedMigrationPermit(migrationCoordinator, "migrate");
+    }
+
+    /** The returned permit owns the cross-JVM lock until rollback/commit cleanup finishes. */
+    public MigrationPermit tryAcquireCoordinatedMigrationPermit(AiDataMigrationCoordinator coordinator, String operation) {
         lock.lock();
         try {
-            if (migrationIntent || migrationActive || activeReaders > 0 || waitingProcesses > 0) {
+            if (coordinationUnavailable || migrationIntent || migrationActive || activeReaders > 0 || waitingProcesses > 0) {
                 return null;
             }
             migrationIntent = true;
@@ -198,10 +253,14 @@ public final class AiDataProcessGate {
                 if (activeProcesses > 0 || cancellationRequested || activeReaders > 0) {
                     return null;
                 }
+                AiDataMigrationCoordinator.LockHandle coordination = acquireMigrationLock(coordinator, operation);
+                if (coordinator != null && coordination == null) {
+                    return null;
+                }
                 migrationActive = true;
                 migrationIntent = false;
                 admitted = true;
-                return new MigrationPermit(this);
+                return new MigrationPermit(this, coordination);
             } finally {
                 lock.unlock();
             }
@@ -227,6 +286,21 @@ public final class AiDataProcessGate {
         boolean hasActiveWork();
 
         boolean stopIfIdle();
+    }
+
+    private AiDataMigrationCoordinator.LockHandle acquireMigrationLock(AiDataMigrationCoordinator coordinator, String operation) {
+        if (coordinator == null) {
+            return null;
+        }
+        try {
+            return coordinator.tryAcquire(operation);
+        } catch (java.io.IOException error) {
+            if (requiresRecovery(error)) {
+                throw coordinationFailure(error);
+            }
+            disableRelocation(error);
+            return null;
+        }
     }
 
     boolean isCancellationRequested() {
@@ -335,6 +409,11 @@ public final class AiDataProcessGate {
             return processTree == null || processTree.terminate(timeoutMillis);
         }
 
+        /** Background descendants prevent relocation; idle cleanup must not terminate them. */
+        public synchronized boolean hasLiveDescendants() {
+            return processTree != null && processTree.hasLiveDescendants();
+        }
+
         public void whenReleased(Runnable action) {
             released.thenRun(action);
         }
@@ -362,23 +441,47 @@ public final class AiDataProcessGate {
     public static final class MigrationPermit implements AutoCloseable {
         private final AiDataProcessGate owner;
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final AiDataMigrationCoordinator.LockHandle coordination;
 
-        private MigrationPermit(AiDataProcessGate owner) {
+        private MigrationPermit(AiDataProcessGate owner, AiDataMigrationCoordinator.LockHandle coordination) {
             this.owner = owner;
+            this.coordination = coordination;
         }
 
         public boolean isCancellationRequested() {
-            return owner.isCancellationRequested();
+            if (closed.get() || owner.isCancellationRequested()) {
+                return true;
+            }
+            try {
+                return coordination != null && coordination.isCancellationRequested();
+            } catch (java.io.IOException error) {
+                throw coordinationFailure(error);
+            }
         }
 
         public boolean beginCommit() {
-            return owner.beginCommit();
+            if (closed.get() || !owner.beginCommit()) {
+                return false;
+            }
+            try {
+                return coordination == null || coordination.beginCommit();
+            } catch (java.io.IOException error) {
+                throw coordinationFailure(error);
+            }
         }
 
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
-                owner.releaseMigrationPermit();
+                try {
+                    if (coordination != null) {
+                        coordination.close();
+                    }
+                } catch (java.io.IOException error) {
+                    owner.disableRelocation(error);
+                } finally {
+                    owner.releaseMigrationPermit();
+                }
             }
         }
     }
