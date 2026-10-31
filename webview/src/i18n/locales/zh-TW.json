@@ -1026,7 +1026,7 @@
     },
     "hooks": {
       "title": "Hooks 管理",
-      "description": "查看與編輯 Hook 原始檔，並調整已支援的啟用偏好。",
+      "description": "檢視並安全編輯 Codex 和 Claude Code Hooks。",
       "refresh": "重新整理",
       "provider": "提供者",
       "scope": "範圍",
@@ -1034,7 +1034,6 @@
       "allProviders": "所有提供者",
       "allScopes": "所有範圍",
       "global": "使用者級",
-      "globalLocal": "使用者級（本機覆寫）",
       "project": "專案級",
       "projectLocal": "專案級（本機覆寫）",
       "search": "搜尋 Hooks",
@@ -1065,7 +1064,7 @@
       "sourceEditor": "Hook 原始檔編輯器",
       "affectedFile": "受影響的檔案",
       "backupDirectory": "備份目錄",
-      "latestBackup": "最近備份",
+      "latestBackup": "還原本次編輯工作階段的上次備份",
       "lastModified": "最後修改時間",
       "event": "事件",
       "format": "格式",
@@ -1090,7 +1089,7 @@
       "backupOnSave": "儲存前會建立備份",
       "save": "儲存",
       "saving": "正在儲存…",
-      "restore": "還原備份",
+      "restore": "還原本次編輯工作階段的上次備份",
       "saveFailed": "儲存失敗",
       "sourceLoadFailed": "重新讀取原始檔失敗",
       "noPreview": "暫無預覽。",
@@ -1123,7 +1122,18 @@
         "CODEX_EVENT_UNSUPPORTED": "已驗證的格式不支援此事件",
         "CODEX_HANDLER_UNSUPPORTED": "已驗證的格式不支援此處理器類型",
         "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook 檔案欄位無效",
-        "CODEX_STATE_INLINE_UNSUPPORTED": "無法安全編輯內嵌狀態，請使用狀態設定表。"
+        "CODEX_STATE_INLINE_UNSUPPORTED": "無法安全編輯內嵌狀態，請使用狀態設定表。",
+        "LINKED_SOURCE_READ_ONLY": "連結檔案為唯讀，請直接編輯原始檔案。",
+        "HOOK_SOURCE_UNAVAILABLE": "來源檔案無法使用。"
+      },
+      "sharedToggleTitle": "確認修改共用專案設定",
+      "sharedToggleMessage": "此操作會修改共用的 .claude/settings.json，可能影響其他協作者。已停用 Hook 的復原記錄僅保存在本機。",
+      "confirmSharedToggle": "修改共用設定",
+      "sensitiveSourceWarning": "此檔案可能含有憑證及其他敏感設定。準備編輯時再點擊檢視。",
+      "revealSource": "檢視設定內容",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "請先確認修改共用專案設定。",
+        "HOOK_CATALOG_TIMEOUT": "Hooks 重新整理逾時，請重新整理後再修改其他 Hook。"
       }
     }
   },

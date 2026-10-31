@@ -23,12 +23,10 @@ public final class HookToggleStateStore {
 
     private final Path userHome;
     private final Path stateFile;
-    private final Path legacyFile;
 
     public HookToggleStateStore(Path userHome, Path providerDirectory) {
         this.userHome = userHome.toAbsolutePath().normalize();
         this.stateFile = HookLocalStorage.directory(this.userHome, "state", providerDirectory).resolve(STATE_FILE_NAME);
-        this.legacyFile = providerDirectory.toAbsolutePath().normalize().resolve(STATE_FILE_NAME);
     }
 
     public Path getStateFile() {
@@ -45,19 +43,18 @@ public final class HookToggleStateStore {
     }
 
     public JsonObject readStrict() throws IOException {
-        Path readable = Files.exists(stateFile, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? stateFile : legacyFile;
+        Path readable = stateFile;
         if (!Files.exists(readable, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             return emptyState();
         }
-        if (!Files.isRegularFile(readable) || Files.isSymbolicLink(readable)) {
+        if (!Files.isRegularFile(readable) || Files.isSymbolicLink(readable) || Files.size(readable) > 1024L * 1024L) {
             throw new IOException("Invalid Hook toggle state file");
         }
         try {
             JsonObject state = JsonParser.parseString(Files.readString(readable, StandardCharsets.UTF_8))
                     .getAsJsonObject();
             if (!state.has("schemaVersion") || state.get("schemaVersion").getAsInt() != 1
-                    || !state.has("disabledClaude") || !state.get("disabledClaude").isJsonArray()
-                    || !state.has("disabledScripts") || !state.get("disabledScripts").isJsonArray()) {
+                    || !state.has("disabledClaude") || !state.get("disabledClaude").isJsonArray()) {
                 throw new IOException("Unsupported Hook toggle state schema");
             }
             return state;
@@ -88,7 +85,6 @@ public final class HookToggleStateStore {
         JsonObject state = new JsonObject();
         state.addProperty("schemaVersion", 1);
         state.add("disabledClaude", new JsonArray());
-        state.add("disabledScripts", new JsonArray());
         return state;
     }
 

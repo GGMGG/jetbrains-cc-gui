@@ -60,7 +60,7 @@ public class HookHandler extends BaseMessageHandler {
     public boolean handle(String type, String content) {
         switch (type) {
             case "get_hooks":
-                handleGetHooks();
+                handleGetHooks(content);
                 return true;
             case "get_hook_source":
                 handleGetHookSource(content);
@@ -153,6 +153,9 @@ public class HookHandler extends BaseMessageHandler {
     }
 
     static JsonObject attachRequestedLocation(JsonObject result, JsonObject request) {
+        if (request == null) {
+            return result;
+        }
         if (!result.has("location") && request.has("location")
                 && request.get("location").isJsonPrimitive()) {
             result.addProperty("location", request.get("location").getAsString());
@@ -173,7 +176,14 @@ public class HookHandler extends BaseMessageHandler {
         JsonObject apply(JsonObject json, String projectRoot);
     }
 
-    private void handleGetHooks() {
+    private void handleGetHooks(String content) {
+        JsonObject parsed;
+        try {
+            parsed = GSON.fromJson(content, JsonObject.class);
+        } catch (RuntimeException error) {
+            parsed = null;
+        }
+        JsonObject request = parsed;
         CompletableFuture
                 .supplyAsync(() -> catalogService.scan(
                         context.getProject() == null ? null : context.getProject().getBasePath()),
@@ -188,7 +198,10 @@ public class HookHandler extends BaseMessageHandler {
                     fallback.addProperty("readOnly", false);
                     return fallback;
                 })
-                .thenAccept(result -> ApplicationManager.getApplication().invokeLater(() ->
-                        callJavaScript("window.updateHooks", escapeJs(GSON.toJson(result)))));
+                .thenAccept(result -> {
+                    attachRequestedLocation(result, request);
+                    ApplicationManager.getApplication().invokeLater(() ->
+                            callJavaScript("window.updateHooks", escapeJs(GSON.toJson(result))));
+                });
     }
 }

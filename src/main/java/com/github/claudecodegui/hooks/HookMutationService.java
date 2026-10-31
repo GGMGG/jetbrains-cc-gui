@@ -8,9 +8,6 @@ import org.tomlj.Toml;
 import org.tomlj.TomlParseResult;
 
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -94,32 +91,23 @@ public final class HookMutationService {
             Path lockDirectory = backupDirectory(target);
             HookLocalStorage.prepare(userHome, lockDirectory);
             Path lockPath = lockDirectory.resolve(".ccgui-hooks.lock");
-            try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE,
-                    StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                FileLock lock;
-                try {
-                    lock = channel.tryLock();
-                } catch (OverlappingFileLockException e) {
-                    return failure("HOOK_FILE_LOCKED");
-                }
+            try (var lock = HookLocalStorage.tryLock(lockPath)) {
                 if (lock == null) {
                     return failure("HOOK_FILE_LOCKED");
                 }
-                try (FileLock ignored = lock) {
-                    if (!revision(target).equals(expectedRevision)) {
-                        return failure("HOOK_REVISION_CONFLICT");
-                    }
-                    Path backup = createBackup(target);
-                    replaceAtomically(target, content);
-                    pruneBackups(target);
-                    JsonObject result = success();
-                    result.addProperty("location", target.toString());
-                    result.addProperty("revision", revision(target));
-                    result.addProperty("backupPath", backup.toString());
-                    result.addProperty("lastModified", Files.getLastModifiedTime(target).toMillis());
-                    result.addProperty("content", content);
-                    return result;
+                if (!revision(target).equals(expectedRevision)) {
+                    return failure("HOOK_REVISION_CONFLICT");
                 }
+                Path backup = createBackup(target);
+                replaceAtomically(target, content);
+                pruneBackups(target);
+                JsonObject result = success();
+                result.addProperty("location", target.toString());
+                result.addProperty("revision", revision(target));
+                result.addProperty("backupPath", backup.toString());
+                result.addProperty("lastModified", Files.getLastModifiedTime(target).toMillis());
+                result.addProperty("content", content);
+                return result;
             }
         } catch (IOException e) {
             LOG.warn("[HookMutation] Failed to write hook source", e);
@@ -138,10 +126,10 @@ public final class HookMutationService {
             if (target == null || backup == null || !Files.isRegularFile(backup)) {
                 return failure("INVALID_BACKUP_PATH");
             }
-            String content = Files.readString(backup, StandardCharsets.UTF_8);
-            if (content.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
+            if (Files.size(backup) > MAX_SOURCE_BYTES) {
                 return failure("SOURCE_TOO_LARGE");
             }
+            String content = Files.readString(backup, StandardCharsets.UTF_8);
             return write(projectRoot, location, expectedRevision, content);
         } catch (IOException e) {
             LOG.warn("[HookMutation] Failed to restore hook source", e);
@@ -163,35 +151,26 @@ public final class HookMutationService {
         try {
             Path directory = backupDirectory(target);
             HookLocalStorage.prepare(userHome, directory);
-            try (FileChannel channel = FileChannel.open(directory.resolve(".ccgui-hooks.lock"), StandardOpenOption.CREATE,
-                    StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                FileLock lock;
-                try {
-                    lock = channel.tryLock();
-                } catch (OverlappingFileLockException error) {
-                    return failure("HOOK_FILE_LOCKED");
-                }
+            try (var lock = HookLocalStorage.tryLock(directory.resolve(".ccgui-hooks.lock"))) {
                 if (lock == null) {
                     return failure("HOOK_FILE_LOCKED");
                 }
-                try (FileLock ignored = lock) {
-                    if (Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                        return failure("HOOK_REVISION_CONFLICT");
-                    }
-                    Files.createDirectories(target.getParent());
-                    Path temporary = Files.createTempFile(target.getParent(), ".ccgui-hook-state-", ".tmp");
-                    try {
-                        Files.writeString(temporary, content, StandardCharsets.UTF_8);
-                        HookLocalStorage.restrictFile(temporary);
-                        Files.createLink(target, temporary);
-                        JsonObject result = success();
-                        result.addProperty("location", target.toString());
-                        result.addProperty("revision", revision(target));
-                        result.addProperty("content", content);
-                        return result;
-                    } finally {
-                        Files.deleteIfExists(temporary);
-                    }
+                if (Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    return failure("HOOK_REVISION_CONFLICT");
+                }
+                Files.createDirectories(target.getParent());
+                Path temporary = Files.createTempFile(target.getParent(), ".ccgui-hook-state-", ".tmp");
+                try {
+                    Files.writeString(temporary, content, StandardCharsets.UTF_8);
+                    HookLocalStorage.restrictFile(temporary);
+                    Files.createLink(target, temporary);
+                    JsonObject result = success();
+                    result.addProperty("location", target.toString());
+                    result.addProperty("revision", revision(target));
+                    result.addProperty("content", content);
+                    return result;
+                } finally {
+                    Files.deleteIfExists(temporary);
                 }
             }
         } catch (java.nio.file.FileAlreadyExistsException error) {

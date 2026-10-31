@@ -136,15 +136,15 @@ public class HookMutationServiceTest {
         } catch (UnsupportedOperationException | SecurityException | java.io.IOException e) {
             Assume.assumeTrue("Directory links are unavailable", false);
         }
-        Path hook = Files.createDirectories(realHome.resolve(".codemoss").resolve("hooks"))
-                .resolve("guard.py");
-        Files.writeString(hook, "print('ok')\n", StandardCharsets.UTF_8);
+        Path hook = Files.createDirectories(realHome.resolve(".claude"))
+                .resolve("settings.json");
+        Files.writeString(hook, "{\"hooks\":{}}\n", StandardCharsets.UTF_8);
 
         JsonObject result = new HookMutationService(aliasHome).read(null,
-                aliasHome.resolve(".codemoss/hooks/guard.py").toString());
+                aliasHome.resolve(".claude/settings.json").toString());
 
         assertTrue(result.toString(), result.get("success").getAsBoolean());
-        assertEquals("print('ok')\n", result.get("content").getAsString());
+        assertEquals("{\"hooks\":{}}\n", result.get("content").getAsString());
     }
 
     @Test
@@ -169,9 +169,9 @@ public class HookMutationServiceTest {
     @Test
     public void preservesPosixPermissionsWhenReplacingSource() throws Exception {
         Path home = temporaryFolder.getRoot().toPath();
-        Path hook = Files.createDirectories(home.resolve(".codemoss").resolve("hooks"))
-                .resolve("guard.sh");
-        Files.writeString(hook, "echo before\n", StandardCharsets.UTF_8);
+        Path hook = Files.createDirectories(home.resolve(".claude"))
+                .resolve("settings.json");
+        Files.writeString(hook, "{\"hooks\":{}}\n", StandardCharsets.UTF_8);
         PosixFileAttributeView view = Files.getFileAttributeView(hook, PosixFileAttributeView.class);
         Assume.assumeNotNull(view);
         EnumSet<PosixFilePermission> expected = EnumSet.of(
@@ -182,7 +182,7 @@ public class HookMutationServiceTest {
         HookMutationService service = new HookMutationService(home);
         String revision = service.read(null, hook.toString()).get("revision").getAsString();
 
-        JsonObject result = service.write(null, hook.toString(), revision, "echo after\n");
+        JsonObject result = service.write(null, hook.toString(), revision, "{\"hooks\":{},\"fixture\":true}\n");
 
         assertTrue(result.toString(), result.get("success").getAsBoolean());
         assertEquals(expected, Files.getPosixFilePermissions(hook));

@@ -15,6 +15,8 @@ import java.util.HexFormat;
 /** Private per-user hook state; project configuration never contains recovery copies. */
 final class HookLocalStorage {
 
+    private static final java.util.Map<Path, java.util.concurrent.Semaphore> LOCAL_LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
+
     private HookLocalStorage() {
     }
 
@@ -44,9 +46,11 @@ final class HookLocalStorage {
             current = current.resolve(component);
             if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
                 try {
-                    Files.createDirectory(current, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-                } catch (UnsupportedOperationException ignored) {
-                    Files.createDirectory(current);
+                    try {
+                        Files.createDirectory(current, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+                    } catch (UnsupportedOperationException ignored) {
+                        Files.createDirectory(current);
+                    }
                 } catch (java.nio.file.FileAlreadyExistsException ignored) {
                     // Another source can initialize the shared parent concurrently.
                 }
@@ -64,6 +68,77 @@ final class HookLocalStorage {
     static void restrictFile(Path file) throws IOException {
         if (Files.getFileAttributeView(file, PosixFileAttributeView.class) != null) {
             Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+        }
+    }
+
+    /** Local contenders must not open/close an inode already locked by this JVM on POSIX. */
+    static SourceLock tryLock(Path file) throws IOException {
+        Path identity = file.getParent().toRealPath().resolve(file.getFileName());
+        var local = LOCAL_LOCKS.computeIfAbsent(identity, ignored -> new java.util.concurrent.Semaphore(1));
+        if (!local.tryAcquire()) {
+            return null;
+        }
+        java.nio.channels.FileChannel channel = null;
+        java.nio.channels.FileLock lock = null;
+        boolean retained = false;
+        try {
+            channel = java.nio.channels.FileChannel.open(file, java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+            try {
+                lock = channel.tryLock();
+            } catch (java.nio.channels.OverlappingFileLockException error) {
+                return null;
+            }
+            if (lock == null) {
+                return null;
+            }
+            restrictFile(file);
+            retained = true;
+            return new SourceLock(channel, lock, local);
+        } finally {
+            if (!retained) {
+                try {
+                    if (lock != null) {
+                        lock.release();
+                    }
+                } finally {
+                    try {
+                        if (channel != null) {
+                            channel.close();
+                        }
+                    } finally {
+                        local.release();
+                    }
+                }
+            }
+        }
+    }
+
+    static final class SourceLock implements AutoCloseable {
+        private final java.nio.channels.FileChannel channel;
+        private final java.nio.channels.FileLock lock;
+        private final java.util.concurrent.Semaphore local;
+        private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+
+        private SourceLock(java.nio.channels.FileChannel channel, java.nio.channels.FileLock lock, java.util.concurrent.Semaphore local) {
+            this.channel = channel;
+            this.lock = lock;
+            this.local = local;
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed.compareAndSet(false, true)) {
+                try {
+                    lock.release();
+                } finally {
+                    try {
+                        channel.close();
+                    } finally {
+                        local.release();
+                    }
+                }
+            }
         }
     }
 }

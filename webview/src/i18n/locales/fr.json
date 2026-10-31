@@ -985,7 +985,7 @@
     },
     "hooks": {
       "title": "Hooks",
-      "description": "Consultez et modifiez les sources des hooks et leurs préférences d’activation prises en charge.",
+      "description": "Consultez et modifiez les hooks Codex et Claude Code en toute sécurité.",
       "refresh": "Actualiser",
       "provider": "Fournisseur",
       "scope": "Portée",
@@ -993,7 +993,6 @@
       "allProviders": "Tous les fournisseurs",
       "allScopes": "Toutes les portées",
       "global": "Utilisateur",
-      "globalLocal": "Utilisateur (surcharge locale)",
       "project": "Projet",
       "projectLocal": "Projet (surcharge locale)",
       "search": "Rechercher des hooks",
@@ -1024,7 +1023,7 @@
       "sourceEditor": "Éditeur de source",
       "affectedFile": "Fichier concerné",
       "backupDirectory": "Dossier de sauvegarde",
-      "latestBackup": "Dernière sauvegarde",
+      "latestBackup": "Restaurer la dernière sauvegarde de cette session d’édition",
       "lastModified": "Dernière modification",
       "event": "Événement",
       "format": "Format",
@@ -1049,7 +1048,7 @@
       "backupOnSave": "Une sauvegarde précède l’enregistrement",
       "save": "Enregistrer",
       "saving": "Enregistrement…",
-      "restore": "Restaurer la sauvegarde",
+      "restore": "Restaurer la dernière sauvegarde de cette session d’édition",
       "saveFailed": "Échec de l’enregistrement",
       "sourceLoadFailed": "Échec du rechargement",
       "noPreview": "Aucun aperçu.",
@@ -1082,7 +1081,18 @@
         "CODEX_EVENT_UNSUPPORTED": "Événement non pris en charge par le schéma vérifié",
         "CODEX_HANDLER_UNSUPPORTED": "Type de gestionnaire non pris en charge",
         "CODEX_HOOK_FILE_FIELDS_INVALID": "Champs du fichier non valides",
-        "CODEX_STATE_INLINE_UNSUPPORTED": "État en ligne non modifiable en sécurité ; utilisez une table."
+        "CODEX_STATE_INLINE_UNSUPPORTED": "État en ligne non modifiable en sécurité ; utilisez une table.",
+        "LINKED_SOURCE_READ_ONLY": "Les fichiers liés sont en lecture seule. Modifiez directement le fichier original.",
+        "HOOK_SOURCE_UNAVAILABLE": "Le fichier source est indisponible."
+      },
+      "sharedToggleTitle": "Confirmer la modification du projet partagé",
+      "sharedToggleMessage": "Cette action modifie le fichier partagé .claude/settings.json et peut affecter les autres contributeurs. Les données de restauration restent sur cet ordinateur.",
+      "confirmSharedToggle": "Modifier la configuration partagée",
+      "sensitiveSourceWarning": "Ce fichier peut contenir des identifiants et des paramètres sensibles. Affichez-le lorsque vous êtes prêt à le modifier.",
+      "revealSource": "Afficher la configuration",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "Confirmez d’abord la modification de la configuration partagée.",
+        "HOOK_CATALOG_TIMEOUT": "Actualisation des hooks expirée. Actualisez avant de modifier un autre hook."
       }
     }
   },

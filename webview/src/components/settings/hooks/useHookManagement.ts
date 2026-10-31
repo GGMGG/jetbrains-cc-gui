@@ -43,7 +43,7 @@ export interface UseHookManagementReturn {
   mutationError: string | null;
   toggleLoadingId?: string | null;
   toggleError?: string | null;
-  toggleHook?: (item: HookItem, enabled: boolean) => void;
+  toggleHook?: (item: HookItem, enabled: boolean, confirmSharedChange?: boolean) => void;
   updateHookSource: (payload: HookSourcePayload) => void;
   updateHookMutationResult: (payload: HookMutationResult) => void;
   updateHookToggleResult?: (payload: HookToggleResult) => void;
@@ -64,6 +64,8 @@ export function useHookManagement(): UseHookManagementReturn {
   const sourceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleRequestRef = useRef<string | null>(null);
+  const catalogRequestRef = useRef<string | null>(null);
+  const toggleRefreshPendingRef = useRef(false);
 
   const sourceRequestRef = useRef<string | null>(null);
   const mutationRequestRef = useRef<{ requestId: string; location: string } | null>(null);
@@ -95,25 +97,44 @@ export function useHookManagement(): UseHookManagementReturn {
     expiredToggles.current.clear();
   }, []);
 
-  const loadHooks = useCallback(() => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    setHooksLoading(true);
-    if (!sendBridgeEvent('get_hooks', '')) {
-      setHooksLoading(false);
-      return;
-    }
-    timeoutRef.current = setTimeout(() => {
-      setHooksLoading(false);
-      timeoutRef.current = null;
-    }, REQUEST_TIMEOUT_MS);
+  const finishToggleRefresh = useCallback((error?: string) => {
+    if (!toggleRefreshPendingRef.current) return;
+    toggleRefreshPendingRef.current = false;
+    toggleRequestRef.current = null;
+    setToggleLoadingId(null);
+    if (error) setToggleError(error);
   }, []);
 
+  const loadHooks = useCallback(() => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    const requestId = `${requestPrefix}-catalog-${++requestSequenceRef.current}`;
+    catalogRequestRef.current = requestId;
+    setHooksLoading(true);
+    timeoutRef.current = setTimeout(() => {
+      catalogRequestRef.current = null;
+      setHooksLoading(false);
+      timeoutRef.current = null;
+      finishToggleRefresh('HOOK_CATALOG_TIMEOUT');
+    }, REQUEST_TIMEOUT_MS);
+    if (!sendBridgeEvent('get_hooks', JSON.stringify({ requestId }))) {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+      catalogRequestRef.current = null;
+      setHooksLoading(false);
+      finishToggleRefresh('BRIDGE_UNAVAILABLE');
+      return;
+    }
+  }, [finishToggleRefresh, requestPrefix]);
+
   const updateHooks = useCallback((nextCatalog: HookCatalog) => {
+    if (catalogRequestRef.current ? nextCatalog.requestId !== catalogRequestRef.current : nextCatalog.requestId) return;
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = null;
+    catalogRequestRef.current = null;
     setCatalog({ ...nextCatalog, capabilities: nextCatalog.capabilities ?? [] });
     setHooksLoading(false);
-  }, []);
+    finishToggleRefresh();
+  }, [finishToggleRefresh]);
 
   const requestSource = useCallback((item: HookEditorTarget) => {
     if (sourceTimeoutRef.current) clearTimeout(sourceTimeoutRef.current);
@@ -232,7 +253,7 @@ export function useHookManagement(): UseHookManagementReturn {
     }
   }, [editor, loadHooks]);
 
-  const toggleHook = useCallback((item: HookItem, enabled: boolean) => {
+  const toggleHook = useCallback((item: HookItem, enabled: boolean, confirmSharedChange = false) => {
     if ((!item.toggleSupported && !item.managedToggleSupported) || toggleRequestRef.current !== null) return;
     setToggleLoadingId(item.sourceId);
     setToggleError(null);
@@ -241,7 +262,7 @@ export function useHookManagement(): UseHookManagementReturn {
     const sent = sendBridgeEvent('toggle_hook', JSON.stringify({
       requestId, provider: item.provider, scope: item.scope, event: item.event, matcher: item.matcher,
       sourceId: item.sourceId, managedKey: item.managedKey, nativeStateRevision: item.nativeStateRevision,
-      format: item.format, location: item.rawLocation, expectedRevision: item.revision, enabled,
+      format: item.format, location: item.rawLocation, expectedRevision: item.revision, enabled, confirmSharedChange,
     }));
     if (!sent) {
       setToggleLoadingId(null);
@@ -264,15 +285,17 @@ export function useHookManagement(): UseHookManagementReturn {
       if (payload.requestId && expiredToggles.current.delete(payload.requestId) && payload.success) loadHooks();
       return;
     }
+    if (toggleRefreshPendingRef.current) return;
     if (toggleTimeoutRef.current) clearTimeout(toggleTimeoutRef.current);
     toggleTimeoutRef.current = null;
-    setToggleLoadingId(null);
-    toggleRequestRef.current = null;
     if (!payload.success) {
+      setToggleLoadingId(null);
+      toggleRequestRef.current = null;
       setToggleError(payload.errorCode ?? 'HOOK_TOGGLE_FAILED');
       return;
     }
     setToggleError(null);
+    toggleRefreshPendingRef.current = true;
     loadHooks();
   }, [loadHooks]);
 
