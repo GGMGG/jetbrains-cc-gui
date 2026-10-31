@@ -620,7 +620,7 @@ test('Chinese desk appearance controls and searchable Pet names remain readable'
       { id: 'pet-package-17/spritesheet.png', label: '橘子 🐥' }, { id: 'local-import-93/spritesheet.png', label: '墨镜小鸭' }] }];
     return [];
   });
-  const page = await open(context, defaults(), 'zh'); await publish(page, liveSceneFixture(['RUNNING']));
+  const page = await open(context, defaults(), 'zh'), fixture = liveSceneFixture(['RUNNING']); await publish(page, fixture);
   await hoverDesk(page, 0); await expect(page.getByRole('tooltip', { name: '工位预览' })).toBeVisible();
   await page.getByRole('list', { name: '会话列表' }).getByRole('button').first().click();
   const control = page.getByRole('region', { name: '当前工位 Pet', exact: true });
@@ -642,6 +642,7 @@ test('Chinese desk appearance controls and searchable Pet names remain readable'
   await expect(control).not.toContainText('??'); await expect(control.getByRole('button', { name: '刷新 Pet' })).toBeVisible();
   await page.locator('.office-session-help').focus();
   await expect(page.locator('.ant-popover:visible')).toContainText('单击查看工位 · 双击或 Enter 打开页签');
+  await publish(page, fixture);
   const select = page.getByRole('combobox', { name: '当前工位 Pet', exact: true }); await select.click();
   await expect(page.locator('.ant-select-item-option-content').filter({ hasText: /^橘子 🐥$/ })).toBeVisible();
   await expect(page.locator('.ant-select-item-option-content').filter({ hasText: /^墨镜小鸭$/ })).toBeVisible();
@@ -649,6 +650,11 @@ test('Chinese desk appearance controls and searchable Pet names remain readable'
   await expect(page.locator('.ant-select-item-option-content').filter({ hasText: /^橘子 🐥$/ })).toHaveCount(0);
   if (test.info().project.name === 'chromium-full-hd') await page.screenshot({ path: '../.codex/office-neon-compact-20261017/screenshots/chinese-pet-names.png' });
   await page.keyboard.press('Escape'); await expect(page.locator('.pet-office')).not.toContainText('桌位');
+  await page.close();
+});
+
+test('Chinese margin effect picker retains keyboard selection and focus', async ({ context }) => {
+  const page = await open(context, defaults(), 'zh'); await publish(page, liveSceneFixture(['RUNNING']));
   const effects = page.getByRole('button', { name: '留白特效', exact: true });
   await effects.click();
   const options = page.locator('.office-effects-popover .office-effects-options');
@@ -903,35 +909,40 @@ test('header effect picker fits the available width and retains a keyboard-selec
   await page.close();
 });
 
-test('all nine built-in windows loop behind stationary architecture without accumulating actors', async ({ context }) => {
-  test.setTimeout(60_000);
-  const page = await open(context), errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
-  const fixture = liveSceneFixture(['RUNNING']); await publish(page, fixture);
-  await page.getByRole('button', { name: 'Focus sessions', exact: true }).click();
-  const themes = { loft: 'Warm loft', cyberpunk: 'Neon cyberpunk', cultivation: 'Cloud sanctuary', space: 'Starship deck',
-    forest: 'Forest workshop', library: 'Arcane library', ocean: 'Deep-sea observatory', zen: 'Zen courtyard', retro: 'Retro game studio' };
-  for (const [theme, label] of Object.entries(themes)) {
-    await publish(page, fixture);
-    const selector = page.getByRole('combobox', { name: 'Scene style', exact: true });
-    await selector.focus(); await selector.click();
-    await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').filter({ hasText: label }).click();
-    const scenery = page.locator(`[data-window-scenery="${theme}"]`);
-    await expect(scenery).toHaveAttribute('visibility', 'visible');
-    await expect(page.locator('[data-window-scenery]')).toHaveCount(1);
-    const pose = () => scenery.locator('[data-window-motion]').evaluateAll(nodes => nodes.map(node => `${node.getAttribute('transform')}:${node.getAttribute('opacity')}`).join('|'));
-    const before = await pose(), count = await scenery.locator('*').count();
-    const structure = () => page.locator('.office-vector-environment [data-depth]').evaluateAll(nodes => nodes.map(node => node.getAttribute('transform')));
-    const stationary = await structure();
-    await expect.poll(pose).not.toBe(before);
-    expect(await scenery.locator('*').count()).toBe(count);
-    expect(await structure()).toEqual(stationary);
-    const views = await page.locator('.office-vector-scene').evaluateAll(nodes => nodes.map(node => node.getAttribute('viewBox')));
-    expect(new Set(views).size).toBe(1);
-    if (test.info().project.name === 'chromium-full-hd') await page.locator('.office-scene-surface').screenshot({ path: test.info().outputPath(`window-${theme}.png`) });
-  }
-  expect(errors).toEqual([]); await page.close();
-});
+const windowSceneGroups: Readonly<Record<string, string>>[] = [
+  { loft: 'Warm loft', cyberpunk: 'Neon cyberpunk', cultivation: 'Cloud sanctuary' },
+  { space: 'Starship deck', forest: 'Forest workshop', library: 'Arcane library' },
+  { ocean: 'Deep-sea observatory', zen: 'Zen courtyard', retro: 'Retro game studio' },
+];
+for (const themes of windowSceneGroups) {
+  test(`built-in windows loop behind stationary architecture without accumulating actors (${Object.keys(themes).join(', ')})`, async ({ context }) => {
+    test.setTimeout(60_000);
+    const page = await open(context), errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const fixture = liveSceneFixture(['RUNNING']); await publish(page, fixture);
+    await page.getByRole('button', { name: 'Focus sessions', exact: true }).click();
+    for (const [theme, label] of Object.entries(themes)) {
+      await publish(page, fixture);
+      const selector = page.getByRole('combobox', { name: 'Scene style', exact: true });
+      await selector.focus(); await selector.click();
+      await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').filter({ hasText: label }).click();
+      const scenery = page.locator(`[data-window-scenery="${theme}"]`);
+      await expect(scenery).toHaveAttribute('visibility', 'visible');
+      await expect(page.locator('[data-window-scenery]')).toHaveCount(1);
+      const pose = () => scenery.locator('[data-window-motion]').evaluateAll(nodes => nodes.map(node => `${node.getAttribute('transform')}:${node.getAttribute('opacity')}`).join('|'));
+      const before = await pose(), count = await scenery.locator('*').count();
+      const structure = () => page.locator('.office-vector-environment [data-depth]').evaluateAll(nodes => nodes.map(node => node.getAttribute('transform')));
+      const stationary = await structure();
+      await expect.poll(pose).not.toBe(before);
+      expect(await scenery.locator('*').count()).toBe(count);
+      expect(await structure()).toEqual(stationary);
+      const views = await page.locator('.office-vector-scene').evaluateAll(nodes => nodes.map(node => node.getAttribute('viewBox')));
+      expect(new Set(views).size).toBe(1);
+      if (test.info().project.name === 'chromium-full-hd') await page.locator('.office-scene-surface').screenshot({ path: test.info().outputPath(`window-${theme}.png`) });
+    }
+    expect(errors).toEqual([]); await page.close();
+  });
+}
 
 test('window scenery respects ambience, pause, visibility, reduced motion and custom backgrounds', async ({ context }) => {
   const page = await open(context), fixture = liveSceneFixture(['RUNNING']); await publish(page, fixture);
