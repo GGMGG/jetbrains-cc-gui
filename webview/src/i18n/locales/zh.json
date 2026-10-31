@@ -1555,7 +1555,16 @@
       "scan": "扫描存储",
       "pagination": "会话分页",
       "pageSize": "每页会话数",
-      "refresh": "刷新"
+      "refresh": "刷新",
+      "relations": {
+        "subagent": "子代理",
+        "mainSession": "主会话",
+        "parentSession": "父会话",
+        "childCount": "子代理 {{count}} 个",
+        "childCountHint": "直属子代理数量，包含已归档的会话文件",
+        "parentMissing": "（无会话文件）",
+        "parentUnknown": "父会话信息不可用"
+      }
     }
   },
   "history": {
