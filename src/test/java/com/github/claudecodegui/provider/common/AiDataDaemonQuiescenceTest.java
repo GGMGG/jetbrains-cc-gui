@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.Assert.*;
 
 public class AiDataDaemonQuiescenceTest {
+    @org.junit.Rule
+    public final org.junit.rules.TemporaryFolder temporaryFolder = new org.junit.rules.TemporaryFolder();
     private static final DaemonBridge.DaemonOutputCallback CALLBACK = new DaemonBridge.DaemonOutputCallback() {
         @Override
         public void onLine(String line) { }
@@ -100,14 +102,56 @@ public class AiDataDaemonQuiescenceTest {
     }
 
     private static DaemonBridge daemon(AiDataProcessGate gate, AtomicReference<Process> process) {
+        return daemon(gate, process, null);
+    }
+
+    @Test
+    public void idleRelocationLeavesDetachedUserToolsAliveAndRetainsExclusion() throws Exception {
+        AiDataProcessGate gate = new AiDataProcessGate();
+        AtomicReference<Process> parent = new AtomicReference<>();
+        java.nio.file.Path pidFile = temporaryFolder.getRoot().toPath().resolve("background.pid");
+        DaemonBridge bridge = daemon(gate, parent, pidFile);
+        ProcessHandle background = null;
+        try {
+            assertTrue(bridge.start());
+            background = ProcessHandle.of(Long.parseLong(java.nio.file.Files.readString(pidFile))).orElseThrow();
+            assertTrue(background.isAlive());
+            long backgroundPid = background.pid();
+            try (var descendants = parent.get().descendants()) {
+                assertTrue("The fixture must expose its native descendant", descendants.anyMatch(child -> child.pid() == backgroundPid));
+            }
+            AiDataProcessGate.MigrationPermit migration = gate.tryAcquireQuiescentMigrationPermit();
+            assertFalse(parent.get().isAlive());
+            assertTrue("Migration must not terminate a detached tool", background.isAlive());
+            if (migration != null) {
+                migration.close();
+            }
+            assertNull("A surviving background writer excludes relocation", migration);
+            assertNull("Its data writers still exclude relocation", gate.tryAcquireMigrationPermit());
+        } finally {
+            if (background != null && background.isAlive()) {
+                background.destroyForcibly();
+                background.onExit().get(5, TimeUnit.SECONDS);
+            }
+            bridge.stop();
+        }
+    }
+
+    private static DaemonBridge daemon(AiDataProcessGate gate, AtomicReference<Process> process, java.nio.file.Path backgroundPid) {
         return new DaemonBridge(null, null, null, DaemonBridge.TimeSource.system(), () -> {
-            String script = "process.stdout.write(JSON.stringify({type:'daemon',event:'ready'})+'\\n');"
+            String background = backgroundPid == null ? "" : "const child=require('node:child_process').spawn(process.execPath,"
+                    + "['-e','setTimeout(()=>{},120000)'],{stdio:'ignore',detached:true,windowsHide:true});require('node:fs').writeFileSync("
+                    + "process.env.CC_GUI_TEST_CHILD_PID_FILE,String(child.pid));child.unref();";
+            String script = background + "process.stdout.write(JSON.stringify({type:'daemon',event:'ready'})+'\\n');"
                     + "require('node:readline').createInterface({input:process.stdin}).on('line',line=>{"
                     + "const request=JSON.parse(line);if(request.method==='shutdown'){process.exit(0);}"
                     + "if(request.method!=='hold'){process.stdout.write(JSON.stringify({id:request.id,done:true,success:true})+'\\n');}});";
             ProcessBuilder builder = new ProcessBuilder("node", "-e", script);
             Map<String, String> environment = builder.environment();
             environment.keySet().removeIf(name -> name.matches("(?i).*(API_KEY|TOKEN|SECRET|AUTHORIZATION|NODE_OPTIONS).*"));
+            if (backgroundPid != null) {
+                environment.put("CC_GUI_TEST_CHILD_PID_FILE", backgroundPid.toString());
+            }
             Process started = builder.start();
             process.set(started);
             return started;
