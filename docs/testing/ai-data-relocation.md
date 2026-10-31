@@ -41,6 +41,14 @@ rollback. Tests cover nested targets, existing links, junction redirection,
 changed source content, interrupted relocation and recovery, rejected backup
 paths and injected cleanup/copy failures.
 
+Before publishing a relocated target, the journal records its data fingerprint.
+If an independent writer changes that target and rollback is necessary, recovery
+restores the original canonical directory and retains both the changed target and
+the journal for inspection. It does not delete the newly written data. Status
+queries return a busy snapshot while another runtime still holds admission.
+The Windows fallback junction command passes paths through environment values,
+with delayed expansion disabled, preserving literal percent and exclamation marks.
+
 The process observer retains observed descendants after parent exit and channel
 removal. Java OS snapshots cannot prove ownership of an arbitrary process that
 forks and reparents between observations; this patch does not claim OS job-object
