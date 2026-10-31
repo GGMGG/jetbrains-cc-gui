@@ -5,8 +5,8 @@ import com.google.gson.JsonObject;
 public record ClawBotSessionTarget(String handle, String instanceId, long connectionEpoch, String provider, String generation) {
 
     public ClawBotSessionTarget {
-        for (String value : java.util.List.of(handle, instanceId, provider, generation)) {
-            if (value.isBlank() || value.length() > 256 || value.chars().anyMatch(Character::isISOControl)) {
+        for (String value : new String[]{handle, instanceId, provider, generation}) {
+            if (value == null || value.isBlank() || value.length() > 256 || value.chars().anyMatch(Character::isISOControl)) {
                 throw new IllegalArgumentException("Invalid session target");
             }
         }

@@ -12,7 +12,7 @@ public final class MockClawBotChannel implements ExternalChannelGateway {
     private volatile boolean closed;
 
     @Override
-    public void publishSessions(List<ClawBotSessionSnapshot> values) {
+    public synchronized void publishSessions(List<ClawBotSessionSnapshot> values) {
         Objects.requireNonNull(values, "sessions");
         if (closed) {
             return;
@@ -31,7 +31,7 @@ public final class MockClawBotChannel implements ExternalChannelGateway {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         closed = true;
         sessions = List.of();
     }
