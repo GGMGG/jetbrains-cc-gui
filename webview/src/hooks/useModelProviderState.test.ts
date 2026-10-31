@@ -37,6 +37,16 @@ describe('Codex native auto availability', () => {
     expect(result.current.codexNativeAutoReviewAvailable).toBe(true);
   });
 
+  it('does not leave settings pending when bridge dispatch is refused', () => {
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    vi.mocked(sendBridgeEvent).mockReturnValue(false);
+    act(() => result.current.handleModeSelect('plan'));
+    expect(result.current.codexSettingsPending).toBe(false);
+    expect(options.addToast).toHaveBeenCalledWith('toast.codexSettingsDispatchFailed', 'error');
+    vi.mocked(sendBridgeEvent).mockReset();
+  });
+
   it('keeps a saved auto mode with unknown dependency status', () => {
     localStorage.setItem('model-selection-state', JSON.stringify({
       provider: 'codex', codexPermissionMode: 'auto',
