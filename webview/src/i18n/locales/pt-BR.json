@@ -57,6 +57,17 @@
     "currentMode": "Modo atual: {{mode}}",
     "currentModel": "Modelo atual: {{model}}",
     "removeAttachment": "Remover anexo",
+    "queue": {
+      "edit": "Editar mensagem na fila",
+      "remove": "Remover da fila",
+      "editLabel": "Editar mensagem {{position}} na fila",
+      "removeLabel": "Remover mensagem {{position}} da fila",
+      "reorderLabel": "Reordenar mensagem {{position}}",
+      "reorderHint": "Arraste para reordenar ou use as setas após focar",
+      "mergedIntoDraft": "A mensagem na fila foi adicionada ao rascunho atual",
+      "attachmentsNotRestored": "Os anexos da mensagem na fila não foram restaurados",
+      "editBlockedAttachments": "Seus anexos não podem ser restaurados aqui, a mensagem permanece na fila"
+    },
     "closePreview": "Fechar visualização",
     "loadingDropdown": "Carregando...",
     "modelsLoadFailed": "Falha ao carregar modelos. Clique para tentar novamente",
@@ -1260,7 +1271,11 @@
     "timeoutWarning": "Por favor, responda em breve, o diálogo fechará em {{seconds}} segundos",
     "expand": "Expandir",
     "collapse": "Recolher",
-    "clickToAnswer": "Clique para responder"
+    "clickToAnswer": "Clique para responder",
+    "recordTitle": "Perguntas do Codex",
+    "recordAnswer": "Sua resposta",
+    "recordSkipped": "Ignorada (fechada sem resposta)",
+    "answerNotSent": "Sua resposta à pergunta do Codex não foi enviada porque outro chat está aberto agora. Volte para aquele chat e envie a resposta novamente."
   },
   "planApproval": {
     "title": "Plano Pronto para Aprovação",

@@ -57,6 +57,17 @@
     "currentMode": "현재 모드: {{mode}}",
     "currentModel": "현재 모델: {{model}}",
     "removeAttachment": "첨부파일 제거",
+    "queue": {
+      "edit": "대기열 메시지 편집",
+      "remove": "대기열에서 제거",
+      "editLabel": "대기열 메시지 {{position}} 편집",
+      "removeLabel": "대기열 메시지 {{position}} 제거",
+      "reorderLabel": "메시지 {{position}} 순서 변경",
+      "reorderHint": "드래그로 순서 변경, 포커스 후 화살표 키로 조정",
+      "mergedIntoDraft": "대기열 메시지가 현재 초안에 병합되었습니다",
+      "attachmentsNotRestored": "대기 중인 메시지의 첨부 파일을 복원하지 못했습니다",
+      "editBlockedAttachments": "첨부 파일을 복원할 수 없어 메시지를 대기열에 그대로 둡니다"
+    },
     "closePreview": "미리보기 닫기",
     "loadingDropdown": "로딩 중...",
     "modelsLoadFailed": "모델을 불러오지 못했습니다. 클릭하여 다시 시도",
@@ -1207,7 +1218,11 @@
     "timeoutWarning": "곧 답변해주세요, {{seconds}}초 후 대화상자가 닫힙니다",
     "expand": "펼치기",
     "collapse": "접기",
-    "clickToAnswer": "클릭하여 답변하기"
+    "clickToAnswer": "클릭하여 답변하기",
+    "recordTitle": "Codex 질문",
+    "recordAnswer": "내 답변",
+    "recordSkipped": "건너뜀(답변하지 않고 닫음)",
+    "answerNotSent": "다른 대화가 열려 있어 Codex 질문에 대한 답변을 보내지 못했습니다. 원래 대화로 돌아가 답변을 다시 보내 주세요."
   },
   "planApproval": {
     "title": "계획 승인 대기 중",

@@ -74,6 +74,17 @@
     "currentMode": "Current mode: {{mode}}",
     "currentModel": "Current model: {{model}}",
     "removeAttachment": "Remove attachment",
+    "queue": {
+      "edit": "Edit queued message",
+      "remove": "Remove from queue",
+      "editLabel": "Edit queued message {{position}}",
+      "removeLabel": "Remove queued message {{position}}",
+      "reorderLabel": "Reorder message {{position}}",
+      "reorderHint": "Drag to reorder, or focus and use arrow keys",
+      "mergedIntoDraft": "Queued message added to the current draft",
+      "attachmentsNotRestored": "Attachments from the queued message were not restored",
+      "editBlockedAttachments": "Its attachments cannot be restored here, so the message stays in the queue"
+    },
     "closePreview": "Close preview",
     "loadingDropdown": "Loading...",
     "modelsLoadFailed": "Failed to load models. Click to retry",
@@ -88,6 +99,8 @@
     "usagePercentage": "Usage: {{percentage}}",
     "planUsage": {
       "title": "Claude plan usage",
+      "grokTitle": "Grok plan usage",
+      "staleIdle": "Last reading. It refreshes the next time you use Grok",
       "loading": "Loading usage…",
       "unavailable": "Usage unavailable",
       "dash": "Usage —",
@@ -95,7 +108,12 @@
       "tooltipReset": "Resets: {{value}} (local time)",
       "clickToSwitch": "Click period label to switch window",
       "worstHint": "Dot shows worst window ({{color}})",
-      "paceColors": { "green": "green", "yellow": "yellow", "red": "red", "neutral": "unknown" },
+      "paceColors": {
+        "green": "green",
+        "yellow": "yellow",
+        "red": "red",
+        "neutral": "unknown"
+      },
       "stale": "Data may be outdated (refresh failed)"
     },
     "noMatchingFiles": "No matching files",
@@ -1569,7 +1587,11 @@
     "timeoutWarning": "Please answer soon, dialog will close in {{seconds}} seconds",
     "expand": "Expand",
     "collapse": "Collapse",
-    "clickToAnswer": "Click to answer"
+    "clickToAnswer": "Click to answer",
+    "recordTitle": "Codex questions",
+    "recordAnswer": "Your answer",
+    "recordSkipped": "Skipped (closed without an answer)",
+    "answerNotSent": "Your answer to the Codex question was not sent because another chat is open now. Return to that chat and send the answer again."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
