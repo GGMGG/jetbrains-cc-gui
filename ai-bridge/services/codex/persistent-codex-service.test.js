@@ -42,6 +42,38 @@ const {
 
 setCodexPristineBaseEnv({ ...process.env, CODEX_HOME: join(testCwd, 'native-home') });
 
+test('async question responses traverse daemon controls during a running send and after completion', async () => {
+  for (const completed of [false, true]) {
+    const data = { channelId: `async-question-${completed}`, cwd: testCwd,
+      codexCommandPrefix: peerCommandPrefix(completed ? 'async-question-completed' : 'async-question'),
+      message: 'Ask a question', clientMessageId: `async-message-${completed}` };
+    const dependencies = { titleDependencies: { enabled: async () => false } };
+    const send = codexSendPersistent(data, dependencies);
+    let interaction;
+    for (let i = 0; i < 200 && !interaction; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      interaction = codexEvents().find(event => event.kind === 'interactionRequested' && event.channelId === data.channelId);
+    }
+    assert.ok(interaction, 'async message becomes a routed dialog');
+    if (completed) assert.equal((await send).outcome, 'completed');
+    const reply = await codexRespondInteractionPersistent({ ...data, rpcId: interaction.payload.rpcId,
+      result: { answers: { 'question-1': { answers: ['B'] } } } });
+    assert.equal(reply.replied, true);
+    if (completed) {
+      assert.ok(reply.followUp?.text.includes('\nB'));
+      assert.equal((await codexSendPersistent({ ...data, threadId: reply.followUp.threadId,
+        message: reply.followUp.text, clientMessageId: 'async-follow-up' }, dependencies)).outcome, 'completed');
+    } else {
+      assert.equal(reply.followUp, undefined);
+      assert.equal((await send).outcome, 'completed');
+    }
+    const answer = codexEvents().find(event => event.channelId === data.channelId && event.kind === 'itemCompleted'
+      && event.payload.item.id === 'async-answer');
+    assert.ok(answer.payload.item.text.includes('\nB'));
+    await codexResetRuntimePersistent({ ...data, dispose: true });
+  }
+});
+
 test('daemon sends keep changing editor context separate without rebuilding the runtime', async () => {
   const channelId = 'editor-context';
   const data = { channelId, cwd: testCwd, codexCommandPrefix: peerCommandPrefix('editor-context') };

@@ -1098,7 +1098,11 @@
     "timeoutWarning": "Veuillez répondre rapidement, la boîte de dialogue se fermera dans {{seconds}} secondes",
     "expand": "Développer",
     "collapse": "Réduire",
-    "clickToAnswer": "Cliquez pour répondre"
+    "clickToAnswer": "Cliquez pour répondre",
+    "recordTitle": "Questions de Codex",
+    "recordAnswer": "Votre réponse",
+    "recordSkipped": "Ignorée (fermée sans réponse)",
+    "answerNotSent": "Votre réponse à la question de Codex n'a pas été envoyée, car une autre conversation est ouverte. Revenez à cette conversation et renvoyez votre réponse."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",

@@ -18,6 +18,7 @@ import {
   CONTEXT_COMMANDS,
 } from './hooks/useMessageSender';
 import { parseCodexCommand } from './hooks/codexCommandDispatcher';
+import { useCodexQuestionResponses } from './hooks/useCodexQuestionResponses';
 import { useCodexTurnActivity } from './hooks/useCodexTurnActivity';
 import { useCodexCompactionStatus } from './hooks/useCodexCompactionStatus';
 import type { Attachment, ChatInputBoxHandle, PermissionMode } from './components/ChatInputBox/types';
@@ -315,6 +316,13 @@ export const useAppChatController = ({
     clearQueue,
     reorder: reorderMessageQueue,
   } = useMessageQueue({ isLoading: loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending, onExecute: hookHandleSubmit });
+
+  const onCodexAnswerUndelivered = useCallback(() => addToast(t('askUserQuestion.answerNotSent', {
+    defaultValue: 'Your answer to the Codex question was not sent because another chat is open now. '
+      + 'Return to that chat and send the answer again.',
+  }), 'error'), [addToast, t]);
+  useCodexQuestionResponses({ provider: currentProvider, threadId: currentSessionId,
+    enqueue: enqueueMessage, onUndelivered: onCodexAnswerUndelivered });
 
   // Point the session-transition indirection at the real clearQueue.
   useEffect(() => {

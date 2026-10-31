@@ -1183,7 +1183,11 @@
     "timeoutWarning": "곧 답변해주세요, {{seconds}}초 후 대화상자가 닫힙니다",
     "expand": "펼치기",
     "collapse": "접기",
-    "clickToAnswer": "클릭하여 답변하기"
+    "clickToAnswer": "클릭하여 답변하기",
+    "recordTitle": "Codex 질문",
+    "recordAnswer": "내 답변",
+    "recordSkipped": "건너뜀(답변하지 않고 닫음)",
+    "answerNotSent": "다른 대화가 열려 있어 Codex 질문에 대한 답변을 보내지 못했습니다. 원래 대화로 돌아가 답변을 다시 보내 주세요."
   },
   "planApproval": {
     "title": "계획 승인 대기 중",

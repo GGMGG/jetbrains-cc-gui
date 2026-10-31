@@ -1103,7 +1103,11 @@
     "timeoutWarning": "お早めにご回答ください。ダイアログは {{seconds}} 秒後に自動的に閉じます",
     "expand": "展開",
     "collapse": "折りたたむ",
-    "clickToAnswer": "クリックして回答"
+    "clickToAnswer": "クリックして回答",
+    "recordTitle": "Codex からの質問",
+    "recordAnswer": "あなたの回答",
+    "recordSkipped": "スキップ（回答せずに閉じました）",
+    "answerNotSent": "別のチャットが開かれているため、Codex の質問への回答は送信されませんでした。元のチャットに戻って、もう一度回答を送信してください。"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
