@@ -123,14 +123,13 @@ function buildSystemPromptAppend(params) {
 function resolveRequestModelState(modelId, settingsEnv) {
   const resolvedModelId = resolveModelFromSettings(modelId, settingsEnv);
   return {
-    // Exact id, not the family alias: the settings override blanks the
-    // ANTHROPIC_DEFAULT_*_MODEL vars the alias would otherwise resolve through.
+    // Exact id, not the family alias - see resolveSdkModelName.
     sdkModelName: resolveSdkModelName(modelId, resolvedModelId),
     resolvedModelId,
   };
 }
 
-function buildQueryOptions(workingDirectory, sdkModelName, permissionMode, maxThinkingTokens, reasoningEffort, streamingEnabled, systemPromptAppend, requestedSessionId, mcpServers, modelId, settingsEnv) {
+function buildQueryOptions(workingDirectory, sdkModelName, permissionMode, maxThinkingTokens, reasoningEffort, streamingEnabled, systemPromptAppend, requestedSessionId, mcpServers, modelId, settingsEnv, resolvedModelId) {
   const claudeCliOverride = getClaudeCliPathOverride();
   return {
     cwd: workingDirectory,
@@ -139,7 +138,7 @@ function buildQueryOptions(workingDirectory, sdkModelName, permissionMode, maxTh
     maxTurns: 1000,
     enableFileCheckpointing: true,
     env: buildCliEnv(),
-    settings: buildWebviewControlledSettingsOverride(modelId, settingsEnv),
+    settings: buildWebviewControlledSettingsOverride(modelId, settingsEnv, resolvedModelId),
     ...(reasoningEffort && { effort: reasoningEffort }),
     ...(maxThinkingTokens !== undefined && { maxThinkingTokens }),
     ...(streamingEnabled && { includePartialMessages: true }),
@@ -224,7 +223,7 @@ async function buildRequestContext(params, withAttachments, overrides = {}) {
   const options = buildQueryOptions(
     workingDirectory, sdkModelName, permissionMode,
     maxThinkingTokens, reasoningEffort, streamingEnabled, systemPromptAppend, requestedSessionId,
-    mcpServers, modelId, settings?.env
+    mcpServers, modelId, settings?.env, resolvedModelId
   );
 
   const userMessage = await buildUserMessage(params, withAttachments, requestedSessionId);

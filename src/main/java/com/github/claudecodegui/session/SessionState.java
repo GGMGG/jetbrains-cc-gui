@@ -470,9 +470,7 @@ public class SessionState {
     }
 
     public void setModel(String model) {
-        synchronized (messageStateLock) {
-            this.model = normalizeRetiredModelId(model);
-        }
+        this.model = normalizeRetiredModelId(model);
     }
 
     /**
@@ -486,9 +484,7 @@ public class SessionState {
      * {@link #setModel(String)} so stale built-in ids still self-heal.</p>
      */
     public void setModelVerbatim(String model) {
-        synchronized (messageStateLock) {
-            this.model = model == null ? null : model.trim();
-        }
+        this.model = model == null ? null : model.trim();
     }
 
     /**
@@ -586,6 +582,10 @@ public class SessionState {
         return newEpoch;
     }
 
+    /**
+     * Retires the binding (new execution state and turn owner) and releases busy, plus loading unless
+     * history owns it. It never notifies the webview; callers that keep the page must do so.
+     */
     private void rebindExecution() {
         executionState = new SessionExecutionState();
         turnOwner = new Object();
