@@ -32,6 +32,9 @@ public final class PetOfficeSessionPublisher implements Disposable {
         }
         String id = projectIds.computeIfAbsent(project, ignored -> UUID.randomUUID().toString());
         ApplicationInfo info = ApplicationInfo.getInstance();
+        if (!ApplicationManager.getApplication().isUnitTestMode()) {
+            PetOfficeRuntimeService.getInstance().start();
+        }
         return registry.register(new PetOfficeSessionRegistry.Metadata(handle, info.getBuild().getProductCode(),
                 info.getVersionName(), id, project.getName(), tab), state);
     }
@@ -41,6 +44,8 @@ public final class PetOfficeSessionPublisher implements Disposable {
         registry.observe();
         return registry.snapshot();
     }
+
+    public PetOfficeSessionRegistry.CompleteSnapshot snapshot() { return registry.snapshot(); }
 
     public PetOfficeTabNavigator navigator() {
         return navigator;

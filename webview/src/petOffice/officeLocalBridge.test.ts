@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseLocalOfficeSnapshot } from './officeLocalModel';
-import { activateLocalOfficeSource, readLocalOffice, receiveLocalOfficeResponse, updateOfficeWindowPreferences } from './officeLocalBridge';
+import { activateLocalOfficeSource, readLocalOffice, receiveLocalOfficeResponse, updateOfficeWindowPreferences, exitLocalOffice } from './officeLocalBridge';
 
 const scene = () => ({ schemaVersion: 1, instanceId: 'instance', connectionEpoch: 'epoch', watermark: 1, sampledAt: 1000, capacityReached: false,
   sources: [{ sourceKey: { instanceId: 'instance', contentHandleId: 'tab', bindingEpoch: 'binding' }, routeGeneration: 'route', routeStatus: 'AVAILABLE',
@@ -19,6 +19,25 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); delete window.__PET_OFFICE_SEND__; delete window.__PET_OFFICE_PAGE__; });
 
 describe('the local Office boundary', () => {
+  it('accepts listed peer owners and keeps project filters distinct across IDEs', () => {
+    const value = scene();
+    const peer = { ...value.sources[0], sourceKey: { ...value.sources[0].sourceKey, instanceId: 'peer' } };
+    value.sources.push(peer);
+    const result = parseLocalOfficeSnapshot({ ...value, participants: ['instance', 'peer'] });
+    expect(result.sources.map(source => source.sourceKey)).toEqual(['instance/tab/binding', 'peer/tab/binding']);
+    expect(new Set(result.sources.map(source => source.projectId)).size).toBe(2);
+    expect(() => parseLocalOfficeSnapshot({ ...value, participants: ['instance'] })).toThrow();
+    expect(() => parseLocalOfficeSnapshot({ ...value, participants: ['instance', 'instance'] })).toThrow();
+  });
+
+  it('requires an exit acknowledgement and preserves the page on refusal', async () => {
+    const exiting = exitLocalOffice();
+    expect(messages[0].action).toBe('exit'); expect(messages[0].payload).toEqual({});
+    reply(0, { result: 'ACTIVATED' });
+    await expect(exiting).rejects.toThrow('OFFICE_RESPONSE_INVALID');
+    const retry = exitLocalOffice(); reply(1, { closing: true });
+    await expect(retry).resolves.toEqual({ closing: true });
+  });
   it('correlates a settings commit and rejects a malformed matching acknowledgement', async () => {
     const patch = { expectedRevision: 'initial', officeName: 'Office', topmost: false, zoom: 125 };
     const saved = updateOfficeWindowPreferences(patch);

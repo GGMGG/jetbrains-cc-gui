@@ -37,7 +37,7 @@ final class PetOfficeLocalProtocol {
         JsonObject payload = value.getAsJsonObject("payload");
         PetOfficeTabNavigator.Request navigation = null;
         PetOfficeWindowPreferences.Patch preferences = null;
-        if ("scene".equals(action)) {
+        if ("scene".equals(action) || "exit".equals(action)) {
             fields(payload);
         } else if ("activate".equals(action)) {
             fields(payload, "sourceKey", "routeGeneration", "interactionId");
