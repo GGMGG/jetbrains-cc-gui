@@ -1,8 +1,8 @@
-import { parseLocalOfficeSnapshot, type LocalOfficeSnapshot, type LocalOfficeSource } from './officeLocalModel';
+import { parseLocalOfficeSnapshot, parseOfficeWindowSettings, type OfficeWindowSettings, type LocalOfficeSnapshot, type LocalOfficeSource } from './officeLocalModel';
 
 export const officeNavigationResults = ['ACTIVATED', 'ATTENTION_REQUESTED', 'TARGET_GONE', 'STALE_INTERACTION', 'UNAVAILABLE'] as const;
 export type OfficeNavigationResult = typeof officeNavigationResults[number];
-interface Replies { scene: LocalOfficeSnapshot; activate: { result: OfficeNavigationResult }; }
+interface Replies { scene: LocalOfficeSnapshot; activate: { result: OfficeNavigationResult }; preferences: OfficeWindowSettings; }
 declare global {
   interface Window {
     __PET_OFFICE_PAGE__?: string;
@@ -26,7 +26,7 @@ export function receiveLocalOfficeResponse(json: string) {
 }
 window.onPetOfficeResponse = receiveLocalOfficeResponse;
 
-function request<K extends keyof Replies>(action: K, payload: Record<string, string>, signal?: AbortSignal): Promise<Replies[K]> {
+function request<K extends keyof Replies>(action: K, payload: Record<string, unknown>, signal?: AbortSignal): Promise<Replies[K]> {
   if (signal?.aborted) return Promise.reject(new Error('OFFICE_CANCELLED'));
   if (!window.__PET_OFFICE_PAGE__ || !window.__PET_OFFICE_SEND__) return Promise.reject(new Error('OFFICE_BRIDGE_UNAVAILABLE'));
   const requestId = `office-${nonce}-${++sequence}`;
@@ -40,6 +40,7 @@ function request<K extends keyof Replies>(action: K, payload: Record<string, str
         cleanup();
         try {
           if (action === 'scene') resolve(parseLocalOfficeSnapshot(value) as Replies[K]);
+          else if (action === 'preferences') resolve(parseOfficeWindowSettings(value) as Replies[K]);
           else if (object(value) && officeNavigationResults.includes(value.result as OfficeNavigationResult)) resolve(value as Replies[K]);
           else reject(new Error('OFFICE_RESPONSE_INVALID'));
         } catch { reject(new Error('OFFICE_RESPONSE_INVALID')); }
@@ -56,4 +57,7 @@ function request<K extends keyof Replies>(action: K, payload: Record<string, str
 export function readLocalOffice(signal?: AbortSignal) { return request('scene', {}, signal); }
 export function activateLocalOfficeSource(source: LocalOfficeSource, signal?: AbortSignal) {
   return request('activate', { sourceKey: source.sourceKey, routeGeneration: source.routeGeneration, interactionId: source.interactionId }, signal);
+}
+export function updateOfficeWindowPreferences(patch: { expectedRevision: string; officeName: string; topmost: boolean; zoom: number }, signal?: AbortSignal) {
+  return request('preferences', { ...patch }, signal);
 }

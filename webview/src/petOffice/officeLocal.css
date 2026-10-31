@@ -27,11 +27,18 @@ button:focus-visible, select:focus-visible { outline: 3px solid #386de8; outline
 .office-local-succeeded { border-bottom-color: #39896b; }
 .office-local-failed { border-bottom-color: #b34959; }
 .office-local nav { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 24px; }
+.office-window-settings { background: #fff; border: 1px solid #b6c6dd; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+.office-window-settings h2 { font-size: 18px; margin: 0 0 12px; }
+.office-window-settings label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
+.office-window-settings input:not([type=checkbox]) { max-width: 100%; width: 320px; font: inherit; padding: 4px 8px; }
+.office-window-settings button { margin-right: 12px; padding: 5px 12px; }
 @media (max-width: 640px) { .office-local { padding: 16px; } .office-local-room { padding: 12px; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .office-local header { flex-wrap: wrap; } .office-local header > div { flex: 1 1 100%; } }
 @media (prefers-color-scheme: dark) {
   :root { color: #d6e2f8; background: #171e2a; color-scheme: dark; }
   .office-local header p, .office-local time { color: #a6b7d3; }
   .office-local-room { background: #222f43; border-color: #465774; }
   .office-local-desk { background: #293a51; color: #d6e2f8; box-shadow: 0 6px 0 #152135; }
   .office-local header button, .office-local nav button, .office-local select { background: #293a51; color: #d6e2f8; }
+  .office-window-settings { background: #293a51; }
 }

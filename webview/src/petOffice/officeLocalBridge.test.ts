@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseLocalOfficeSnapshot } from './officeLocalModel';
-import { activateLocalOfficeSource, readLocalOffice, receiveLocalOfficeResponse } from './officeLocalBridge';
+import { activateLocalOfficeSource, readLocalOffice, receiveLocalOfficeResponse, updateOfficeWindowPreferences } from './officeLocalBridge';
 
 const scene = () => ({ schemaVersion: 1, instanceId: 'instance', connectionEpoch: 'epoch', watermark: 1, sampledAt: 1000, capacityReached: false,
   sources: [{ sourceKey: { instanceId: 'instance', contentHandleId: 'tab', bindingEpoch: 'binding' }, routeGeneration: 'route', routeStatus: 'AVAILABLE',
     metadata: { projectId: 'project', projectLabel: 'Project', tabLabel: 'Chat' }, provider: 'codex', modelLabel: 'model',
     execution: { phase: 'WAITING_USER', waitReason: 'QUESTION', pendingInteractionId: 'question', pendingInteractionCount: 1 } }] });
-let messages: Array<{ requestId: string; pageToken: string; action: string; payload: Record<string, string> }>;
+let messages: Array<{ requestId: string; pageToken: string; action: string; payload: Record<string, unknown> }>;
 function reply(index = 0, data: unknown = scene(), overrides: Record<string, unknown> = {}) {
   receiveLocalOfficeResponse(JSON.stringify({ ...messages[index], success: true, data, ...overrides }));
 }
@@ -19,6 +19,16 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); delete window.__PET_OFFICE_SEND__; delete window.__PET_OFFICE_PAGE__; });
 
 describe('the local Office boundary', () => {
+  it('correlates a settings commit and rejects a malformed matching acknowledgement', async () => {
+    const patch = { expectedRevision: 'initial', officeName: 'Office', topmost: false, zoom: 125 };
+    const saved = updateOfficeWindowPreferences(patch);
+    expect(messages[0].payload).toEqual(patch);
+    reply(0, { revision: 'saved', generation: 1, officeName: 'Office', topmost: false, zoom: 125, recovered: false });
+    await expect(saved).resolves.toMatchObject({ revision: 'saved', zoom: 125 });
+    const invalid = updateOfficeWindowPreferences(patch);
+    reply(1, { revision: 'saved' });
+    await expect(invalid).rejects.toThrow('OFFICE_RESPONSE_INVALID');
+  });
   it('renders every backend activity and distinguishes permission and plan waits', () => {
     for (const phase of ['QUEUED', 'THINKING', 'RUNNING']) {
       const value = scene();

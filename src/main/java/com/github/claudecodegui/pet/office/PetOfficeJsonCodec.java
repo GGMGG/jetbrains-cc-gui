@@ -20,6 +20,8 @@ import java.util.Set;
 final class PetOfficeJsonCodec {
     static final int MAX_STRING_LENGTH = 64 * 1024;
     private static final int MAX_DEPTH = 32;
+    private static final int MAX_SOURCE_KEY_LENGTH = 386;
+    private enum JsonContext { ROOT, PREFERENCES, APPEARANCE_OVERRIDES, OTHER }
     private PetOfficeJsonCodec() { }
 
     static JsonObject parse(byte[] bytes) throws IOException {
@@ -28,7 +30,7 @@ final class PetOfficeJsonCodec {
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
             try (JsonReader reader = new JsonReader(new StringReader(text))) {
                 reader.setLenient(false);
-                JsonElement value = readValue(reader, 0);
+                JsonElement value = readValue(reader, 0, JsonContext.ROOT);
                 if (!value.isJsonObject() || reader.peek() != JsonToken.END_DOCUMENT) {
                     throw new IOException("OFFICE_MESSAGE_JSON_INVALID");
                 }
@@ -39,7 +41,7 @@ final class PetOfficeJsonCodec {
         }
     }
 
-    private static JsonElement readValue(JsonReader reader, int depth) throws IOException {
+    private static JsonElement readValue(JsonReader reader, int depth, JsonContext context) throws IOException {
         if (depth > MAX_DEPTH) {
             throw new IOException("OFFICE_MESSAGE_JSON_DEPTH");
         }
@@ -47,15 +49,16 @@ final class PetOfficeJsonCodec {
             case BEGIN_OBJECT:
                 JsonObject object = new JsonObject();
                 Set<String> fields = new HashSet<>();
-                int maxNameLength = 64;
-                int maxFields = 32;
+                boolean overrides = context == JsonContext.APPEARANCE_OVERRIDES;
+                int maxNameLength = overrides ? MAX_SOURCE_KEY_LENGTH : 64;
+                int maxFields = overrides ? PetOfficeSessionRegistry.MAX_SOURCES : 32;
                 reader.beginObject();
                 while (reader.hasNext()) {
                     String name = reader.nextName();
                     if (name.length() > maxNameLength || !fields.add(name) || fields.size() > maxFields) {
                         throw new IOException("OFFICE_MESSAGE_JSON_FIELDS");
                     }
-                    object.add(name, readValue(reader, depth + 1));
+                    object.add(name, readValue(reader, depth + 1, memberContext(context, name)));
                 }
                 reader.endObject();
                 return object;
@@ -66,7 +69,7 @@ final class PetOfficeJsonCodec {
                     if (array.size() >= PetOfficeSessionRegistry.MAX_SOURCES) {
                         throw new IOException("OFFICE_MESSAGE_JSON_ARRAY_CAPACITY");
                     }
-                    array.add(readValue(reader, depth + 1));
+                    array.add(readValue(reader, depth + 1, JsonContext.OTHER));
                 }
                 reader.endArray();
                 return array;
@@ -87,6 +90,16 @@ final class PetOfficeJsonCodec {
             default:
                 throw new IOException("OFFICE_MESSAGE_JSON_INVALID");
         }
+    }
+
+    private static JsonContext memberContext(JsonContext parent, String name) {
+        if (parent == JsonContext.ROOT && "preferences".equals(name)) {
+            return JsonContext.PREFERENCES;
+        }
+        if (parent == JsonContext.PREFERENCES && "appearanceOverrides".equals(name)) {
+            return JsonContext.APPEARANCE_OVERRIDES;
+        }
+        return JsonContext.OTHER;
     }
 
     static void fields(JsonObject object, String... names) throws IOException {

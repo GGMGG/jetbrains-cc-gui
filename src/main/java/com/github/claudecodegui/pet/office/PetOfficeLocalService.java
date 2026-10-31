@@ -16,6 +16,7 @@ import com.intellij.openapi.util.SystemInfo;
 import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefBrowserBase;
 import com.intellij.ui.jcef.JBCefJSQuery;
+import com.intellij.util.concurrency.AppExecutorUtil;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
 import org.cef.handler.CefRequestHandlerAdapter;
@@ -26,17 +27,24 @@ import javax.swing.WindowConstants;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
+import java.awt.Frame;
+import java.awt.Rectangle;
+import java.awt.Toolkit;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -81,6 +89,7 @@ public final class PetOfficeLocalService implements Disposable {
     }
 
     private void load() {
+        PetOfficeRuntimeLease acquired = null;
         try {
             if (!SystemInfo.isWindows || GraphicsEnvironment.isHeadless() || !JBCefBrowserFactory.isJcefSupported()) {
                 throw new IOException("OFFICE_NO_RENDERER");
@@ -96,19 +105,31 @@ public final class PetOfficeLocalService implements Disposable {
             if (bytes.length > MAX_HTML_BYTES || !html.contains("<!-- OFFICE_BOOTSTRAP -->")) {
                 throw new IOException("OFFICE_ENTRY_INVALID");
             }
-            onEdt(() -> create(html));
+            Path directory = PetOfficeWindowsRuntime.resolveDirectory();
+            acquired = PetOfficeRuntimeLease.tryAcquire(directory).orElseThrow(() -> new IOException("OFFICE_WINDOW_BUSY"));
+            var store = new PetOfficePreferencesStore(directory);
+            Page page = new Page(acquired, new PetOfficeWindowPreferenceController(store, acquired, store.read()));
+            onEdt(() -> create(html, page));
+            acquired = null;
         } catch (Exception | LinkageError failure) {
+            if (failure instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             opening.set(false);
             unavailable();
+        } finally {
+            if (acquired != null) {
+                release(acquired);
+            }
         }
     }
 
-    private void create(String html) {
+    private void create(String html, Page page) {
         if (disposed.get()) {
             opening.set(false);
+            release(page.lease);
             return;
         }
-        Page page = new Page();
         try {
             page.browser = JBCefBrowserFactory.create();
             page.query = JBCefJSQuery.create((JBCefBrowserBase) page.browser);
@@ -122,13 +143,22 @@ public final class PetOfficeLocalService implements Disposable {
                 }
             };
             page.browser.getJBCefClient().addRequestHandler(page.requestHandler, page.browser.getCefBrowser());
-            page.window = new JFrame(ClaudeCodeGuiBundle.message("pet.office.title"));
+            var saved = page.preferences.state();
+            page.window = new JFrame(windowTitle(saved.preferences()));
             page.window.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
             page.window.setLayout(new BorderLayout());
             page.window.add(page.browser.getComponent(), BorderLayout.CENTER);
-            page.window.setMinimumSize(new Dimension(560, 440));
-            page.window.setSize(1000, 740);
-            page.window.setLocationByPlatform(true);
+            Rectangle bounds = PetOfficeWindowGeometry.restore(saved.bounds(), usableScreens());
+            page.window.setMinimumSize(new Dimension(Math.min(480, bounds.width), Math.min(400, bounds.height)));
+            page.window.setBounds(bounds);
+            page.lastNormalBounds = new Rectangle(bounds);
+            page.window.setAlwaysOnTop(saved.preferences().topmost());
+            page.window.addComponentListener(new ComponentAdapter() {
+                @Override
+                public void componentMoved(ComponentEvent event) { scheduleBounds(page); }
+                @Override
+                public void componentResized(ComponentEvent event) { scheduleBounds(page); }
+            });
             page.window.addWindowListener(new WindowAdapter() {
                 @Override
                 public void windowClosing(WindowEvent event) {
@@ -190,9 +220,28 @@ public final class PetOfficeLocalService implements Disposable {
             }
             PetOfficeSessionPublisher publisher = PetOfficeSessionPublisher.getInstance();
             if ("scene".equals(request.action())) {
+                page.preferences.refresh();
                 var snapshot = publisher.sample();
                 byte[] bytes = PetOfficeSnapshotCodec.encode(snapshot, snapshot.connectionEpoch());
-                respond(page, request, PetOfficeJsonCodec.parse(bytes), null);
+                JsonObject data = PetOfficeJsonCodec.parse(bytes);
+                data.add("settings", page.preferences.view());
+                respond(page, request, data, null);
+            } else if ("preferences".equals(request.action())) {
+                page.preferences.update(request.preferences(), () -> valid(page), preferences -> {
+                    page.window.setTitle(windowTitle(preferences));
+                    page.window.setAlwaysOnTop(preferences.topmost());
+                }, PetOfficeLocalService::onEdt, action -> {
+                    if (!submit(action)) {
+                        throw new RejectedExecutionException();
+                    }
+                }, result -> {
+                    try {
+                        respond(page, request, result.data(), result.error());
+                    } finally {
+                        page.pending.decrementAndGet();
+                    }
+                });
+                handedOff = true;
             } else {
                 publisher.navigator().navigate(page.token, request.navigation(), () -> valid(page), result -> {
                     try {
@@ -228,7 +277,7 @@ public final class PetOfficeLocalService implements Disposable {
     }
 
     private boolean valid(Page page) {
-        return !disposed.get() && current == page;
+        return !disposed.get() && current == page && page.lease.isValid();
     }
 
     private boolean submit(Runnable action) {
@@ -250,6 +299,13 @@ public final class PetOfficeLocalService implements Disposable {
     }
 
     private void close(Page page) {
+        if (!page.closed.compareAndSet(false, true)) {
+            return;
+        }
+        if (page.boundsSave != null) {
+            page.boundsSave.cancel(false);
+        }
+        Rectangle finalBounds = normalBounds(page.window);
         try {
             PetOfficeSessionPublisher.getInstance().navigator().closePage(page.token);
         } catch (Exception | LinkageError failure) {
@@ -272,12 +328,91 @@ public final class PetOfficeLocalService implements Disposable {
                 if (page.window != null) {
                     page.window.dispose();
                 }
+                Runnable finish = () -> {
+                    try {
+                        if (finalBounds != null && page.lease.isValid()) {
+                            page.preferences.saveBounds(bounds(finalBounds));
+                        }
+                    } catch (IOException failure) {
+                        LOG.warn("Office final bounds could not be saved");
+                    } finally {
+                        release(page.lease);
+                    }
+                };
+                if (!submit(finish)) {
+                    java.util.concurrent.CompletableFuture.runAsync(finish);
+                }
             }
         }
     }
 
     private static void onEdt(Runnable action) {
         ApplicationManager.getApplication().invokeLater(action, ModalityState.any());
+    }
+
+    static String windowTitle(PetOfficePreferencesStore.Preferences preferences) {
+        return preferences.officeName().isEmpty() ? ClaudeCodeGuiBundle.message("pet.office.title") : preferences.officeName();
+    }
+
+    private static java.util.List<Rectangle> usableScreens() {
+        java.util.List<Rectangle> screens = new java.util.ArrayList<>();
+        for (var device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            var configuration = device.getDefaultConfiguration();
+            Rectangle area = new Rectangle(configuration.getBounds());
+            var insets = Toolkit.getDefaultToolkit().getScreenInsets(configuration);
+            area.x += insets.left;
+            area.y += insets.top;
+            area.width -= insets.left + insets.right;
+            area.height -= insets.top + insets.bottom;
+            if (area.width > 0 && area.height > 0) {
+                screens.add(area);
+            }
+        }
+        return screens;
+    }
+
+    private static Rectangle normalBounds(JFrame window) {
+        if (window == null || !window.isShowing() || window.getExtendedState() != Frame.NORMAL) {
+            return null;
+        }
+        Rectangle bounds = window.getBounds();
+        return bounds.width >= 320 && bounds.height >= 320 && bounds.width <= 7680 && bounds.height <= 4320
+                && bounds.x >= -32768 && bounds.x <= 32768 && bounds.y >= -32768 && bounds.y <= 32768 ? bounds : null;
+    }
+
+    private static PetOfficePreferencesStore.Bounds bounds(Rectangle bounds) {
+        return new PetOfficePreferencesStore.Bounds(bounds.x, bounds.y, bounds.width, bounds.height, true);
+    }
+
+    private void scheduleBounds(Page page) {
+        if (!valid(page)) {
+            return;
+        }
+        Rectangle normal = normalBounds(page.window);
+        if (normal == null || normal.equals(page.lastNormalBounds)) {
+            return;
+        }
+        page.lastNormalBounds = new Rectangle(normal);
+        if (page.boundsSave != null) {
+            page.boundsSave.cancel(false);
+        }
+        page.boundsSave = AppExecutorUtil.getAppScheduledExecutorService().schedule(() -> submit(() -> {
+            if (valid(page)) {
+                try {
+                    page.preferences.saveBounds(bounds(normal));
+                } catch (IOException failure) {
+                    LOG.warn("Office bounds could not be saved");
+                }
+            }
+        }), 500, TimeUnit.MILLISECONDS);
+    }
+
+    private static void release(PetOfficeRuntimeLease lease) {
+        try {
+            lease.close();
+        } catch (IOException failure) {
+            LOG.warn("Office window lease cleanup failed");
+        }
     }
 
     @Override
@@ -295,6 +430,9 @@ public final class PetOfficeLocalService implements Disposable {
     }
 
     private static final class Page {
+        private final PetOfficeRuntimeLease lease;
+        private final PetOfficeWindowPreferenceController preferences;
+        private final AtomicBoolean closed = new AtomicBoolean();
         private final String token = UUID.randomUUID().toString();
         private final String url = "https://cc-gui-office.local/" + token + ".html";
         private final AtomicInteger pending = new AtomicInteger();
@@ -302,5 +440,12 @@ public final class PetOfficeLocalService implements Disposable {
         private JBCefJSQuery query;
         private JFrame window;
         private CefRequestHandlerAdapter requestHandler;
+        private ScheduledFuture<?> boundsSave;
+        private Rectangle lastNormalBounds;
+
+        private Page(PetOfficeRuntimeLease lease, PetOfficeWindowPreferenceController preferences) {
+            this.lease = lease;
+            this.preferences = preferences;
+        }
     }
 }

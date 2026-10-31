@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { activateLocalOfficeSource, readLocalOffice } from './officeLocalBridge';
 import type { LocalOfficeSnapshot, LocalOfficeSource } from './officeLocalModel';
+import OfficeWindowSettings from './OfficeWindowSettings';
 
 /** A local room observes backend ownership; opening it never starts an AI turn. */
 export default function LocalOffice() {
@@ -13,6 +14,7 @@ export default function LocalOffice() {
   const [floor, setFloor] = useState(0);
   const [revision, setRevision] = useState(0);
   const [navigating, setNavigating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const navigatingRef = useRef(false);
   const lifetime = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -26,7 +28,11 @@ export default function LocalOffice() {
     async function poll() {
       try {
         const result = await readLocalOffice(controller.signal);
-        if (!controller.signal.aborted) { setSnapshot(result); setError(null); }
+        if (!controller.signal.aborted) {
+          setSnapshot(previous => previous?.settings && (!result.settings || result.settings.generation < previous.settings.generation)
+            ? { ...result, settings: previous.settings } : result);
+          setError(null);
+        }
       } catch (reason) {
         if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'OFFICE_UNAVAILABLE');
       } finally {
@@ -53,9 +59,12 @@ export default function LocalOffice() {
       if (!signal?.aborted) setNavigation(reason instanceof Error ? reason.message : 'UNAVAILABLE');
     } finally { navigatingRef.current = false; if (!signal?.aborted) setNavigating(false); }
   }
-  return <main className="office-local">
-    <header><div><h1>{t('title')}</h1><p>{t('hint')}</p></div>
+  return <main className="office-local" style={{ zoom: (snapshot?.settings?.zoom ?? 100) / 100 }}>
+    <header><div><h1>{snapshot?.settings?.officeName || t('title')}</h1><p>{t('hint')}</p></div>
+      {snapshot?.settings && <button type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(value => !value)}>{t('windowSettings')}</button>}
       <button type="button" onClick={() => setRevision(value => value + 1)}>{t('refresh')}</button></header>
+    {settingsOpen && snapshot?.settings && <OfficeWindowSettings settings={snapshot.settings} onSaved={settings => setSnapshot(previous => previous
+      ? { ...previous, settings: !previous.settings || settings.generation >= previous.settings.generation ? settings : previous.settings } : previous)} />}
     <div className="office-local-toolbar">
       <label>{t('project')} <select value={project} onChange={event => { setProject(event.target.value); setFloor(0); }}>
         <option value="">{t('allProjects')}</option>{projects.map(([id, label]) => <option key={id} value={id}>{label}</option>)}

@@ -13,7 +13,8 @@ import static com.github.claudecodegui.pet.office.PetOfficeJsonCodec.string;
 final class PetOfficeLocalProtocol {
     static final int MAX_REQUEST_BYTES = 8 * 1024;
 
-    record Request(String requestId, String action, String pageToken, PetOfficeTabNavigator.Request navigation) { }
+    record Request(String requestId, String action, String pageToken, PetOfficeTabNavigator.Request navigation,
+                   PetOfficeWindowPreferences.Patch preferences) { }
 
     private PetOfficeLocalProtocol() { }
 
@@ -35,6 +36,7 @@ final class PetOfficeLocalProtocol {
         String action = string(value, "action", 32);
         JsonObject payload = value.getAsJsonObject("payload");
         PetOfficeTabNavigator.Request navigation = null;
+        PetOfficeWindowPreferences.Patch preferences = null;
         if ("scene".equals(action)) {
             fields(payload);
         } else if ("activate".equals(action)) {
@@ -46,10 +48,12 @@ final class PetOfficeLocalProtocol {
                 throw new IOException("OFFICE_SOURCE_INVALID");
             }
             navigation = new PetOfficeTabNavigator.Request(id, key, identifier(payload, "routeGeneration", false), identifier(payload, "interactionId", true));
+        } else if ("preferences".equals(action)) {
+            preferences = PetOfficeWindowPreferences.parse(payload);
         } else {
             throw new IOException("OFFICE_ACTION_INVALID");
         }
-        return new Request(id, action, page, navigation);
+        return new Request(id, action, page, navigation, preferences);
     }
 
     static JsonObject response(Request request, JsonObject data, String error) {
