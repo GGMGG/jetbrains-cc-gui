@@ -10,6 +10,8 @@ import com.github.claudecodegui.cache.SessionIndexCache;
 import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.util.PathUtils;
+import com.github.claudecodegui.storage.CodexStorageMaintenance;
+import com.github.claudecodegui.storage.CodexStoragePaths;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;

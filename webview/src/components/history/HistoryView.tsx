@@ -64,7 +64,7 @@ const HistoryView = ({ historyData, currentProvider, currentSessionId, currentSe
       // deletion still checks native ownership and running children in the backend.
       const running = !!(session.ownedElsewhere || (isCurrent && currentSessionBusy) || (activityConfirmed
         ? runningIds.has(session.sessionId) || (isCurrent && writerIds.has(session.sessionId))
-        : session.running));
+        : (!isCurrent || activityStatus !== null) && session.running));
       return running === session.running ? session : { ...session, running };
     });
   }, [listedSessions, currentProvider, currentSessionId, currentSessionBusy, activityStatus]);
