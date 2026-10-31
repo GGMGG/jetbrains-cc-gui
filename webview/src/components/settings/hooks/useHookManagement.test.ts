@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HookItem, HookSourcePayload } from '../../../types/hooks';
+import { EMPTY_HOOK_CATALOG } from '../../../types/hooks';
 import { useHookManagement, type UseHookManagementReturn } from './useHookManagement';
 
 const item: HookItem = {
@@ -183,7 +184,7 @@ describe('useHookManagement correlated source operations', () => {
     expect(request('get_hooks').requestId).toBeTruthy();
     act(() => result.current.updateHookToggleResult?.({ success: true, requestId: secondId }));
     expect(result.current.toggleLoadingId).toBe(item.sourceId);
-    act(() => result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [],
+    act(() => result.current.updateHooks({ ...EMPTY_HOOK_CATALOG, items: [],
       requestId: request('get_hooks').requestId }));
     expect(result.current.toggleLoadingId).toBeNull();
   });
@@ -201,7 +202,7 @@ describe('useHookManagement correlated source operations', () => {
     expect(second.result.current.toggleLoadingId).toBe(item.sourceId);
     act(() => second.result.current.updateHookToggleResult?.({ success: true, requestId: secondId }));
     expect(second.result.current.toggleLoadingId).toBe(item.sourceId);
-    act(() => second.result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [],
+    act(() => second.result.current.updateHooks({ ...EMPTY_HOOK_CATALOG, items: [],
       requestId: request('get_hooks').requestId }));
     expect(second.result.current.toggleLoadingId).toBeNull();
   });
@@ -222,11 +223,11 @@ describe('useHookManagement correlated source operations', () => {
     act(() => result.current.updateHookToggleResult?.({ success: true, requestId: request('toggle_hook').requestId }));
     const fresh = request('get_hooks').requestId;
     expect(fresh).not.toBe(stale);
-    act(() => result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [item], requestId: stale }));
+    act(() => result.current.updateHooks({ ...EMPTY_HOOK_CATALOG, items: [item], requestId: stale }));
     expect(result.current.toggleLoadingId).toBe(item.sourceId);
     act(() => result.current.toggleHook?.(other, true, true));
     expect(vi.mocked(window.sendToJava!).mock.calls.filter(([text]) => text.startsWith('toggle_hook:'))).toHaveLength(1);
-    act(() => result.current.updateHooks({ schemaVersion: 1, readOnly: false, items: [], requestId: fresh }));
+    act(() => result.current.updateHooks({ ...EMPTY_HOOK_CATALOG, items: [], requestId: fresh }));
     expect(result.current.toggleLoadingId).toBeNull();
     expect(result.current.catalog.items).toEqual([]);
   });
