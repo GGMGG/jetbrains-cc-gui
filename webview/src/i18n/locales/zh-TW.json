@@ -57,6 +57,17 @@
     "currentMode": "目前模式: {{mode}}",
     "currentModel": "目前模型: {{model}}",
     "removeAttachment": "移除附件",
+    "queue": {
+      "edit": "編輯排隊訊息",
+      "remove": "從佇列移除",
+      "editLabel": "編輯排隊訊息 {{position}}",
+      "removeLabel": "從佇列移除訊息 {{position}}",
+      "reorderLabel": "重新排序訊息 {{position}}",
+      "reorderHint": "拖曳可排序，聚焦後可用方向鍵調整",
+      "mergedIntoDraft": "排隊訊息已合併到目前草稿",
+      "attachmentsNotRestored": "排隊訊息的附件未能回填到草稿",
+      "editBlockedAttachments": "此訊息的附件無法回填，已保留在佇列中"
+    },
     "closePreview": "關閉預覽",
     "loadingDropdown": "載入中...",
     "modelsLoadFailed": "模型列表載入失敗，點擊重試",
