@@ -80,8 +80,12 @@ export function useModelProviderState({ addToast, t }: UseModelProviderStateOpti
     const requestId = crypto.randomUUID();
     pendingCodexSettingsRequest.current = requestId;
     setCodexSettingsPending(true);
-    sendBridgeEvent('codex_update_settings', JSON.stringify({ requestId, settings }));
-  }, []);
+    if (sendBridgeEvent('codex_update_settings', JSON.stringify({ requestId, settings })) === false) {
+      pendingCodexSettingsRequest.current = null;
+      setCodexSettingsPending(false);
+      addToast(t('toast.codexSettingsDispatchFailed'), 'error');
+    }
+  }, [addToast, t]);
 
   // External-facing ref so window callbacks can read the latest provider
   // without re-binding. Mirrored in an effect (bridge callbacks fire async,
