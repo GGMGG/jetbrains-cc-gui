@@ -9,9 +9,9 @@ import com.github.claudecodegui.provider.dsh.DshHistoryReader;
 import com.github.claudecodegui.cache.SessionIndexCache;
 import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.session.ClaudeSession;
+import com.github.claudecodegui.util.PathUtils;
 import com.github.claudecodegui.storage.CodexStorageMaintenance;
 import com.github.claudecodegui.storage.CodexStoragePaths;
-import com.github.claudecodegui.util.PathUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -154,12 +154,14 @@ class HistoryDeleteService {
         List<String> deletedSessionIds = new ArrayList<>();
         Collection<String> failedSessionIds = new LinkedHashSet<>();
         if ("codex".equals(currentProvider)) {
+            // Storage maintenance claims the native publication and selected-family writer locks itself.
+            releaseWriters.run();
             CodexBatchDeleteResult result = deleteCodexSessions(sessionIds);
             // The leases guard only the rollout files; the reload below must not report them as foreign writers.
             releaseWriters.run();
             deletedSessionIds.addAll(result.deletedSessionIds);
-            failedSessionIds.addAll(result.failedSessionIds);
-            LOG.info("[HistoryHandler] Confirmed deleted Codex sessions: " + result.deletedSessionIds.size());
+            failedSessionIds.addAll(sessionIds.stream().filter(id -> !result.deletedSessionIds.contains(id)).toList());
+            LOG.info("[HistoryHandler] Deleted Codex rollout files: " + result.deletedFileCount);
         } else {
             for (String sessionId : sessionIds) {
                 try {
@@ -426,7 +428,7 @@ class HistoryDeleteService {
         for (JsonElement id : status.getAsJsonObject("result").getAsJsonArray("deletedSessionIds")) {
             deleted.add(id.getAsString());
         }
-        return new CodexBatchDeleteResult(deleted, Collections.emptySet(), 0);
+        return new CodexBatchDeleteResult(deleted, Collections.emptySet(), deleted.size());
     }
 
     static boolean isCodexSessionDeletionComplete(
@@ -740,7 +742,7 @@ class HistoryDeleteService {
         }
     }
 
-    static class CodexBatchDeleteResult {
+    private static class CodexBatchDeleteResult {
         private final Collection<String> deletedSessionIds;
         /** Ids that matched rollout files of which at least one could not be deleted. */
         private final Collection<String> failedSessionIds;

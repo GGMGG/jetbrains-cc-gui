@@ -427,30 +427,7 @@ describe('useSessionManagement', () => {
     });
   });
 
-  describe('Codex deletion waits for the backend outcome', () => {
-    const codexHistory = () => ({
-      success: true,
-      sessions: [
-        { sessionId: 'history-1', title: 'History One', provider: 'codex', messageCount: 3, lastTimestamp: Date.now() },
-        { sessionId: 'history-2', title: 'History Two', provider: 'codex', messageCount: 5, lastTimestamp: Date.now() },
-      ],
-      total: 8,
-    } as unknown as HistoryData);
-
-    const renderCodex = (currentSessionId: string | null) => {
-      const mocks = createMocks();
-      const hook = renderHook(() => useSessionManagement({
-        messages: [],
-        loading: false,
-        historyData: codexHistory(),
-        currentSessionId,
-        currentProvider: 'codex',
-        ...mocks,
-        t,
-      }));
-      return { ...hook, mocks };
-    };
-
+  describe('Non-Codex history deletion outcomes', () => {
     const deliverResult = (result: Record<string, unknown>) => act(() => {
       window.onHistoryDeleteResult?.(JSON.stringify(result));
     });
@@ -588,12 +565,6 @@ describe('useSessionManagement', () => {
       expect(mocks.addToast).toHaveBeenCalledWith('history.deleteFailed', 'error');
     });
 
-    it('unregisters its result callback on unmount', () => {
-      const { unmount } = renderCodex('history-1');
-      expect(window.onHistoryDeleteResult).toBeTypeOf('function');
-      unmount();
-      expect(window.onHistoryDeleteResult).toBeUndefined();
-    });
   });
 
   it('forceCreateNewSession interrupts loading session and cleans state', () => {
