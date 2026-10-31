@@ -58,9 +58,13 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
         return committed;
     }
 
-    synchronized void bind(CompletableFuture<Void> loadFuture) {
-        future = loadFuture;
-        if (cancelled) {
+    void bind(CompletableFuture<Void> loadFuture) {
+        boolean completeCancelled;
+        synchronized (this) {
+            future = loadFuture;
+            completeCancelled = cancelled;
+        }
+        if (completeCancelled) {
             loadFuture.completeExceptionally(new java.util.concurrent.CancellationException(
                     "History loading was cancelled"));
         }
@@ -77,9 +81,14 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
         loadFuture.whenComplete((ignored, error) -> deadline.cancel(false));
     }
 
-    synchronized void completeExceptionally(Throwable error) {
-        if (future != null) {
-            future.completeExceptionally(error);
+    void completeExceptionally(Throwable error) {
+        CompletableFuture<Void> loadFuture;
+        synchronized (this) {
+            loadFuture = future;
+        }
+        // Completion callbacks may acquire the window lock and inspect this request.
+        if (loadFuture != null) {
+            loadFuture.completeExceptionally(error);
         }
     }
 

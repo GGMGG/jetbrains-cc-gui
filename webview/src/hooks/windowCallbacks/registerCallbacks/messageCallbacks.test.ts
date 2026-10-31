@@ -126,6 +126,16 @@ describe('claudeHistoryPageInfo', () => {
     expect(window.__claudeHistoryPageInfo).toBeUndefined();
   });
 
+  it('keeps manual loading and its cancel action when activation republishes unloaded in the same generation', () => {
+    const harness = createHarness('s1');
+    const loading: StartupHistoryLoadState = {
+      status: 'loading', sessionId: 's1', requestId: 'manual', generation: 2, messageCount: 0, retryable: false,
+    };
+    window.updateStartupHistoryLoadState?.(JSON.stringify({ ...loading, status: 'unloaded', requestId: '', retryable: true }));
+    const update = harness.startupHistoryUpdates[0] as (previous: StartupHistoryLoadState | null) => StartupHistoryLoadState | null;
+    expect(update(loading)).toBe(loading);
+  });
+
   it('caches pagination state and notifies listeners for the on-screen session', () => {
     const harness = createHarness('s1');
     const seen: unknown[] = [];

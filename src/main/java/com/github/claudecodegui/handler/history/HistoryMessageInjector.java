@@ -2,9 +2,9 @@ package com.github.claudecodegui.handler.history;
 
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.CodexMessageConverter;
-import com.github.claudecodegui.handler.SettingsHandler;
 import com.github.claudecodegui.handler.UsagePushService;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.handler.provider.ModelProviderHandler;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader;
 import com.github.claudecodegui.provider.codex.CodexNativeHistoryReader;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
@@ -449,8 +449,8 @@ public class HistoryMessageInjector {
         if (session == null) {
             return;
         }
-        int fallbackMaxTokens = SettingsHandler.getModelContextLimit(
-                session.getProvider(), session.getModel());
+        int fallbackMaxTokens = ModelProviderHandler.resolveContextLimit(
+                session.getProvider(), session.getModel(), session.getCwd());
         new UsagePushService(context).pushCurrentUsageIfAvailable(fallbackMaxTokens);
     }
 
@@ -858,6 +858,18 @@ public class HistoryMessageInjector {
                 this.acceptConverted(stashed);
                 return;
             }
+            // A wrapper can close after the next turn has started; its fallback cards keep the turn that opened it.
+            String currentTurnId = this.nativeTurnId;
+            this.nativeTurnId = replay.lifecycleTurnId();
+            try {
+                this.acceptReplayFallback(replay, output);
+            } finally {
+                this.nativeTurnId = currentTurnId;
+            }
+            this.acceptConverted(stashed);
+        }
+
+        private void acceptReplayFallback(CodexKnownExecReplay replay, JsonObject output) {
             if (replay.keepsOriginalWrapper()) {
                 // A rejected ownership/index mapping must not be retried by looser legacy heuristics.
                 this.acceptOpaqueExecRecord(replay.original(), replay.callId(), false);
@@ -879,7 +891,6 @@ public class HistoryMessageInjector {
                     this.acceptLegacy(output);
                 }
             }
-            this.acceptConverted(stashed);
         }
 
         private void acceptOpaqueExecRecord(JsonObject record, String callId, boolean result) {

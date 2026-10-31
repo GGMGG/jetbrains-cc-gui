@@ -73,7 +73,7 @@ const App = () => {
     startupHistoryLoadState,
     chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
     handleUndoFile, onDiscardAll, handleKeepAll,
-    handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,
+    handleSubmit, interruptSession, messageQueue, dequeueMessage, handleEditQueuedMessage, reorderMessageQueue,
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
     createNewSession, loadHistorySession, deleteHistorySession, deleteHistorySessions,
     exportHistorySession, toggleFavoriteSession, updateHistoryTitle, convertToCliSession,
@@ -83,6 +83,7 @@ const App = () => {
     codexPlan, codexPlanExecutionPending, onExecuteCodexPlan, onContinueCodexPlan,
     codexCompactionPending,
     codexCompactionStartedAt,
+    codexTurnActive,
   } = useAppChatController({ model, applyHistoryModel, setPermissionDialogTimeoutSeconds });
 
   const statusPanelExpanded = !userCollapsedRef.current;
@@ -181,11 +182,13 @@ const App = () => {
           onLongContextChange={model.handleLongContextChange}
           messageQueue={messageQueue}
           onRemoveFromQueue={dequeueMessage}
+          onEditFromQueue={handleEditQueuedMessage}
           onReorderQueue={reorderMessageQueue}
           codexPlan={codexPlan}
           codexPlanExecutionPending={codexPlanExecutionPending}
           codexCompactionPending={codexCompactionPending}
           codexCompactionStartedAt={codexCompactionStartedAt}
+          codexTurnActive={codexTurnActive}
           onExecuteCodexPlan={onExecuteCodexPlan}
           onContinueCodexPlan={onContinueCodexPlan}
           onLoadSession={loadHistorySession}

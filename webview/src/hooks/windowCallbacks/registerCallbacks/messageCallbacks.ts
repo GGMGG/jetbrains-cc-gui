@@ -130,7 +130,8 @@ export function registerMessageCallbacks(
           return previous;
         }
         if (previous?.sessionId === next.sessionId && previous.generation === next.generation
-          && previous.status === 'loaded') {
+          && (previous.status === 'loaded' || previous.status === 'missing'
+            || (previous.status === 'loading' && next.status === 'unloaded'))) {
           return previous;
         }
         return next;
