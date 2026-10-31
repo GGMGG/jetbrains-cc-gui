@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import type { HistoryData, HistorySessionSummary } from '../../types';
 import { sendBridgeEvent } from '../../utils/bridge';
 import { copyToClipboard } from '../../utils/copyUtils';
+import { useCodexStorageMutationStatus } from '../settings/AiDataStorageSection/useCodexStorageMutationStatus';
+import CodexDeletionRecovery from '../settings/AiDataStorageSection/CodexDeletionRecovery';
 import { HistoryListItem } from './HistoryListItem';
 import { HistoryHeader } from './HistoryHeader';
 import { HistorySessionList } from './HistorySessionList';
@@ -50,12 +52,22 @@ const HistoryView = ({ historyData, currentProvider, currentSessionId, currentSe
   const [copyFailedSessionId, setCopyFailedSessionId] = useState<string | null>(null); // Track which session ID copy failed
 
   const { sessions: listedSessions, infoBar } = useHistorySessions(historyData, searchQuery, t);
-  const sessions = useMemo(() => listedSessions.map(session => {
-    if (currentProvider !== 'codex' || session.sessionId !== currentSessionId) return session;
-    // This window tracks its own turn live; a listed snapshot can outlive it.
-    const running = Boolean(currentSessionBusy) || session.ownedElsewhere === true;
-    return Boolean(session.running) === running ? session : { ...session, running };
-  }), [listedSessions, currentProvider, currentSessionId, currentSessionBusy]);
+  const { status: activityStatus } = useCodexStorageMutationStatus(currentProvider === 'codex');
+  const sessions = useMemo(() => {
+    const activityConfirmed = currentProvider === 'codex' && activityStatus?.deletionAvailable;
+    const runningIds = new Set(activityStatus?.runningSessionIds);
+    const writerIds = new Set(activityStatus?.writerSessionIds);
+    return listedSessions.map(session => {
+      if (session.provider !== 'codex') return session;
+      const isCurrent = session.sessionId === currentSessionId;
+      // Match native history's cross-tab activity. Other idle tabs may retain a writer lease;
+      // deletion still checks native ownership and running children in the backend.
+      const running = !!(session.ownedElsewhere || (isCurrent && currentSessionBusy) || (activityConfirmed
+        ? runningIds.has(session.sessionId) || (isCurrent && writerIds.has(session.sessionId))
+        : (!isCurrent || activityStatus !== null) && session.running));
+      return running === session.running ? session : { ...session, running };
+    });
+  }, [listedSessions, currentProvider, currentSessionId, currentSessionBusy, activityStatus]);
   const {
     isSelectionMode,
     selectedSessionIds,
@@ -269,6 +281,7 @@ const HistoryView = ({ historyData, currentProvider, currentSessionId, currentSe
 
   return (
     <div style={ROOT_STYLE}>
+      {currentProvider === 'codex' && <CodexDeletionRecovery />}
       <HistoryHeader
         isSelectionMode={isSelectionMode}
         selectedCount={selectedCount}

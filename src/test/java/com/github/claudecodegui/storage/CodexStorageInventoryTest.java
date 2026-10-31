@@ -139,7 +139,7 @@ public class CodexStorageInventoryTest {
         var snapshot = new CodexStorageInventory(f.paths).snapshot();
         assertTrue(snapshot.errors().contains("state_5.sqlite: DATABASE_SCHEMA_UNSUPPORTED"));
         assertTrue(snapshot.sessions().get("readable").readable);
-        assertEquals("READ_ONLY_STORAGE_VIEW", snapshot.sessions().get("readable").deletionUnavailableReason);
+        assertEquals("INVENTORY_INCOMPLETE", snapshot.sessions().get("readable").deletionUnavailableReason);
     }
 
     @Test public void usageDeduplicatesHardLinksWithPhysicalIdentity() throws Exception {
@@ -163,7 +163,8 @@ public class CodexStorageInventoryTest {
         assertTrue(page.get("complete").getAsBoolean());
         assertTrue(page.getAsJsonArray("errors").isEmpty());
         var snapshot = inventory.snapshot();
-        assertEquals("READ_ONLY_STORAGE_VIEW", snapshot.sessions().get("readable").deletionUnavailableReason);
+        assertEquals(CodexStoragePlatform.supportsDeletion(f.paths) ? null : "MAINTENANCE_PLATFORM_UNSUPPORTED",
+                snapshot.sessions().get("readable").deletionUnavailableReason);
         assertNotNull(snapshot.sessions().get("00000000-0000-4000-8000-000000000001").metadataWarning);
         assertFalse(inventory.content("readable", null, 10).getAsJsonArray("records").isEmpty());
     }

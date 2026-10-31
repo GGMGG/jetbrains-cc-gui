@@ -10,6 +10,8 @@ import com.github.claudecodegui.cache.SessionIndexCache;
 import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.util.PathUtils;
+import com.github.claudecodegui.storage.CodexStorageMaintenance;
+import com.github.claudecodegui.storage.CodexStoragePaths;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -29,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -151,11 +154,13 @@ class HistoryDeleteService {
         List<String> deletedSessionIds = new ArrayList<>();
         Collection<String> failedSessionIds = new LinkedHashSet<>();
         if ("codex".equals(currentProvider)) {
+            // Storage maintenance claims the native publication and selected-family writer locks itself.
+            releaseWriters.run();
             CodexBatchDeleteResult result = deleteCodexSessions(sessionIds);
             // The leases guard only the rollout files; the reload below must not report them as foreign writers.
             releaseWriters.run();
             deletedSessionIds.addAll(result.deletedSessionIds);
-            failedSessionIds.addAll(result.failedSessionIds);
+            failedSessionIds.addAll(sessionIds.stream().filter(id -> !result.deletedSessionIds.contains(id)).toList());
             LOG.info("[HistoryHandler] Deleted Codex rollout files: " + result.deletedFileCount);
         } else {
             for (String sessionId : sessionIds) {
@@ -404,46 +409,26 @@ class HistoryDeleteService {
     }
 
     private CodexBatchDeleteResult deleteCodexSessions(Collection<String> sessionIds) throws java.io.IOException {
-        String homeDir = NodeDetector.resolveHomeForFileOps();
-        Path sessionDir = Paths.get(homeDir, ".codex", "sessions");
+        try {
+            // File-only deletion leaves native state/history rows visible after refresh.
+            JsonObject status = new CodexStorageMaintenance(CodexStoragePaths.current())
+                    .deleteHistorySessions(sessionIds);
+            return confirmedCodexDeletion(status);
+        } catch (java.sql.SQLException error) {
+            throw new java.io.IOException(CodexStorageMaintenance.errorCode(error), error);
+        }
+    }
 
-        if (!Files.exists(sessionDir)) {
-            LOG.error("[HistoryHandler] Codex session directory not found: " + sessionDir);
-            return new CodexBatchDeleteResult(Collections.emptySet(), Collections.emptySet(), 0);
+    static CodexBatchDeleteResult confirmedCodexDeletion(JsonObject status) throws java.io.IOException {
+        if (!status.has("state") || !Set.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status.get("state").getAsString())
+                || !status.has("result") || !status.getAsJsonObject("result").has("deletedSessionIds")) {
+            throw new java.io.IOException(status.has("error") ? status.get("error").getAsString() : "STORAGE_OPERATION_FAILED");
         }
-
-        Map<String, List<Path>> matchesBySession = findCodexSessionFiles(sessionDir, sessionIds);
-        Map<Path, LinkedHashSet<String>> ownersByPath = new LinkedHashMap<>();
-        for (Map.Entry<String, List<Path>> entry : matchesBySession.entrySet()) {
-            for (Path path : entry.getValue()) {
-                ownersByPath.computeIfAbsent(path, ignored -> new LinkedHashSet<>()).add(entry.getKey());
-            }
+        LinkedHashSet<String> deleted = new LinkedHashSet<>();
+        for (JsonElement id : status.getAsJsonObject("result").getAsJsonArray("deletedSessionIds")) {
+            deleted.add(id.getAsString());
         }
-
-        LinkedHashSet<String> deletedSessionIds = new LinkedHashSet<>();
-        LinkedHashSet<Path> failedPaths = new LinkedHashSet<>();
-        int deletedFileCount = 0;
-        for (Map.Entry<Path, LinkedHashSet<String>> entry : ownersByPath.entrySet()) {
-            Path sessionFile = entry.getKey();
-            try {
-                if (Files.deleteIfExists(sessionFile)) {
-                    LOG.info("[HistoryHandler] Deleted Codex session file: " + sessionFile);
-                    deletedFileCount++;
-                }
-            } catch (Exception e) {
-                failedPaths.add(sessionFile);
-                LOG.error("[HistoryHandler] Failed to delete Codex session file: " + sessionFile + " - " + e.getMessage(), e);
-            }
-        }
-        LinkedHashSet<String> failedSessionIds = new LinkedHashSet<>();
-        for (Map.Entry<String, List<Path>> entry : matchesBySession.entrySet()) {
-            if (isCodexSessionDeletionComplete(entry.getValue(), failedPaths)) {
-                deletedSessionIds.add(entry.getKey());
-            } else if (!Collections.disjoint(entry.getValue(), failedPaths)) {
-                failedSessionIds.add(entry.getKey());
-            }
-        }
-        return new CodexBatchDeleteResult(deletedSessionIds, failedSessionIds, deletedFileCount);
+        return new CodexBatchDeleteResult(deleted, Collections.emptySet(), deleted.size());
     }
 
     static boolean isCodexSessionDeletionComplete(

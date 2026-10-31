@@ -38,6 +38,7 @@ public class SettingsHandler extends BaseMessageHandler {
     private final AiDataDirectoryHandler aiDataDirectoryHandler;
     private final CodexStorageHandler codexStorageHandler;
     private final CodexStorageMaintenanceHandler codexStorageMaintenanceHandler;
+    private final CodexStorageDeletionHandler codexStorageDeletionHandler;
 
     private static final String[] SUPPORTED_TYPES = {
         "get_mode",
@@ -137,6 +138,7 @@ public class SettingsHandler extends BaseMessageHandler {
         this.aiDataDirectoryHandler = new AiDataDirectoryHandler(context);
         this.codexStorageHandler = new CodexStorageHandler(context);
         this.codexStorageMaintenanceHandler = new CodexStorageMaintenanceHandler(context);
+        this.codexStorageDeletionHandler = new CodexStorageDeletionHandler(context);
         // Register theme change listener to automatically notify frontend when IDE theme changes
         registerThemeChangeListener();
     }
@@ -169,13 +171,18 @@ public class SettingsHandler extends BaseMessageHandler {
 
     @Override
     public String[] getSupportedTypes() {
-        return java.util.stream.Stream.of(SUPPORTED_TYPES, CodexStorageHandler.TYPES, CodexStorageMaintenanceHandler.TYPES)
+        return supportedTypes();
+    }
+
+    static String[] supportedTypes() {
+        return java.util.stream.Stream.of(SUPPORTED_TYPES, CodexStorageHandler.TYPES, CodexStorageMaintenanceHandler.TYPES, CodexStorageDeletionHandler.TYPES)
                 .flatMap(java.util.Arrays::stream).toArray(String[]::new);
     }
 
     @Override
     public boolean handle(String type, String content) {
-        if (codexStorageHandler.handle(type, content) || codexStorageMaintenanceHandler.handle(type, content)) {
+        if (codexStorageHandler.handle(type, content) || codexStorageMaintenanceHandler.handle(type, content)
+                || codexStorageDeletionHandler.handle(type, content)) {
             return true;
         }
         switch (type) {
