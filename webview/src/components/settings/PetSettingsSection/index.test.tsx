@@ -84,6 +84,7 @@ const mocks = vi.hoisted(() => ({
   deleteLocalPet: vi.fn(),
   uninstall: vi.fn(),
   refreshAssets: vi.fn(),
+  openOffice: vi.fn(),
   getHatchStatus: vi.fn(),
   prepareHatchCommand: vi.fn(),
 }));
@@ -166,6 +167,7 @@ vi.mock('../../codexPet/petBridge', () => ({
     setAlias: mocks.setAlias,
     deleteLocalPet: mocks.deleteLocalPet,
     refreshAssets: mocks.refreshAssets,
+    openOffice: mocks.openOffice,
     openPetDirectory: vi.fn(),
     getHatchStatus: mocks.getHatchStatus,
     openHatchWebsite: vi.fn(),
@@ -226,6 +228,14 @@ describe('PetSettingsSection catalog pagination', () => {
   const openActionsTab = () => {
     fireEvent.click(screen.getByRole('tab', { name: 'settings.pet.tabs.actions' }));
   };
+
+  it('opens the Office without enabling the floating overlay', () => {
+    mocks.openOffice.mockClear();
+    render(<PetSettingsSection addToast={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.pet.openOffice' }));
+    expect(mocks.openOffice).toHaveBeenCalledTimes(1);
+    expect(mocks.setConfig).not.toHaveBeenCalled();
+  });
 
   it('keeps Simplified Chinese pet translations complete', () => {
     expect(collectTranslationLeaves(zh.codexPet).sort())

@@ -159,6 +159,7 @@
     "continueRefiningPlan": "このプランの改善を続ける："
   },
   "settings": {
+    "pet": { "openOffice": "Open Office" },
     "title": "設定",
     "basic": {
       "title": "基本設定",

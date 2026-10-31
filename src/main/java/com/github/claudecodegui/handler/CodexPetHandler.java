@@ -54,6 +54,7 @@ public class CodexPetHandler extends BaseMessageHandler {
     private static final Logger LOG = Logger.getInstance(CodexPetHandler.class);
     private static final String[] SUPPORTED_TYPES = {
         "get_codex_pets",
+        "open_codex_pet_office",
         "get_codex_pet_config",
         "set_codex_pet_config",
         "set_codex_pet_state",
@@ -101,6 +102,9 @@ public class CodexPetHandler extends BaseMessageHandler {
     @Override
     public boolean handle(String type, String content) {
         switch (type) {
+            case "open_codex_pet_office":
+                com.github.claudecodegui.pet.office.PetOfficeLocalService.getInstance().open();
+                return true;
             case "get_codex_pets":
                 runAsync(this::pushPets);
                 return true;

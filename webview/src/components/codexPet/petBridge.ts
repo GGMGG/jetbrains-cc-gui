@@ -592,6 +592,7 @@ export const petBridge = {
   deleteLocalPet: (petId: string) => sendToJava('delete_codex_pet', { petId }),
   setAlias: (slug: string, alias: string) => sendToJava('set_petdex_pet_alias', { slug, alias }),
   resetPosition: () => sendToJava('reset_codex_pet_position'),
+  openOffice: () => sendToJava('open_codex_pet_office'),
   openWebsite: () => sendToJava('open_petdex_website'),
   openPetDirectory: () => sendToJava('open_codex_pet_directory'),
   getHatchStatus: () => sendToJava('get_hatch_pet_status'),

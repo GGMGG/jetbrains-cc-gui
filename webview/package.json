@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "vite",
     "prebuild": "node scripts/extract-version.mjs",
-    "build": "tsc && vite build",
-    "postbuild": "node scripts/copy-dist.mjs",
+    "build": "tsc && vite build && vite build --config vite.office.config.ts",
+    "postbuild": "node scripts/copy-dist.mjs --with-office",
     "test": "node --test scripts/copy-dist.test.mjs && vitest run && tsc -p tsconfig.test.json --noEmit",
     "pretest:e2e": "npm run build",
     "test:e2e": "playwright test",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:office": "tsc && vite build --config vite.office.config.ts",
+    "postbuild:office": "node scripts/copy-dist.mjs --office-only"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
@@ -29,6 +31,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~5.9.3",
     "vite": "^7.2.4",
+    "vite-plugin-singlefile": "2.3.0",
     "vitest": "^3.2.4"
   },
   "dependencies": {

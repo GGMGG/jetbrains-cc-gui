@@ -1,0 +1,37 @@
+:root { font: 14px/1.5 system-ui, sans-serif; color: #24334a; background: #eef2f8; color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, select { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .6; }
+button:focus-visible, select:focus-visible { outline: 3px solid #386de8; outline-offset: 3px; }
+.office-local { max-width: 1360px; margin: auto; padding: 24px; }
+.office-local header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.office-local h1 { margin: 0; font-size: 26px; }
+.office-local header p { margin: 4px 0 20px; color: #53657e; }
+.office-local header button, .office-local nav button { background: #fff; border: 1px solid #b6c6dd; border-radius: 8px; padding: 6px 14px; }
+.office-local-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
+.office-local select { max-width: 280px; padding: 5px 8px; border-radius: 6px; border: 1px solid #b6c6dd; background: #fff; }
+.office-local time { color: #53657e; margin-left: auto; }
+.office-local [role=alert] { color: #a32839; }
+.office-local-room { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 20px; min-height: 260px;
+  padding: 24px; border: 1px solid #ccd7e7; border-radius: 16px; background: linear-gradient(135deg, #e6ecf6, #dce5f0); }
+.office-local-desk { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 3px; padding: 12px;
+  color: #24334a; background: #fff; border: 1px solid #bccbdd; border-bottom: 7px solid #a9b9cb; border-radius: 16px 16px 6px 6px; box-shadow: 0 6px 0 #bdcada; }
+.office-local-desk strong, .office-local-desk span, .office-local-desk small { max-width: 100%; overflow-wrap: anywhere; }
+.office-local-pet { width: 100px; height: 80px; fill: #b4d2ff; stroke: #355583; stroke-width: 3; }
+.office-local-pet circle { fill: #355583; }
+.office-local-phase { margin-top: 8px; font-size: 12px; }
+.office-local-running, .office-local-thinking, .office-local-queued { border-bottom-color: #477ce1; }
+.office-local-waiting_user, .office-local-waiting_permission, .office-local-waiting_plan { border-bottom-color: #c08b23; }
+.office-local-succeeded { border-bottom-color: #39896b; }
+.office-local-failed { border-bottom-color: #b34959; }
+.office-local nav { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 24px; }
+@media (max-width: 640px) { .office-local { padding: 16px; } .office-local-room { padding: 12px; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-color-scheme: dark) {
+  :root { color: #d6e2f8; background: #171e2a; color-scheme: dark; }
+  .office-local header p, .office-local time { color: #a6b7d3; }
+  .office-local-room { background: #222f43; border-color: #465774; }
+  .office-local-desk { background: #293a51; color: #d6e2f8; box-shadow: 0 6px 0 #152135; }
+  .office-local header button, .office-local nav button, .office-local select { background: #293a51; color: #d6e2f8; }
+}

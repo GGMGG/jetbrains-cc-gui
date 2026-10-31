@@ -159,6 +159,7 @@
     "continueRefiningPlan": "Продолжить доработку этого плана:"
   },
   "settings": {
+    "pet": { "openOffice": "Open Office" },
     "title": "Настройки",
     "basic": {
       "title": "Основные настройки",

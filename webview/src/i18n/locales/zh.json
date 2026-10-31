@@ -481,7 +481,8 @@
       "installSuccess": "宠物已安装并选中",
       "uninstallSuccess": "宠物已卸载",
       "aliasSuccess": "宠物别名已更新",
-      "operationFailed": "宠物操作失败：{{error}}"
+      "operationFailed": "宠物操作失败：{{error}}",
+      "openOffice": "打开办公室"
     },
     "basic": {
       "title": "基础配置",
