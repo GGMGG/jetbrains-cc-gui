@@ -243,7 +243,7 @@ public class SessionMessageOrchestratorTest {
     }
 
     @Test
-    public void missingStartupHistoryStaysRetryableWithoutRetiringSession() {
+    public void missingStartupHistoryRetiresSessionWithinRestoreCommitGate() {
         SessionState state = new SessionState();
         state.setProvider("claude");
         state.setSessionId("missing-restored-session");
@@ -252,13 +252,59 @@ public class SessionMessageOrchestratorTest {
         access.providerHistoryFailure = new SessionHistoryNotFoundException("missing-restored-session", "/workspace");
         SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
                 state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
-        try {
+        AtomicBoolean committed = new AtomicBoolean();
+        orchestrator.loadFromServer(new SessionMessageOrchestrator.HistoryLoadCancellation() {
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public boolean commitIfActive(Runnable mutation) {
+                assertEquals("missing-restored-session", state.getSessionId());
+                mutation.run();
+                committed.set(true);
+                return true;
+            }
+        }).join();
+        assertTrue(committed.get());
+        assertNull(state.getSessionId());
+        assertTrue(state.getMessages().isEmpty());
+    }
+
+    @Test
+    public void ordinaryHistoryKeepsLegacyReadersWhileStartupUsesCancellableReaders() {
+        for (String provider : List.of("grok", "minimax", "dsh", "zcode", "codex", "kimi", "omp", "pi", "opencode")) {
+            SessionState state = new SessionState();
+            state.setProvider(provider);
+            state.setSessionId("restored-session");
+            state.setCwd("/workspace");
+            RecordingHistoryAccess access = new RecordingHistoryAccess();
+            SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                    state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
+            orchestrator.loadFromServer().join();
+            assertEquals(provider, 0, access.cancellableHistoryRequests.get());
+            assertEquals(provider, 1, access.providerHistoryRequests.get());
             orchestrator.loadFromServer(() -> false).join();
-            fail("Missing restored history must not be loaded(0)");
-        } catch (java.util.concurrent.CompletionException expected) {
-            assertTrue(expected.getCause() instanceof SessionHistoryNotFoundException);
+            assertEquals(provider, 1, access.cancellableHistoryRequests.get());
         }
-        assertEquals("missing-restored-session", state.getSessionId());
+    }
+
+    @Test
+    public void ordinaryClaudePaginationKeepsLegacyOverloadWhileRestoreUsesCancellation() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("restored-session");
+        state.setCwd("/workspace");
+        RecordingHistoryAccess access = new RecordingHistoryAccess();
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
+        orchestrator.loadFromServer().join();
+        assertEquals(0, access.cancellablePageRequests.get());
+        assertEquals(0, access.cancellableHistoryRequests.get());
+        orchestrator.loadFromServer(() -> false).join();
+        assertEquals(1, access.cancellablePageRequests.get());
+        assertEquals(1, access.cancellableHistoryRequests.get());
     }
 
     @Test
@@ -2776,6 +2822,8 @@ public class SessionMessageOrchestratorTest {
 
     private static final class RecordingHistoryAccess implements SessionMessageOrchestrator.SessionHistoryAccess {
         private final AtomicInteger providerHistoryRequests = new AtomicInteger();
+        private final AtomicInteger cancellableHistoryRequests = new AtomicInteger();
+        private final AtomicInteger cancellablePageRequests = new AtomicInteger();
         private final AtomicInteger latestClaudeUserMessageRequests = new AtomicInteger();
         private List<JsonObject> providerHistory = List.of();
         private RuntimeException providerHistoryFailure;
@@ -2793,6 +2841,20 @@ public class SessionMessageOrchestratorTest {
                 throw providerHistoryFailure;
             }
             return providerHistory;
+        }
+
+        @Override
+        public List<JsonObject> getProviderSessionMessages(
+                String provider, String sessionId, String cwd, java.util.function.BooleanSupplier cancellation) {
+            cancellableHistoryRequests.incrementAndGet();
+            return getProviderSessionMessages(provider, sessionId, cwd);
+        }
+
+        @Override
+        public JsonObject getProviderSessionMessagesPage(
+                String sessionId, String cwd, Integer beforeTurn, int limit, java.util.function.BooleanSupplier cancellation) {
+            cancellablePageRequests.incrementAndGet();
+            return getProviderSessionMessagesPage(sessionId, cwd, beforeTurn, limit);
         }
 
         @Override
