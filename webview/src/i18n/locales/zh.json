@@ -2175,7 +2175,8 @@
     "invalidJsonConfig": "配置 JSON 格式错误，请修正后再保存",
     "providerAdded": "供应商添加成功",
     "providerUpdated": "供应商更新成功",
-    "providerDeleted": "供应商删除成功"
+    "providerDeleted": "供应商删除成功",
+    "codexSettingsDispatchFailed": "??? IDE ?? Codex ??????????????"
   },
   "config": {
     "clickToCopy": "点击复制",
