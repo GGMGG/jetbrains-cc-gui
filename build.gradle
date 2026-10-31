@@ -34,6 +34,11 @@ checkstyle {
     sourceSets = [project.sourceSets.main]
 }
 
+// Keep the expanded storage analysis within the analyzer's own heap budget.
+tasks.withType(Checkstyle).configureEach {
+    maxHeapSize = '1g'
+}
+
 // sourceSets above unhooks checkstyleTest from the check lifecycle; disabling the
 // task as well makes an explicit `gradlew checkstyleTest` a SKIPPED no-op instead
 // of a failure.
@@ -106,7 +111,7 @@ dependencies {
     implementation 'org.snakeyaml:snakeyaml-engine:3.0.1'
     implementation 'com.twelvemonkeys.imageio:imageio-webp:3.12.0'
     // OpenCode 1.x stores sessions in ~/.local/share/opencode/opencode.db
-    implementation 'org.xerial:sqlite-jdbc:3.46.1.3'
+    implementation 'org.xerial:sqlite-jdbc:3.51.3.0'
     testImplementation 'junit:junit:4.13.2'
 
     intellijPlatform {

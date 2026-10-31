@@ -36,6 +36,7 @@ public class SettingsHandler extends BaseMessageHandler {
     private final TokenTrackerHandler tokenTrackerHandler;
     private final DshPresetHandler dshPresetHandler;
     private final AiDataDirectoryHandler aiDataDirectoryHandler;
+    private final CodexStorageHandler codexStorageHandler;
 
     private static final String[] SUPPORTED_TYPES = {
         "get_mode",
@@ -133,6 +134,7 @@ public class SettingsHandler extends BaseMessageHandler {
         this.tokenTrackerHandler = new TokenTrackerHandler(context);
         this.dshPresetHandler = new DshPresetHandler(context);
         this.aiDataDirectoryHandler = new AiDataDirectoryHandler(context);
+        this.codexStorageHandler = new CodexStorageHandler(context);
         // Register theme change listener to automatically notify frontend when IDE theme changes
         registerThemeChangeListener();
     }
@@ -156,6 +158,7 @@ public class SettingsHandler extends BaseMessageHandler {
      * Should be called when the owning ClaudeChatWindow is disposed.
      */
     public void dispose() {
+        codexStorageHandler.dispose();
         if (themeCallbackHandle != null) {
             ThemeConfigService.unregisterThemeChangeListener(themeCallbackHandle);
             themeCallbackHandle = null;
@@ -164,11 +167,15 @@ public class SettingsHandler extends BaseMessageHandler {
 
     @Override
     public String[] getSupportedTypes() {
-        return SUPPORTED_TYPES;
+        return java.util.stream.Stream.concat(java.util.Arrays.stream(SUPPORTED_TYPES),
+                java.util.Arrays.stream(CodexStorageHandler.TYPES)).toArray(String[]::new);
     }
 
     @Override
     public boolean handle(String type, String content) {
+        if (codexStorageHandler.handle(type, content)) {
+            return true;
+        }
         switch (type) {
             // Permission mode
             case "get_mode":

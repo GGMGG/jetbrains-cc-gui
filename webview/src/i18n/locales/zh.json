@@ -1501,6 +1501,61 @@
         "selectHint": "选择要导出的提示词",
         "confirmExport": "确认导出"
       }
+    },
+    "codexStorage": {
+      "title": "Codex 空间管理",
+      "logicalSize": "总占用",
+      "scanTime": "扫描时间：{{time}}",
+      "skippedLinks": "已跳过 {{count}} 个链接或特殊文件",
+      "categoryDetails": "空间分类",
+      "allSessions": "全部 Codex 会话（{{count}}）",
+      "partialSessions": "Codex 会话（已读取 {{count}} 个，扫描不完整）",
+      "sessionLoadFailed": "会话列表读取失败，请刷新重试；当前无法确定会话数量。",
+      "search": "搜索标题、项目路径或会话 ID",
+      "sort": "排序方式",
+      "recent": "最近更新",
+      "largest": "会话文件从大到小",
+      "filter": "会话筛选",
+      "sessionSizeHint": "仅显示磁盘上的会话文件，包含归档和子会话。大小不含数据库。",
+      "view": "查看内容",
+      "openLocation": "打开存储位置",
+      "empty": "没有符合条件的会话",
+      "close": "关闭内容",
+      "record": "记录 {{index}}",
+      "truncated": "内容过长，已截断",
+      "nextContentPage": "下一页内容",
+      "scanErrors": "读取失败原因（{{count}} 项，最多展示 20 项）",
+      "usageIncomplete": "部分目录无法读取，占用统计可能不完整。",
+      "sessionContent": "会话内容",
+      "noContent": "该会话暂无可展示内容。",
+      "previousContentPage": "上一页",
+      "contentPage": "第 {{page}} 页",
+      "rawRecord": "原始记录",
+      "contentRoles": {
+        "user": "用户",
+        "assistant": "助手"
+      },
+      "categories": {
+        "sessions": "会话文件",
+        "historyDatabase": "会话数据库",
+        "temporary": "临时文件",
+        "logs": "日志",
+        "protectedAssets": "技能与宠物资源",
+        "other": "其他"
+      },
+      "filters": {
+        "all": "全部",
+        "database": "含数据库内容",
+        "file": "仅文件内容",
+        "archived": "已归档",
+        "running": "进行中",
+        "idle": "空闲"
+      },
+      "description": "查看本机各项目的 Codex 会话文件、存储占用和内容。",
+      "scan": "扫描存储",
+      "pagination": "会话分页",
+      "pageSize": "每页会话数",
+      "refresh": "刷新"
     }
   },
   "history": {

@@ -1496,6 +1496,61 @@
         "selectHint": "Select prompts to export",
         "confirmExport": "Confirm Export"
       }
+    },
+    "codexStorage": {
+      "title": "Codex Storage",
+      "logicalSize": "Total storage",
+      "scanTime": "Scanned: {{time}}",
+      "skippedLinks": "Skipped {{count}} links or special files",
+      "categoryDetails": "Storage categories",
+      "allSessions": "All Codex sessions ({{count}})",
+      "partialSessions": "Codex sessions ({{count}} read; scan incomplete)",
+      "sessionLoadFailed": "Could not read the session list. Refresh to retry; the session count is currently unknown.",
+      "search": "Search title, project path or session ID",
+      "sort": "Sort sessions",
+      "recent": "Recently updated",
+      "largest": "Largest session files",
+      "filter": "Filter sessions",
+      "sessionSizeHint": "Lists files on disk, including archived and child sessions. Sizes exclude the database.",
+      "view": "View content",
+      "openLocation": "Open storage location",
+      "empty": "No matching sessions",
+      "close": "Close content",
+      "record": "Record {{index}}",
+      "truncated": "Long content truncated",
+      "nextContentPage": "Next content page",
+      "scanErrors": "Read errors ({{count}}; showing up to 20)",
+      "usageIncomplete": "Some directories could not be read. Storage totals may be incomplete.",
+      "sessionContent": "Session content",
+      "noContent": "This session has no content to display.",
+      "previousContentPage": "Previous page",
+      "contentPage": "Page {{page}}",
+      "rawRecord": "Raw record",
+      "contentRoles": {
+        "user": "User",
+        "assistant": "Assistant"
+      },
+      "categories": {
+        "sessions": "Session files",
+        "historyDatabase": "History database",
+        "temporary": "Temporary files",
+        "logs": "Logs",
+        "protectedAssets": "Skills and pets",
+        "other": "Other"
+      },
+      "filters": {
+        "all": "All",
+        "database": "With database history",
+        "file": "File history only",
+        "archived": "Archived",
+        "running": "Running",
+        "idle": "Idle"
+      },
+      "description": "Browse Codex session files, storage usage, and conversation content across local projects.",
+      "scan": "Scan storage",
+      "pagination": "Session pages",
+      "pageSize": "Sessions per page",
+      "refresh": "Refresh"
     }
   },
   "history": {

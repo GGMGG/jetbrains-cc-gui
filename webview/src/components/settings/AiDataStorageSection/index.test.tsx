@@ -18,6 +18,8 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: mocks.translate }),
 }));
 
+vi.mock('./CodexStoragePanel', () => ({ default: () => null }));
+
 vi.mock('./aiDataStorageBridge', () => ({
   aiDataStorageBridge: {
     subscribeStatus: (listener: (status: unknown) => void) => {
