@@ -46,18 +46,6 @@ const mountHistory = () => {
 };
 
 describe('native history visibility', () => {
-  it('retains native activity and foreign-writer flags across list refreshes', () => {
-    const history = mountHistory();
-    for (const updatedAt of [1, 2]) {
-      deliver({ requestType: 'codex_native_list_threads', data: [
-        { id: 'thread', name: 'Active thread', updatedAt, status: { type: 'active' } },
-        { id: 'other-tab', name: 'Other tab', running: true },
-      ] });
-      expect(history.data?.sessions).toMatchObject([
-        { sessionId: 'thread', running: true }, { sessionId: 'other-tab', running: true },
-      ]);
-    }
-  });
   it('retains local manual titles across native list refreshes', () => {
     const history = mountHistory();
     for (const updatedAt of [1, 2]) {
@@ -67,6 +55,20 @@ describe('native history visibility', () => {
       ] });
       expect(history.data?.sessions).toMatchObject([
         { sessionId: 'thread', title: 'Manual title' }, { sessionId: 'other-tab' },
+      ]);
+    }
+  });
+
+  it('retains native activity and foreign-writer flags across list refreshes', () => {
+    const history = mountHistory();
+    for (const updatedAt of [1, 2]) {
+      deliver({ requestType: 'codex_native_list_threads', data: [
+        { id: 'thread', name: 'Active thread', updatedAt, status: { type: 'active' } },
+        { id: 'other-tab', name: 'Other tab', running: true, ownedElsewhere: true },
+      ] });
+      expect(history.data?.sessions).toMatchObject([
+        { sessionId: 'thread', running: true, ownedElsewhere: false },
+        { sessionId: 'other-tab', running: true, ownedElsewhere: true },
       ]);
     }
   });

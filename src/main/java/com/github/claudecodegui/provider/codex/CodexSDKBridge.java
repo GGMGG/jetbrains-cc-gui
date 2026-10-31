@@ -16,6 +16,7 @@ import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.settings.ConfigPathManager;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -794,15 +795,19 @@ public class CodexSDKBridge extends BaseSDKBridge {
     /**
      * Whether a reply ack means the native request is over: it was delivered, or Codex reports it
      * no longer waits for it. Keeping the latter registered would let a page refresh show a dialog
-     * that can never be answered. An unconfirmed (timed-out) reply may still land, so it stays.
+     * that can never be answered. A reply Java stopped waiting for may still land, so it stays; one
+     * the daemon itself retired as unconfirmed is no longer pending there and ends here too.
      */
     static boolean endsInteraction(JsonObject acknowledgement) {
         if (!acknowledgement.has("error")) {
             return true;
         }
-        return acknowledgement.has("code") && acknowledgement.get("code").isJsonPrimitive()
-                && CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(
-                        acknowledgement.get("code").getAsString());
+        if (!acknowledgement.has("code") || !acknowledgement.get("code").isJsonPrimitive()) {
+            return false;
+        }
+        String code = acknowledgement.get("code").getAsString();
+        return CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(code)
+                || CodexAppServerRequestExecutor.DELIVERY_UNCONFIRMED.equals(code);
     }
 
     private static boolean sameChannel(String first, String second) {
@@ -1090,6 +1095,25 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 this.forgetChannelState(channelId, threadId, sessionEpoch);
             }
         });
+    }
+
+    /**
+     * Hold writer leases while history files are deleted, so no chat window can
+     * resume one of these threads between the idle release and the file removal.
+     *
+     * @param threadIds persisted thread ids selected for deletion
+     * @return a callback releasing every lease, or null when a thread already has a writer
+     */
+    public Runnable reserveCodexThreadsForDeletion(Collection<String> threadIds) {
+        String deletionOwnerId = "history-delete:" + UUID.randomUUID();
+        Runnable release = () -> CodexThreadOwnerRegistry.releaseOwner(deletionOwnerId);
+        for (String threadId : threadIds) {
+            if (!CodexThreadOwnerRegistry.claim(this.ownerScope, threadId, deletionOwnerId).acquired()) {
+                release.run();
+                return null;
+            }
+        }
+        return release;
     }
 
     /**

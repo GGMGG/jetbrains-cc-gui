@@ -71,6 +71,7 @@ final class CodexKnownExecReplay {
     private final List<Action> actions;
     private final List<JsonObject> nativeRecords = new ArrayList<>();
     private final String rootThreadId;
+    private final String lifecycleTurnId;
     private final String turnId;
     private final IndexLabel resultIndexLabel;
     private final boolean settledBatch;
@@ -81,6 +82,7 @@ final class CodexKnownExecReplay {
         this.original = original;
         this.actions = actions;
         this.rootThreadId = rootThreadId;
+        this.lifecycleTurnId = nativeTurnId;
         // Model response metadata may carry a different turn ID from the app-server lifecycle.
         this.turnId = nativeTurnId != null ? nativeTurnId
                 : string(object(object(original, "payload"), "internal_chat_message_metadata_passthrough"), "turn_id");
@@ -118,6 +120,7 @@ final class CodexKnownExecReplay {
     JsonObject original() { return this.original; }
     List<JsonObject> nativeRecords() { return this.nativeRecords; }
     String callId() { return string(object(this.original, "payload"), "call_id"); }
+    String lifecycleTurnId() { return this.lifecycleTurnId; }
     boolean keepsOriginalWrapper() { return this.opaqueFallback; }
 
     List<JsonObject> snapshot(Map<String, Process> processes) {
@@ -320,6 +323,10 @@ final class CodexKnownExecReplay {
                 .filter(record -> "McpToolCall".equals(string(object(object(record, "payload"), "item"), "type"))).count()) {
             return null;
         }
+        if (hasOuterScriptFailure(texts) && this.actions.stream().allMatch(action -> isMcp(action.kind))) {
+            // Each MCP receipt owns only its own call; a later throw belongs to the wrapper, however many calls preceded it.
+            return this.keepWrapperForReview();
+        }
         List<JsonObject> messages = new ArrayList<>();
         Map<String, Process> nextProcesses = new LinkedHashMap<>(processes);
         int patchIndex = 0;
@@ -416,9 +423,6 @@ final class CodexKnownExecReplay {
                 JsonObject nativeRecord = this.findNativeMcp(action, usedNativeIds);
                 if (nativeRecord == null) {
                     return null;
-                }
-                if (this.actions.size() == 1 && hasOuterScriptFailure(texts)) {
-                    return this.keepWrapperForReview();
                 }
                 messages.addAll(CodexRecordedMcpToolCall.readMessages(nativeRecord));
                 continue;

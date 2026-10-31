@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CodexAppServerClient, ClassifiedError } from './codex-appserver-client.js';
 import { CodexAppServerService } from './codex-appserver-service.js';
+import { ASYNC_QUESTION_DISMISSED } from './codex-async-questions.js';
 import { startPeerWithStreams, THREAD_ID, CHILD_THREAD_ID } from './testing/codex-stdio-peer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -273,8 +274,8 @@ test('a failed idle runtime can be released without starting a replacement child
   } finally { await service.resetRuntime(); }
 });
 
-async function asyncQuestionFixture() {
-  const fixture = makeService({ scenario: 'never-respond' });
+async function asyncQuestionFixture(serviceOpts = {}) {
+  const fixture = makeService({ scenario: 'never-respond', serviceOpts });
   const operation = fixture.service.enqueueOperation({ kind: 'send',
     markerPayload: { input: [{ type: 'text', text: 'Ask A, B or C' }] } });
   await waitFor(() => operation.nativeTurnId, 1000, 'async question turn');
@@ -338,19 +339,89 @@ test('async answers after a terminal use a tracked follow-up instead of an unown
   } finally { await fixture.service.resetRuntime(); }
 });
 
-test('async cancellation interrupts its waiting turn without manufacturing a JSON-RPC response or user answer', async () => {
+/** Routes turn/steer to {@code onSteer}; every other method keeps the scenario's behaviour. */
+function interceptSteer(peer, onSteer) {
+  const steers = [];
+  const originalDispatch = peer.dispatch.bind(peer);
+  peer.dispatch = (method, params, id) => {
+    if (method !== 'turn/steer') return originalDispatch(method, params, id);
+    steers.push(params);
+    return onSteer(params, id);
+  };
+  return steers;
+}
+
+test('dismissing an async question tells its running turn instead of interrupting it', async () => {
   const fixture = await asyncQuestionFixture();
   try {
-    const client = fixture.getClient();
-    client.replyServerRequest = () => { throw new Error('async questions are not reverse RPCs'); };
-    assert.deepEqual(await fixture.service.respondInteraction(fixture.request.payload.rpcId, { answers: {} }), { replied: true });
-    assert.equal(fixture.service.pendingInteractions.size, 0);
-    assert.equal(fixture.dispatchCounts.get('turn/steer') ?? 0, 0);
-    await waitFor(() => fixture.dispatchCounts.get('turn/interrupt') === 1, 1000, 'cancelled question interrupt');
-    const interrupt = fixture.dispatched.find(value => value.method === 'turn/interrupt');
-    assert.deepEqual(interrupt.params, { threadId: fixture.operation.threadId, turnId: fixture.operation.nativeTurnId });
-    assert.equal((await fixture.operation.promise).outcome, 'interrupted');
-    assert.equal(fixture.service.busy, false);
+    const { service, peer, operation, request } = fixture;
+    fixture.getClient().replyServerRequest = () => { throw new Error('async questions are not reverse RPCs'); };
+    const steers = interceptSteer(peer, (params, id) => peer.reply(id, { turnId: params.expectedTurnId }));
+    assert.deepEqual(await service.respondInteraction(request.payload.rpcId, { answers: {} }), { replied: true });
+    assert.equal(service.pendingInteractions.size, 0);
+    assert.equal(steers.length, 1);
+    assert.equal(steers[0].expectedTurnId, operation.nativeTurnId);
+    const notice = steers[0].input[0].text;
+    assert.ok(notice.startsWith('Answers to your questions (request: async-question-item):\n\n'));
+    assert.ok(notice.includes(`Choose A, B or C\n${ASYNC_QUESTION_DISMISSED}`));
+    assert.ok(notice.includes(`Any comment?\n${ASYNC_QUESTION_DISMISSED}`));
+    assert.equal(fixture.dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    assert.equal(operation.cancelRequested, false);
+    assert.equal(service.busy, true);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('a dismissal its still-running turn refuses falls back to stopping that turn', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    const { service, peer, operation, request } = fixture;
+    interceptSteer(peer, (_params, id) => peer.replyError(id, { code: -32602, message: 'Turn is not steerable' }));
+    assert.deepEqual(await service.respondInteraction(request.payload.rpcId, { answers: {} }), { replied: true });
+    assert.equal(service.pendingInteractions.size, 0);
+    assert.equal(eventsOf(fixture.events, 'interactionResolved').length, 1);
+    // The agent never learned the question was closed, so it must not wait for an answer forever.
+    await waitFor(() => fixture.dispatchCounts.get('turn/interrupt') === 1, 1000, 'refused dismissal interrupt');
+    assert.equal((await operation.promise).outcome, 'interrupted');
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('a dismissal whose notice may still land only closes the question', async () => {
+  const fixture = await asyncQuestionFixture({ asyncQuestionSteerTimeoutMs: 50 });
+  try {
+    const { service, peer, operation, request } = fixture;
+    interceptSteer(peer, () => {});
+    assert.deepEqual(await service.respondInteraction(request.payload.rpcId, { answers: {} }), { replied: true });
+    assert.equal(service.pendingInteractions.size, 0);
+    assert.equal(fixture.dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    assert.equal(operation.cancelRequested, false);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('a written answer whose steer times out is reported unconfirmed and can never be steered twice', async () => {
+  const fixture = await asyncQuestionFixture({ asyncQuestionSteerTimeoutMs: 50 });
+  try {
+    const { service, peer, request, result } = fixture;
+    // The peer receives the steer but never acknowledges it: it may still take effect.
+    const steers = interceptSteer(peer, () => {});
+    await assert.rejects(service.respondInteraction(request.payload.rpcId, result), { code: 'DELIVERY_UNCONFIRMED' });
+    assert.equal(service.hasPendingInteraction(request.payload.rpcId), false);
+    assert.equal(eventsOf(fixture.events, 'interactionResolved').length, 1);
+    assert.equal(service.respondInteraction(request.payload.rpcId, result), false);
+    assert.equal(steers.length, 1);
+  } finally { await fixture.service.resetRuntime(); }
+});
+
+test('a steer Codex accepted while its turn was ending still counts as delivered', async () => {
+  const fixture = await asyncQuestionFixture();
+  try {
+    const { service, peer, operation, request, result } = fixture;
+    interceptSteer(peer, (params, id) => {
+      peer.notify({ method: 'turn/completed', params: { threadId: operation.threadId,
+        turn: { id: operation.nativeTurnId, status: 'interrupted' } } });
+      setTimeout(() => peer.reply(id, { turnId: params.expectedTurnId }), 20);
+    });
+    assert.deepEqual(await service.respondInteraction(request.payload.rpcId, result), { replied: true });
+    assert.equal(service.pendingInteractions.size, 0);
   } finally { await fixture.service.resetRuntime(); }
 });
 
@@ -375,6 +446,7 @@ test('cancelling a question from a completed turn never interrupts the subsequen
     await waitFor(() => next.nativeTurnId, 1000, 'subsequent turn');
     assert.deepEqual(await fixture.service.respondInteraction(fixture.request.payload.rpcId, { answers: {} }), { replied: true });
     assert.equal(fixture.dispatchCounts.get('turn/interrupt') ?? 0, 0);
+    assert.equal(fixture.dispatchCounts.get('turn/steer') ?? 0, 0);
     assert.equal(next.cancelRequested, false);
   } finally { await fixture.service.resetRuntime(); }
 });
@@ -1787,6 +1859,300 @@ test('a shared resume rejection fails compact truthfully and a later explicit re
     assert.equal(resumes, 2);
   } finally {
     releaseResume?.();
+    await service.resetRuntime();
+  }
+});
+
+function explainClosingThread(threadId) {
+  return new ClassifiedError('RPC_ERROR', `thread ${threadId} is closing; retry thread/resume after the thread is closed`, {
+    method: 'thread/resume', rpcCode: -32600,
+  });
+}
+
+test('preconnect and send share closing retries and start the user turn only once', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let resumes = 0;
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => {
+      if (method === 'thread/resume' && ++resumes === 1) return Promise.reject(explainClosingThread(params.threadId));
+      return request(method, params, options);
+    };
+    const preconnect = service.preconnect({ threadId: THREAD_ID });
+    const sending = service.send({ threadId: THREAD_ID, input: [{ type: 'text', text: 'continue once' }] });
+    await preconnect;
+    assert.equal((await sending).outcome, 'completed');
+    assert.equal(resumes, 2);
+    assert.equal(dispatchCounts.get('thread/start') ?? 0, 0);
+    assert.equal(dispatchCounts.get('turn/start'), 1);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('closing retries preserve their original provider parameters until the idle rebuild', async () => {
+  const { service, getClient, dispatchCounts } = makeService({ serviceOpts: {
+    runtimeFingerprint: 'original',
+    launchOptions: { nativeConfig: { model: 'original-model' }, modelProvider: 'original-provider', developerInstructions: 'original role' },
+  } });
+  const resumes = [];
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => {
+      if (method === 'thread/resume') {
+        resumes.push(structuredClone(params));
+        if (resumes.length === 1) return Promise.reject(explainClosingThread(params.threadId));
+      }
+      return request(method, params, options);
+    };
+    const sending = service.send({ threadId: THREAD_ID, input: [{ type: 'text', text: 'finish with the original provider' }] });
+    await waitFor(() => resumes.length === 1);
+    const rebuild = service.notifyLaunchConfigChange({
+      nativeConfig: { model: 'replacement-model' }, modelProvider: 'replacement-provider', developerInstructions: 'replacement role',
+    }, 'replacement');
+    assert.equal(rebuild.rebuild, 'deferred');
+    assert.equal((await sending).outcome, 'completed');
+    assert.equal(resumes.length, 2);
+    assert.equal(resumes[0].modelProvider, 'original-provider');
+    assert.equal(resumes[0].excludeTurns, true, 'Closing recovery must keep paginated history metadata-only');
+    assert.deepEqual(resumes[1], resumes[0]);
+    await waitFor(() => service.runtimeGeneration === 2 && service.state === 'ready');
+    assert.equal(dispatchCounts.get('turn/start'), 1);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('persistent closing rejections exhaust three resume attempts without replacing the thread or sending a turn', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let resumes = 0;
+  try {
+    await service.ensureRuntime();
+    await service.bindThread(THREAD_ID);
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => {
+      if (method !== 'thread/resume') return request(method, params, options);
+      resumes += 1;
+      return Promise.reject(explainClosingThread(params.threadId));
+    };
+    const result = await service.send({ input: [{ type: 'text', text: 'wait for the original' }] });
+    assert.equal(result.outcome, 'failed');
+    assert.match(result.error, /^thread\/resume: thread .* is closing/);
+    assert.equal(resumes, 3);
+    assert.equal(service.desiredThreadId, THREAD_ID);
+    assert.equal(service.threads.get(THREAD_ID).state, 'unloaded');
+    assert.equal(dispatchCounts.get('thread/start') ?? 0, 0);
+    assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+for (const [label, error] of [
+  ['writer occupancy', new ClassifiedError('RPC_ERROR', `thread ${THREAD_ID} already has an active writer`, {
+    method: 'thread/resume', rpcCode: -32600,
+  })],
+  ['missing history', new ClassifiedError('RPC_ERROR', `no rollout found for thread id ${THREAD_ID}`, {
+    method: 'thread/resume', rpcCode: -32600,
+  })],
+  ['required MCP initialization', new ClassifiedError('RPC_ERROR', 'required MCP servers failed to initialize', {
+    method: 'thread/resume', rpcCode: -32600,
+  })],
+  ['an uncertain timeout', new ClassifiedError('RPC_TIMEOUT', explainClosingThread(THREAD_ID).message, {
+    method: 'thread/resume', phase: 'writtenUnconfirmed',
+  })],
+  ['an unrelated native code', new ClassifiedError('RPC_ERROR', explainClosingThread(THREAD_ID).message, {
+    method: 'thread/resume', rpcCode: -32603,
+  })],
+  ['an unclassified error', new Error(explainClosingThread(THREAD_ID).message)],
+]) {
+  test(`resume does not silently retry ${label}`, async () => {
+    const { service, getClient, dispatchCounts } = makeService();
+    let resumes = 0;
+    try {
+      await service.ensureRuntime();
+      const client = getClient();
+      const request = client.request.bind(client);
+      client.request = (method, params, options) => {
+        if (method !== 'thread/resume') return request(method, params, options);
+        resumes += 1;
+        return Promise.reject(error);
+      };
+      const result = await service.send({ threadId: THREAD_ID, input: [{ type: 'text', text: 'do not replay' }] });
+      assert.equal(result.outcome, 'failed');
+      assert.match(result.error, /^thread\/resume:/);
+      assert.ok(result.error.includes(error.message));
+      assert.equal(resumes, 1);
+      assert.equal(dispatchCounts.get('thread/start') ?? 0, 0);
+      assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+    } finally {
+      await service.resetRuntime();
+    }
+  });
+}
+
+test('a failed preconnect preserves its RPC origin, native code and original cause', async () => {
+  const { service, getClient } = makeService();
+  const rejection = new ClassifiedError('RPC_ERROR', 'failed to load configuration: invalid TOML', { rpcCode: -32600 });
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => method === 'thread/resume'
+      ? Promise.reject(rejection) : request(method, params, options);
+    await assert.rejects(service.preconnect({ threadId: THREAD_ID }), error => {
+      assert.equal(error.method, 'thread/resume');
+      assert.equal(error.rpcCode, -32600);
+      assert.equal(error.cause, rejection);
+      assert.equal(error.message, `thread/resume: ${rejection.message}`);
+      return true;
+    });
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('all callers sharing a failed resume receive its RPC origin', async () => {
+  const { service, getClient } = makeService();
+  let rejectResume;
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => method === 'thread/resume'
+      ? new Promise((_, reject) => { rejectResume = reject; }) : request(method, params, options);
+    const preconnect = service.preconnect({ threadId: THREAD_ID });
+    const failure = assert.rejects(preconnect, /^CodexAppServerError: thread\/resume: failed to load configuration/);
+    const sending = service.send({ threadId: THREAD_ID, input: [{ type: 'text', text: 'share the failure' }] });
+    await waitFor(() => rejectResume && service.busy);
+    await new Promise(resolve => setImmediate(resolve));
+    rejectResume(new Error('failed to load configuration: invalid TOML'));
+    await failure;
+    assert.match((await sending).error, /^thread\/resume: failed to load configuration/);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('stopping during a closing retry prevents further resume and turn requests', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let resumes = 0;
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => {
+      if (method !== 'thread/resume') return request(method, params, options);
+      resumes += 1;
+      return Promise.reject(explainClosingThread(params.threadId));
+    };
+    const operation = service.enqueueOperation({ kind: 'send', threadId: THREAD_ID,
+      markerPayload: { input: [{ type: 'text', text: 'cancel before recovery' }] } });
+    await waitFor(() => resumes === 1);
+    service.stopOperation(operation.clientOperationId);
+    assert.equal((await operation.promise).outcome, 'cancelled');
+    assert.equal(resumes, 1);
+    assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('cancelling a send leaves an independent shared preconnect able to recover without a user turn', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let resumes = 0;
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => {
+      if (method === 'thread/resume' && ++resumes === 1) return Promise.reject(explainClosingThread(params.threadId));
+      return request(method, params, options);
+    };
+    const operation = service.enqueueOperation({ kind: 'send', threadId: THREAD_ID,
+      markerPayload: { input: [{ type: 'text', text: 'cancel only the send' }] } });
+    await waitFor(() => resumes === 1);
+    const preconnect = service.preconnect({ threadId: THREAD_ID });
+    await new Promise(resolve => setImmediate(resolve));
+    service.stopOperation(operation.clientOperationId);
+    await preconnect;
+    assert.equal((await operation.promise).outcome, 'cancelled');
+    assert.equal(resumes, 2);
+    assert.equal(service.threads.get(THREAD_ID).state, 'idle');
+    assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('a closing retry cannot resume through a replacement runtime', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let resumes = 0;
+  try {
+    await service.ensureRuntime();
+    const client = getClient();
+    const request = client.request.bind(client);
+    client.request = (method, params, options) => {
+      if (method !== 'thread/resume') return request(method, params, options);
+      resumes += 1;
+      return Promise.reject(explainClosingThread(params.threadId));
+    };
+    const operation = service.enqueueOperation({ kind: 'send', threadId: THREAD_ID,
+      markerPayload: { input: [{ type: 'text', text: 'old generation' }] } });
+    await waitFor(() => resumes === 1);
+    await service.resetRuntime();
+    await service.ensureRuntime();
+    await operation.promise;
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.notEqual(service.client, client);
+    assert.equal(service.state, 'ready');
+    assert.equal(resumes, 1);
+    assert.equal(dispatchCounts.get('thread/resume') ?? 0, 0);
+    assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+  } finally {
+    await service.resetRuntime();
+  }
+});
+
+test('a retired closing retry cannot clear the replacement bootstrap while Stop awaits confirmation', async () => {
+  const { service, getClient, dispatchCounts } = makeService();
+  let releaseReplacement;
+  try {
+    await service.ensureRuntime();
+    const oldClient = getClient();
+    const oldRequest = oldClient.request.bind(oldClient);
+    oldClient.request = (method, params, options) => method === 'thread/resume'
+      ? Promise.reject(explainClosingThread(params.threadId)) : oldRequest(method, params, options);
+    const retired = service.enqueueOperation({ kind: 'send', threadId: THREAD_ID,
+      markerPayload: { input: [{ type: 'text', text: 'retired request' }] } });
+    await waitFor(() => service.threadResumes.has(THREAD_ID));
+    const retiredResume = service.threadResumes.get(THREAD_ID).promise.catch(() => {});
+    await service.resetRuntime();
+    await retired.promise;
+    await service.ensureRuntime();
+    const replacement = getClient();
+    const request = replacement.request.bind(replacement);
+    replacement.request = (method, params, options) => method === 'thread/resume'
+      ? new Promise(resolve => { releaseReplacement = () => resolve(request(method, params, options)); })
+      : request(method, params, options);
+    const operation = service.enqueueOperation({ kind: 'send', threadId: THREAD_ID,
+      markerPayload: { input: [{ type: 'text', text: 'replacement request' }] } });
+    await waitFor(() => releaseReplacement);
+    await retiredResume;
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(service.stopOperation(operation.clientOperationId).reason, 'waiting-for-bootstrap');
+    releaseReplacement();
+    releaseReplacement = null;
+    assert.equal((await operation.promise).outcome, 'cancelled');
+    assert.equal(dispatchCounts.get('turn/start') ?? 0, 0);
+  } finally {
+    releaseReplacement?.();
     await service.resetRuntime();
   }
 });
