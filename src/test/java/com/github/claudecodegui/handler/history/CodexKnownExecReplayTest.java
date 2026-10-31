@@ -1433,6 +1433,80 @@ public class CodexKnownExecReplayTest {
         assertEquals(List.of(false, true), results.stream().map(result -> result.get("is_error").getAsBoolean()).toList());
     }
 
+    /** Completed native MCP receipts cannot hide a TypeError thrown after several calls in one wrapper. */
+    @Test
+    public void sequentialLiteralMcpWrappersRetainOuterFailures() {
+        String script = "const a = await tools.mcp__ccqa_acceptance__ccqa_get_success({});\n"
+                + "const b = await tools.mcp__ccqa_acceptance__ccqa_get_expected_error({});\ntext(a.content.missing.field);\n";
+        for (String header : List.of("Script failed", "Script error: TypeError")) {
+            JsonArray records = catalogMcpScope();
+            JsonObject wrapper = call("outer-sequence", script);
+            wrapper.getAsJsonObject("payload").add("internal_chat_message_metadata_passthrough", JsonParser.parseString("{\"turn_id\":\"model-turn\"}"));
+            records.add(wrapper);
+            records.add(nativeCatalogMcp("native-sequence-success", "ccqa_get_success", "completed"));
+            records.add(nativeCatalogMcp("native-sequence-error", "ccqa_get_expected_error", "completed"));
+            records.add(output("outer-sequence", header + "\nOutput:\nTypeError: Cannot read properties of undefined"));
+            List<JsonObject> projected = blocks(records);
+            assertEquals(header, List.of("exec", "ccqa_get_success", "ccqa_get_expected_error"), toolNames(projected));
+            JsonObject result = projected.stream().filter(block -> "tool_result".equals(string(block, "type"))
+                    && "outer-sequence".equals(string(block, "tool_use_id"))).findFirst().orElseThrow();
+            assertTrue(header, result.get("is_error").getAsBoolean());
+            assertTrue(header, string(result, "content").contains("TypeError: Cannot read properties of undefined"));
+        }
+    }
+
+    /** Settled rejections describe their own calls, not the TypeError the wrapper throws afterwards. */
+    @Test
+    public void settledMcpRejectionsRetainOuterFailures() {
+        JsonArray records = catalogMcpScope();
+        records.add(call("settled-failure", "const rs = await Promise.allSettled([tools.mcp__ccqa_acceptance__ccqa_get_success({}),"
+                + "tools.mcp__ccqa_acceptance__ccqa_get_expected_error({})]);"
+                + "for (let i=0;i<rs.length;i++) text({index:i,...rs[i]});\ntext(rs[0].value.content);\n"));
+        records.add(output("settled-failure", "Script failed\nOutput:\nTypeError: Cannot read properties of undefined",
+                "{\"index\":0,\"status\":\"rejected\",\"reason\":\"first rejected\"}",
+                "{\"index\":1,\"status\":\"rejected\",\"reason\":\"second rejected\"}"));
+        List<JsonObject> projected = blocks(records);
+        assertEquals(List.of("exec"), toolNames(projected));
+        JsonObject result = projected.stream().filter(block -> "tool_result".equals(string(block, "type"))).findFirst().orElseThrow();
+        assertTrue(result.get("is_error").getAsBoolean());
+        assertTrue(string(result, "content").contains("TypeError: Cannot read properties of undefined"));
+    }
+
+    /** Fallback wrapper cards keep the turn that opened them after a later turn has started. */
+    @Test
+    public void wrapperFallbackKeepsItsOwnTurnAfterTheNextTurnStarts() {
+        String script = "text(await tools.mcp__ccqa_acceptance__ccqa_get_success({}));";
+        JsonArray nextTurn = new JsonArray();
+        nextTurn.add(JsonParser.parseString("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"next-turn\"}}"));
+        nextTurn.add(JsonParser.parseString("{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"next-turn\"}}"));
+        JsonObject question = JsonParser.parseString("{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\","
+                + "\"content\":[{\"type\":\"input_text\",\"text\":\"next question\"}]}}").getAsJsonObject();
+
+        JsonArray unanswered = catalogMcpScope();
+        unanswered.add(call("unanswered", script));
+        unanswered.addAll(nextTurn.deepCopy());
+        unanswered.add(question.deepCopy());
+        List<JsonObject> legacy = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(unanswered);
+        assertEquals("native-turn", turnOf(legacy, "tool_use", "unanswered"));
+        assertEquals("next-turn", string(legacy.get(legacy.size() - 1).getAsJsonObject("raw"), "codexTurnId"));
+
+        JsonArray failed = catalogMcpScope();
+        failed.add(call("late-failure", script));
+        failed.add(nativeCatalogMcp("native-late", "ccqa_get_success", "completed"));
+        failed.addAll(nextTurn.deepCopy());
+        failed.add(output("late-failure", "Script failed\nOutput:\nTypeError: late"));
+        List<JsonObject> opaque = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(failed);
+        assertEquals("native-turn", turnOf(opaque, "tool_use", "late-failure"));
+        assertEquals("native-turn", turnOf(opaque, "tool_result", "late-failure"));
+    }
+
+    private static String turnOf(List<JsonObject> messages, String type, String toolId) {
+        return messages.stream().map(message -> message.getAsJsonObject("raw")).filter(raw -> {
+            JsonObject block = raw.getAsJsonArray("content").get(0).getAsJsonObject();
+            return type.equals(string(block, "type")) && toolId.equals(string(block, "tool_use".equals(type) ? "id" : "tool_use_id"));
+        }).map(raw -> string(raw, "codexTurnId")).findFirst().orElseThrow();
+    }
+
     /** The owned PyCharm history also contains an independent catalog-discovery exec that must remain visible. */
     @Test
     public void catalogDiscoveryRemainsDistinctFromSequentialMcpWrapper() {

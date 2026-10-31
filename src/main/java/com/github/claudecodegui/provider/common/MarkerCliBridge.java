@@ -158,7 +158,7 @@ public abstract class MarkerCliBridge extends BaseSDKBridge {
             List<JsonObject> messages = loader.load(cancellation);
             HistoryCancellation.check(cancellation);
             return messages;
-        } catch (CancellationException e) {
+        } catch (CancellationException | SessionHistoryNotFoundException e) {
             throw e;
         } catch (Exception e) {
             throw new IllegalStateException("Failed to load " + providerName + " session history", e);
