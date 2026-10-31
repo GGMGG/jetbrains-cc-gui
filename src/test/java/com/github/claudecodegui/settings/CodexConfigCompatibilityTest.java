@@ -59,24 +59,36 @@ public class CodexConfigCompatibilityTest {
     }
 
     @Test
-    public void handlesDisabledAndBooleanNetworkValuesWithoutInventingNativeProfileFields() throws Exception {
-        for (String value : new String[]{"\"disabled\"", "false", "true"}) {
-            CodexSettingsManager manager = manager("network_access = " + value + "\n"
-                    + "[profiles.fixture]\nnetwork_access = \"disabled\"\ndisable_response_storage = true\n");
-            manager.prepareNativeConfig(() -> true);
-            var config = Toml.parse(Files.readString(manager.getConfigTomlPath()));
-            assertEquals("\"disabled\"".equals(value) ? "disabled" : Boolean.valueOf(value), config.get("network_access"));
-            assertEquals("disabled", config.getString("profiles.fixture.network_access"));
-            assertFalse(config.getTable("profiles.fixture").contains("sandbox_workspace_write"));
-            assertEquals(Boolean.TRUE, config.getBoolean("profiles.fixture.disable_response_storage"));
-        }
+    public void ordinaryUpdateBacksUpAliasesBeforeSeparatingThem() throws Exception {
+        CodexSettingsManager manager = manager(LEGACY_CONFIG);
+        manager.updateConfigToml(config -> { config.put("model", "replacement-model"); return true; });
+        assertEquals(LEGACY_CONFIG, Files.readString(sibling(manager, CodexSettingsManager.CLI_MIGRATION_BACKUP_FILE_NAME)));
+        assertFalse(Files.readString(manager.getConfigTomlPath()).contains("model_aliases"));
+        assertEquals("replacement-model", manager.readConfigToml().get("model"));
+        assertEquals("vendor/gpt-6.1-sol", manager.resolveModelAlias("gpt-6.1-sol"));
     }
 
     @Test
-    public void doesNotGuessUnrecognizedNetworkValues() throws Exception {
-        CodexSettingsManager manager = manager("network_access = \"unexpected\"\n");
-        manager.prepareNativeConfig(() -> true);
-        assertEquals("network_access = \"unexpected\"\n", Files.readString(manager.getConfigTomlPath()));
+    public void malformedSidecarNamesTheDamagedFileAndPreservesBothFiles() throws Exception {
+        String original = "model = \"original-model\"\n";
+        String broken = "model_aliases = [\n";
+        CodexSettingsManager manager = manager(original);
+        Path sidecar = sibling(manager, CodexSettingsManager.PLUGIN_CONFIG_FILE_NAME);
+        Files.writeString(sidecar, broken);
+        try {
+            manager.readConfigToml();
+            fail("Malformed plugin metadata must identify its file");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().startsWith("Failed to read config.toml.ccgui:"));
+        }
+        try {
+            manager.updateConfigToml(config -> { config.put("model", "replacement-model"); return true; });
+            fail("Malformed plugin metadata must not be overwritten");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains("config.toml.ccgui"));
+        }
+        assertEquals(original, Files.readString(manager.getConfigTomlPath()));
+        assertEquals(broken, Files.readString(sidecar));
         assertFalse(Files.exists(sibling(manager, CodexSettingsManager.CLI_MIGRATION_BACKUP_FILE_NAME)));
     }
 
