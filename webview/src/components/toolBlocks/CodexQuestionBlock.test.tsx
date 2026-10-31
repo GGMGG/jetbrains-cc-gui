@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { CodexQuestionBlock } from './CodexQuestionBlock';
+import { CODEX_QUESTION_DISMISSED } from '../../utils/codexQuestionTranscript';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string, fallback?: string) => fallback ?? key }),
@@ -46,4 +47,13 @@ it('shows a later custom answer beside the original question without making the 
   );
   expect(screen.getByText('Choose a test answer.')).toBeTruthy();
   expect(container.querySelector('button, input, textarea, script')).toBeNull();
+});
+
+it('shows a question closed without an answer as skipped instead of the notice sent to Codex', () => {
+  const questions = [{ id: 'q', question: 'Choose a test answer.', options: [{ label: 'A' }] }];
+  const { container } = render(<CodexQuestionBlock input={{ questions, answers: { q: CODEX_QUESTION_DISMISSED } }} />);
+  expect(container.querySelector('.codex-question-record-answer')?.textContent).toBe(
+    'Your answer: Skipped (closed without an answer)',
+  );
+  expect(container.textContent).not.toContain(CODEX_QUESTION_DISMISSED);
 });
