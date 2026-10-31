@@ -1,5 +1,11 @@
 import type { ClaudeMessage, ClaudeRawMessage, ToolInput } from '../types';
 
+/**
+ * The answer the bridge records for a question the user closed without answering.
+ * Must match ASYNC_QUESTION_DISMISSED in ai-bridge/services/codex/codex-async-questions.js.
+ */
+export const CODEX_QUESTION_DISMISSED = 'No answer: the user dismissed this question. Continue without waiting for it.';
+
 export interface TranscriptQuestion {
   id: string;
   question: string;
