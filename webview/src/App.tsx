@@ -82,6 +82,7 @@ const App = () => {
     codexPlan, codexPlanExecutionPending, onExecuteCodexPlan, onContinueCodexPlan,
     codexCompactionPending,
     codexCompactionStartedAt,
+    codexTurnActive,
   } = useAppChatController({ model, applyHistoryModel, setPermissionDialogTimeoutSeconds });
 
   const statusPanelExpanded = !userCollapsedRef.current;
@@ -184,6 +185,7 @@ const App = () => {
           codexPlanExecutionPending={codexPlanExecutionPending}
           codexCompactionPending={codexCompactionPending}
           codexCompactionStartedAt={codexCompactionStartedAt}
+          codexTurnActive={codexTurnActive}
           onExecuteCodexPlan={onExecuteCodexPlan}
           onContinueCodexPlan={onContinueCodexPlan}
           onLoadSession={loadHistorySession}

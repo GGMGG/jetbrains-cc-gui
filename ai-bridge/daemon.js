@@ -916,8 +916,8 @@ async function runDaemonMain() {
       const handler = request.method === 'codex.respondInteraction'
         ? codexRespondInteractionPersistent
         : codexRespondInteractionErrorPersistent;
-      handler(request.params || {})
-        .then(() => writeRawLine({ id: replyId, done: true, success: true }))
+      Promise.resolve().then(() => handler(request.params || {}))
+        .then((result) => writeRawLine({ id: replyId, done: true, success: true, result }))
         .catch((e) => {
           _originalStderrWrite('[daemon] codex interaction reply error: ' + (e.message || String(e)) + '\n');
           // The code lets the host tell "answer again" from "this can no longer be delivered".
@@ -931,7 +931,7 @@ async function runDaemonMain() {
     // must reach the service while the send operation still owns the queue.
     if (request.method === 'codex.abortTurn') {
       const abortId = request.id || '0';
-      codexAbortTurnPersistent(request.params || {})
+      Promise.resolve().then(() => codexAbortTurnPersistent(request.params || {}))
         .then((result) => writeRawLine({ id: abortId, done: true, success: true, result }))
         .catch((e) => {
           _originalStderrWrite('[daemon] codex.abortTurn error: ' + (e.message || String(e)) + '\n');
@@ -943,7 +943,7 @@ async function runDaemonMain() {
     if (request.method === 'codex.resetRuntime' || request.method === 'codex.releaseThread') {
       const handler = request.method === 'codex.resetRuntime'
         ? codexResetRuntimePersistent : codexReleaseThreadPersistent;
-      handler(request.params || {})
+      Promise.resolve().then(() => handler(request.params || {}))
         .then((result) => writeRawLine({ id: request.id || '0', done: true, success: true, result }))
         .catch((error) => writeRawLine({ id: request.id || '0', done: true, success: false,
           error: error?.message || String(error) }));
