@@ -33,6 +33,9 @@ class CodexAppServerRequestExecutor {
     /** Daemon code for a reply that can never be delivered (answered, released, or runtime gone). */
     static final String INTERACTION_NOT_PENDING = "INTERACTION_NOT_PENDING";
 
+    /** Daemon code for an answer Codex received but never confirmed; it may still take effect. */
+    static final String DELIVERY_UNCONFIRMED = "DELIVERY_UNCONFIRMED";
+
     /**
      * Dedicated executor for calls that block for a turn's whole lifetime. A
      * native turn may run for hours, so waiting must never happen on
@@ -248,7 +251,7 @@ class CodexAppServerRequestExecutor {
 
     /**
      * @param daemonCode the daemon's machine-readable failure code, if any
-     * @return an error ack; a reply Codex no longer waits for is marked not retryable
+     * @return an error ack; a reply Codex no longer waits for, or may still accept, is marked not retryable
      */
     private JsonObject controlFailure(String method, String reason, String daemonCode) {
         this.log.warn("[CodexDaemonExecutor] control command " + method + " failed: " + reason
@@ -260,6 +263,10 @@ class CodexAppServerRequestExecutor {
         }
         if (INTERACTION_NOT_PENDING.equals(daemonCode)) {
             error.addProperty("retryable", false);
+        } else if (DELIVERY_UNCONFIRMED.equals(daemonCode)) {
+            // A second answer could take effect alongside the first one.
+            error.addProperty("retryable", false);
+            error.addProperty("deliveryUnconfirmed", true);
         }
         return error;
     }

@@ -7,6 +7,19 @@ import static org.junit.Assert.assertTrue;
 
 public class RestoredHistorySessionTest {
     @Test
+    public void failedAttemptStaysRecordedUntilAnotherSessionIsBound() {
+        RestoredHistorySession<Object> restore = new RestoredHistorySession<>();
+        Object session = new Object();
+        restore.bind(session, "restored");
+        assertFalse(restore.wasAttempted());
+        restore.markAttempted();
+        assertTrue(restore.wasAttempted());
+        assertTrue(restore.isCurrent(session, "restored"));
+        restore.bind(new Object(), "other");
+        assertFalse(restore.wasAttempted());
+    }
+
+    @Test
     public void committedRestoreRemainsCompleteWhileUiDeliveryAndTabReactivationArePending() {
         RestoredHistorySession<Object> restore = new RestoredHistorySession<>();
         Object session = new Object();

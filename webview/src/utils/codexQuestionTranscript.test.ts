@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { ClaudeMessage } from '../types';
-import { projectCodexQuestionTranscript } from './codexQuestionTranscript';
+import { CODEX_QUESTION_DISMISSED, projectCodexQuestionTranscript } from './codexQuestionTranscript';
 
 const questions = [
   { id: 'question-1', question: 'Pick one.', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }] },
@@ -94,5 +97,21 @@ describe('Codex question transcripts', () => {
     const result = projectCodexQuestionTranscript([question('thread', itemId), reply], new WeakMap());
     expect(result).toHaveLength(1);
     expect(result[0].raw).toMatchObject({ message: { content: [{ input: { answers: { 'question-1': 'B' } } }] } });
+  });
+
+  it('pairs the notice for a dismissed question with that question', () => {
+    const notice = `Answers to your questions (request: question):\n\nPick one.\n${CODEX_QUESTION_DISMISSED}`
+      + `\n\nAny comment?\n${CODEX_QUESTION_DISMISSED}`;
+    const result = projectCodexQuestionTranscript([question(), answer(notice)], new WeakMap());
+    expect(result).toHaveLength(1);
+    expect(result[0].raw).toMatchObject({ message: { content: [{ input: { answers: {
+      'question-1': CODEX_QUESTION_DISMISSED, 'question-2': CODEX_QUESTION_DISMISSED,
+    } } }] } });
+  });
+
+  it('matches the dismissal notice the bridge sends to Codex', () => {
+    const bridgeSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),
+      '../../../ai-bridge/services/codex/codex-async-questions.js'), 'utf8');
+    expect(bridgeSource).toContain(`export const ASYNC_QUESTION_DISMISSED = '${CODEX_QUESTION_DISMISSED}';`);
   });
 });
