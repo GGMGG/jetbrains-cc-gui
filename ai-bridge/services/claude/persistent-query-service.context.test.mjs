@@ -100,8 +100,8 @@ test('buildRequestContext preserves resolved model mapping for context usage run
       }),
       {
         // The exact resolved id is handed to the SDK. The 'sonnet' alias would
-        // resolve through ANTHROPIC_DEFAULT_SONNET_MODEL, which the settings
-        // override blanks - so the alias silently falls back to the CLI default.
+        // resolve through ANTHROPIC_DEFAULT_SONNET_MODEL in whichever layer the CLI
+        // honors, so the exact id keeps the main model independent of env precedence.
         sdkModelName: 'custom-sonnet-model',
         resolvedModelId: 'custom-sonnet-model',
       },
@@ -110,15 +110,11 @@ test('buildRequestContext preserves resolved model mapping for context usage run
     assert.equal(requestContext.resolvedModelId, 'custom-sonnet-model');
     assert.equal(requestContext.options.env.ANTHROPIC_MODEL, 'custom-sonnet-model');
     assert.equal(requestContext.options.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'custom-sonnet-model');
-    // The inline settings override MIRRORS the per-request routing values written to
-    // process.env by setModelEnvironmentVariables() just before buildQueryOptions() - the
-    // current tier included - instead of blanking them: blanking regressed third-party relays
-    // where the CLI could no longer resolve the SDK alias ('sonnet') to the relay's custom
-    // model name and kept requesting the official claude-* models (issue #1741). Vars the
-    // request did not set fall back to the user's settings.json tier mapping, and
-    // ANTHROPIC_MODEL to blank, so stale settings.json copies stay blocked (issue #1509).
-    // The tier asserted here as 'glm-5.3-flash' is such a fallback: only the current tier
-    // carries a request-resolved value of its own.
+    // The inline settings override carries the request-resolved model for ANTHROPIC_MODEL and
+    // for the tier the request owns, so on the non-managed path (CLI login, cloud providers),
+    // where the CLI honors this layer, it agrees with the child env snapshot written by
+    // setModelEnvironmentVariables(). Other tiers echo the user's settings.json mapping; the
+    // tier asserted here as 'glm-5.3-flash' is such an echo.
     assert.deepEqual(requestContext.options.settings, {
       env: {
         CLAUDE_CODE_EFFORT_LEVEL: '',
@@ -209,9 +205,8 @@ test('getContextUsagePersistent reuses runtime and calls setModel when model cha
   await __testing.acquireRuntime(requestContext);
 
   assert.equal(factory.runtimes.length, 1, 'should have 1 runtime initially');
-  // The SDK receives the exact id, not the 'opus' family alias (the alias would
-  // resolve to the CLI default because the settings override blanks
-  // ANTHROPIC_DEFAULT_OPUS_MODEL).
+  // The SDK receives the exact id, not the 'opus' family alias, so the main model
+  // does not depend on how ANTHROPIC_DEFAULT_OPUS_MODEL resolves in the CLI.
   assert.equal(factory.runtimes[0].currentModel, 'claude-opus-4-7', 'runtime should carry the exact model id');
 
   // Request context usage with a DIFFERENT model (sonnet instead of opus)
@@ -493,9 +488,9 @@ test('getContextUsagePersistent temporarily clears 1M disable override for expli
 
 test('settings override keeps the [1m] suffix on the tier the request resolved', async () => {
   // End-to-end counterpart of the api-config contract test: the tier value
-  // written by setModelEnvironmentVariables() (with its [1m] suffix) must be the
-  // one mirrored into the inline settings, or the non-managed path would
-  // shadow it with the bare model name.
+  // written by setModelEnvironmentVariables() (with its [1m] suffix) must also
+  // reach the inline settings, or the non-managed path would shadow it with a
+  // blank or settings.json entry.
   const previousAnthropicModel = process.env.ANTHROPIC_MODEL;
   const previousSonnetModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
 

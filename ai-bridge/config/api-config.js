@@ -6,7 +6,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { getClaudeDir, getCodemossDir, getManagedSettingsPath } from '../utils/path-utils.js';
-import { MODEL_TIER_ENV_KEYS, readConfiguredModelTiers } from '../utils/model-utils.js';
+import { MODEL_TIER_ENV_KEYS, readConfiguredModelTiers, resolveModelTierEnvKey } from '../utils/model-utils.js';
 
 // Conditional debug logging: set CLAUDE_DEBUG=1 to enable verbose diagnostics
 const DEBUG = process.env.CLAUDE_DEBUG === '1' || process.env.CLAUDE_DEBUG === 'true';
@@ -206,33 +206,15 @@ export function isDangerousEnvVar(varName) {
 }
 
 /**
- * Read the per-request value a model routing var currently holds in process.env.
- *
- * setModelEnvironmentVariables() writes the request-resolved routing values right before
- * buildQueryOptions(), so at this point process.env is the authoritative snapshot for the
- * current request. Unset and blank are treated alike ("no per-request value"), which lets
- * callers fall back to settings.json or to neutralization.
- *
- * @param {string} varName - model routing env var name
- * @returns {string|null} the trimmed per-request value, or null when the request set none
- */
-function perRequestModelRoutingValue(varName) {
-  const value = process.env[varName];
-  if (value === undefined || value === null) {
-    return null;
-  }
-  const trimmed = String(value).trim();
-  return trimmed === '' ? null : trimmed;
-}
-
-/**
  * Build the inline settings override handed to the Claude CLI (the `--settings` argument).
  *
  * @param {string} [modelId] - the raw model ID selected in the webview
  * @param {Object} [settingsEnv] - the env block of ~/.claude/settings.json, supplying the user's tier mappings
+ * @param {string} [resolvedModelId] - the model the request resolved to (resolveModelFromSettings output);
+ *                                     omit it for calls that make no routed inference request
  * @returns {{env: Object}} the settings object
  */
-export function buildWebviewControlledSettingsOverride(modelId, settingsEnv) {
+export function buildWebviewControlledSettingsOverride(modelId, settingsEnv, resolvedModelId) {
   const env = {
     // Empty strings intentionally override settings.json env values while
     // evaluating as "not set" in Claude Code's env-precedence checks.
@@ -240,12 +222,7 @@ export function buildWebviewControlledSettingsOverride(modelId, settingsEnv) {
     MAX_THINKING_TOKENS: '',
   };
 
-  // Model routing vars: the per-request snapshot wins over settings.json.
-  //
-  // setModelEnvironmentVariables() writes the request-resolved values into process.env
-  // immediately before this function is called, so process.env is the authoritative
-  // per-request snapshot here - the tier owned by the current request included, which may
-  // deliberately differ from the (possibly stale) settings.json mapping.
+  // Model routing vars: the request-resolved model wins over settings.json.
   //
   // Where this layer sits in the precedence chain (Claude Code applies the `--settings` env
   // block on top of the CLI child env, so a value here wins over the same var in options.env;
@@ -259,23 +236,34 @@ export function buildWebviewControlledSettingsOverride(modelId, settingsEnv) {
   //     agree with the request. A blank entry would shadow the tier the request resolved
   //     (custom, non-Claude tier names) and would drop the `[1m]` suffix the CLI must see.
   //
-  // The mirroring below therefore keeps the non-managed path consistent with the request
-  // snapshot; it is not what makes relays work - 2633282d already sends the exact resolved
-  // model id to the SDK, and the managed path never relied on this layer. Vars the request
-  // did not set fall back to the user's settings.json tier mapping - and ANTHROPIC_MODEL to
-  // blank - so a stale settings.json copy still cannot override the webview selection
-  // (issue #1509).
+  // So ANTHROPIC_MODEL and the tier the request owns carry the resolved model - the same
+  // values setModelEnvironmentVariables() writes into the child env. This keeps the
+  // non-managed path consistent with the request; it is not what makes relays work -
+  // 2633282d already sends the exact resolved model id to the SDK, and the managed path never
+  // relied on this layer.
+  //
+  // The resolved model is passed in rather than read back from process.env: process.env can
+  // also hold values inherited from the IDE environment or left by an earlier turn (the tier
+  // sync only runs when settings.json has an env block), and mirroring those would let them
+  // win over the CLI defaults here. Other tiers echo the user's settings.json mapping, and
+  // ANTHROPIC_MODEL stays blank without a resolved model, so a stale settings.json copy
+  // cannot override the webview selection (issue #1509).
   //
   // To observe both modes: run a local fake server that logs the request body `model` and
   // `anthropic-beta`, point ANTHROPIC_BASE_URL at it, set ANTHROPIC_MODEL /
   // ANTHROPIC_DEFAULT_*_MODEL both in the child env and in the inline settings env, and run
   // once with and once without CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1: with the flag the
   // request follows the child-env value, without it the settings-layer value.
-  env.ANTHROPIC_MODEL = perRequestModelRoutingValue('ANTHROPIC_MODEL') ?? '';
+  const resolvedModel = typeof resolvedModelId === 'string' ? resolvedModelId.trim() : '';
+  const ownedTierKey = resolvedModel
+    ? resolveModelTierEnvKey(typeof modelId === 'string' && modelId.trim() ? modelId : resolvedModel)
+    : null;
+
+  env.ANTHROPIC_MODEL = resolvedModel;
 
   const configuredTiers = readConfiguredModelTiers(settingsEnv);
   for (const key of MODEL_TIER_ENV_KEYS) {
-    env[key] = perRequestModelRoutingValue(key) ?? configuredTiers[key] ?? '';
+    env[key] = key === ownedTierKey ? resolvedModel : (configuredTiers[key] ?? '');
   }
 
   const normalizedModel = typeof modelId === 'string' ? modelId.trim() : '';

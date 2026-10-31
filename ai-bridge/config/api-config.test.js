@@ -12,13 +12,14 @@ import {
   isWebviewControlledEnvVar,
   WEBVIEW_CONTROLLED_ENV_VARS,
 } from './api-config.js';
+import { setModelEnvironmentVariables } from '../utils/model-utils.js';
 
 const API_CONFIG_MODULE = pathToFileURL(path.resolve('ai-bridge/config/api-config.js')).href;
+const MODEL_UTILS_MODULE = pathToFileURL(path.resolve('ai-bridge/utils/model-utils.js')).href;
 
-// buildWebviewControlledSettingsOverride() mirrors the per-request model routing snapshot it
-// finds in process.env, so these tests must not depend on whatever the surrounding shell
-// exports (relay users commonly export ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_*_MODEL globally).
-// Clear the webview-controlled vars for the whole file; each test sets the ones it needs.
+// These tests must not depend on whatever the surrounding shell exports (relay users
+// commonly export ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_*_MODEL globally). Clear the
+// webview-controlled vars for the whole file; each test sets the ones it needs.
 const FILE_SAVED_ENV = new Map(
   WEBVIEW_CONTROLLED_ENV_VARS.map((name) => [name, process.env[name]])
 );
@@ -37,13 +38,13 @@ test.after(() => {
 });
 
 /**
- * Run `body` with the given per-request routing values placed in process.env, restoring the
- * previous state of every webview-controlled var afterwards.
+ * Run `body` with the given routing values placed in process.env, restoring the previous
+ * state of every webview-controlled var afterwards.
  *
  * @param {Object} values - env var name to value pairs to set for the duration of the body
  * @param {Function} body - test body to run
  */
-function withPerRequestRoutingEnv(values, body) {
+function withProcessRoutingEnv(values, body) {
   const saved = new Map(WEBVIEW_CONTROLLED_ENV_VARS.map((name) => [name, process.env[name]]));
   for (const name of WEBVIEW_CONTROLLED_ENV_VARS) {
     delete process.env[name];
@@ -252,16 +253,18 @@ function writeClaudeSettingsEnv(homeDir, env) {
  * of the developer's real files.
  *
  * @param {string} tempHome - isolated HOME for the child process
- * @param {string} requestModel - per-request model written to process.env first
+ * @param {string} modelId - model id the webview selected
+ * @param {string} resolvedModelId - model the request resolved to
  * @returns {{childEnv: Object, settingsEnv: Object}} both layers, reduced to the routing vars
  */
-function runRoutingLayers(tempHome, requestModel = 'relay-sonnet-model') {
+function runRoutingLayers(tempHome, modelId = 'claude-sonnet-4-6', resolvedModelId = 'relay-sonnet-model') {
   const script = `
     import { buildCliEnv, buildWebviewControlledSettingsOverride } from ${JSON.stringify(API_CONFIG_MODULE)};
-    process.env.ANTHROPIC_MODEL = ${JSON.stringify(requestModel)};
-    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = ${JSON.stringify(requestModel)};
+    import { setModelEnvironmentVariables } from ${JSON.stringify(MODEL_UTILS_MODULE)};
+    setModelEnvironmentVariables(${JSON.stringify(resolvedModelId)}, ${JSON.stringify(modelId)});
     const childEnv = buildCliEnv();
-    const override = buildWebviewControlledSettingsOverride('claude-sonnet-4-6');
+    const override = buildWebviewControlledSettingsOverride(
+      ${JSON.stringify(modelId)}, undefined, ${JSON.stringify(resolvedModelId)});
     console.log(JSON.stringify({
       childEnv: {
         HOST_MANAGED: childEnv.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,
@@ -381,8 +384,9 @@ test('buildCliEnv strips stale CLI override env vars and sets host-managed for f
 });
 
 test('buildWebviewControlledSettingsOverride neutralizes Claude CLI settings env precedence', () => {
-  // Model routing vars are cleared so settings.json values cannot override
-  // the per-request process.env values set by setModelEnvironmentVariables().
+  // Without settings tiers or a resolved model (the one-shot callers), every model routing
+  // var is blank, so neither a settings.json copy nor an inherited process.env value can
+  // take effect on the non-managed path.
   const modelRoutingOverrides = {
     ANTHROPIC_MODEL: '',
     ANTHROPIC_DEFAULT_FABLE_MODEL: '',
@@ -421,14 +425,11 @@ test('buildWebviewControlledSettingsOverride neutralizes Claude CLI settings env
 });
 
 test('buildWebviewControlledSettingsOverride forwards configured tiers instead of blanking them', () => {
-  // This test only pins the shape of the function's output: configured tiers are echoed
-  // back verbatim, unconfigured ones stay blank.
+  // This test only pins the shape of the function's output when no request-resolved model is
+  // passed: configured tiers are echoed back verbatim, unconfigured ones stay blank.
   //
-  // Note: measurements (SDK 0.3.290 / CLI 2.1.290) show the inline `--settings` env block is
-  // not adopted by the CLI, so this layer has no practical effect on tier resolution. The real
-  // guarantee for subagent tiers is setModelEnvironmentVariables() spreading every tier into
-  // process.env (see utils/model-utils.js). The pass-through is kept because it expresses the
-  // intent faithfully and stays compatible should the CLI adopt settings.env.
+  // Without CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST (CLI login, cloud providers) the CLI honors
+  // this layer on top of the child env, so configured tiers must not be blanked here.
   const settingsEnv = {
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3-flash',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'doubao-seed-2.1-lite',
@@ -469,46 +470,120 @@ test('buildWebviewControlledSettingsOverride leaves unconfigured tiers blank', (
   );
 });
 
-test('buildWebviewControlledSettingsOverride mirrors per-request routing values over settings.json', () => {
-  // The override must state what the current request actually routes to: the values
-  // setModelEnvironmentVariables() has just written into process.env win over the user's
-  // settings.json mapping for the tier they own. Blanking that entry - or letting a stale
-  // settings.json copy through - is what made third-party relays request the official
-  // claude-* models instead of the selected one (issue #1741). Tiers the request did not
-  // touch keep echoing settings.json.
-  withPerRequestRoutingEnv(
-    {
-      ANTHROPIC_MODEL: 'relay-sonnet-model',
-      ANTHROPIC_DEFAULT_SONNET_MODEL: 'relay-sonnet-model',
-    },
-    () => {
-      const result = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
-        ANTHROPIC_MODEL: 'stale-global-model',
-        ANTHROPIC_DEFAULT_SONNET_MODEL: 'stale-sonnet-model',
-        ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3-flash',
-      });
+test('buildWebviewControlledSettingsOverride mirrors the request-resolved model over settings.json', () => {
+  // The resolved model wins over the settings.json mapping for ANTHROPIC_MODEL and for the
+  // tier the request owns. Tiers the request did not touch keep echoing settings.json.
+  const result = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
+    ANTHROPIC_MODEL: 'stale-global-model',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'stale-sonnet-model',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3-flash',
+  }, 'relay-sonnet-model');
 
-      assert.equal(result.env.ANTHROPIC_MODEL, 'relay-sonnet-model',
-        'the per-request selection must win over the settings.json copy');
-      assert.equal(result.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'relay-sonnet-model',
-        'the tier owned by the current request must mirror the request-resolved value');
-      assert.equal(result.env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'glm-5.3-flash',
-        'tiers the request did not touch keep echoing settings.json');
-      assert.equal(result.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, '');
-      assert.equal(result.env.CLAUDE_CODE_SUBAGENT_MODEL, '');
-    },
-  );
+  assert.equal(result.env.ANTHROPIC_MODEL, 'relay-sonnet-model',
+    'the request-resolved model must win over the settings.json copy');
+  assert.equal(result.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'relay-sonnet-model',
+    'the tier owned by the current request must mirror the request-resolved value');
+  assert.equal(result.env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'glm-5.3-flash',
+    'tiers the request did not touch keep echoing settings.json');
+  assert.equal(result.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, '');
+  assert.equal(result.env.CLAUDE_CODE_SUBAGENT_MODEL, '');
 
-  // Without a per-request value the stale settings.json copy must stay blocked (#1509):
-  // neutralization by empty string is still the fallback for ANTHROPIC_MODEL.
-  withPerRequestRoutingEnv({}, () => {
-    const result = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
-      ANTHROPIC_MODEL: 'stale-global-model',
-    });
-
-    assert.equal(result.env.ANTHROPIC_MODEL, '');
-    assert.equal(result.env.ANTHROPIC_DEFAULT_SONNET_MODEL, '');
+  // Without a resolved model the stale settings.json copy must stay blocked (#1509).
+  const fallback = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
+    ANTHROPIC_MODEL: 'stale-global-model',
   });
+  assert.equal(fallback.env.ANTHROPIC_MODEL, '');
+  assert.equal(fallback.env.ANTHROPIC_DEFAULT_SONNET_MODEL, '');
+});
+
+test('buildWebviewControlledSettingsOverride routes the resolved model to the tier of the selected family', () => {
+  const cases = [
+    ['claude-fable-5-1', 'ANTHROPIC_DEFAULT_FABLE_MODEL'],
+    ['claude-opus-4-7', 'ANTHROPIC_DEFAULT_OPUS_MODEL'],
+    ['claude-haiku-4-5', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
+    ['claude-sonnet-4-6', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
+    ['qwen3.5-plus', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
+  ];
+  for (const [modelId, ownedKey] of cases) {
+    const result = buildWebviewControlledSettingsOverride(modelId, {}, 'mapped-model');
+    for (const key of ['ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL']) {
+      assert.equal(result.env[key], key === ownedKey ? 'mapped-model' : '', `${modelId} -> ${key}`);
+    }
+  }
+});
+
+test('buildWebviewControlledSettingsOverride keeps the [1m] state of the request on its tier', () => {
+  const enabled = buildWebviewControlledSettingsOverride('claude-sonnet-4-6[1m]', {}, 'claude-sonnet-4-6[1m]');
+  assert.equal(enabled.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'claude-sonnet-4-6[1m]',
+    'a blank or settings.json entry would drop the suffix the CLI must see');
+  assert.equal(enabled.env.CLAUDE_CODE_DISABLE_1M_CONTEXT, '');
+
+  // The request turned 1M off: a [1m] copy in settings.json must not come back on this tier.
+  const disabled = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', {
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6[1m]',
+  }, 'claude-sonnet-4-6');
+  assert.equal(disabled.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'claude-sonnet-4-6');
+  assert.equal(disabled.env.CLAUDE_CODE_DISABLE_1M_CONTEXT, '1');
+});
+
+test('buildWebviewControlledSettingsOverride never mirrors routing values left in process.env', () => {
+  // Values inherited from the IDE environment (e.g. a relay tutorial's global exports) or left
+  // by an earlier turn are not this request's routing. setModelEnvironmentVariables() only
+  // clears them when settings.json has an env block, and the one-shot callers never call it,
+  // so the override must not read process.env: on the non-managed path a mirrored value would
+  // win over the CLI defaults (e.g. the haiku tier used by the Explore subagent).
+  withProcessRoutingEnv({
+    ANTHROPIC_MODEL: 'ambient-model',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'ambient-relay-opus',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'ambient-relay-sonnet',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'ambient-relay-haiku',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'ambient-subagent',
+  }, () => {
+    const daemon = buildWebviewControlledSettingsOverride('claude-sonnet-4-6', undefined, 'claude-sonnet-4-6');
+    assert.equal(daemon.env.ANTHROPIC_MODEL, 'claude-sonnet-4-6');
+    assert.equal(daemon.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'claude-sonnet-4-6');
+    assert.equal(daemon.env.ANTHROPIC_DEFAULT_OPUS_MODEL, '');
+    assert.equal(daemon.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, '');
+    assert.equal(daemon.env.CLAUDE_CODE_SUBAGENT_MODEL, '');
+
+    // One-shot callers (commit message, prompt enhancer, rewind) pass no resolved model.
+    const oneShot = buildWebviewControlledSettingsOverride('claude-haiku-4-5');
+    assert.equal(oneShot.env.ANTHROPIC_MODEL, '');
+    assert.equal(oneShot.env.ANTHROPIC_DEFAULT_SONNET_MODEL, '');
+    assert.equal(oneShot.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, '');
+  });
+});
+
+test('buildWebviewControlledSettingsOverride agrees with the snapshot setModelEnvironmentVariables writes', () => {
+  // On the daemon path both layers are built from the same request, so the honored layer
+  // (settings override, non-managed) and the child env (managed) must carry the same routing.
+  const settingsEnv = {
+    ANTHROPIC_MODEL: 'stale-global-model',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3-flash',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6[1m]',
+    ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v3.2',
+  };
+  const requests = [
+    ['claude-sonnet-4-6', 'claude-sonnet-4-6'],
+    ['claude-sonnet-4-6[1m]', 'claude-sonnet-4-6[1m]'],
+    ['claude-opus-4-7', 'glm-5.3-flash'],
+    ['claude-haiku-4-5', 'stale-global-model'],
+    ['claude-fable-5-1', 'stale-global-model'],
+    ['qwen3.5-plus', 'qwen3.5-plus'],
+    ['ccs-claude-opus-relay', 'ccs-claude-opus-relay'],
+  ];
+  for (const [modelId, resolvedModelId] of requests) {
+    withProcessRoutingEnv({}, () => {
+      setModelEnvironmentVariables(resolvedModelId, modelId, settingsEnv);
+      const override = buildWebviewControlledSettingsOverride(modelId, settingsEnv, resolvedModelId);
+      for (const key of ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
+        'CLAUDE_CODE_SUBAGENT_MODEL']) {
+        assert.equal(override.env[key], process.env[key] ?? '', `${modelId}: ${key}`);
+      }
+    });
+  }
 });
 
 test('buildCliEnv leaves CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST unset for cloud providers', () => {
@@ -831,14 +906,14 @@ test('injectStartupEnvVars clears previously injected AWS credential vars after 
   assert.equal(result.AWS_SECRET_ACCESS_KEY, null);
 });
 
-test('provider-management contract: each mode routes through a different layer', () => {
-  // The managed flag decides WHICH layer is authoritative, so the contract has
-  // to pin both modes at once (options.env vs options.settings.env).
+test('provider-management contract: both routing layers carry the request in each mode', () => {
+  // The managed flag decides WHICH layer the CLI honors, so the contract pins both layers in
+  // both modes (options.env and options.settings.env). Which layer actually wins is CLI
+  // behavior and cannot be observed here; what this test guarantees is that whichever one
+  // the CLI honors carries the request.
   //
-  // Managed (plugin-owned provider, i.e. relay users): the CLI strips
-  // provider/model routing vars from settings sources, so the child env decides
-  // and this override is not the mechanism that keeps routing correct there -
-  // the exact resolved model id is (2633282d).
+  // Managed (plugin-owned provider, i.e. relay users): the CLI strips provider/model routing
+  // vars from settings sources, so the child env decides.
   const managedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-routing-managed-'));
   try {
     writeCodemossClaudeConfig(managedHome, 'provider-a', {
@@ -849,13 +924,16 @@ test('provider-management contract: each mode routes through a different layer',
     const managed = runRoutingLayers(managedHome);
     assert.equal(managed.childEnv.HOST_MANAGED, '1',
       'a plugin-owned provider must advertise provider management');
-    assert.equal(managed.settingsEnv.ANTHROPIC_MODEL, 'relay-sonnet-model',
-      'the override mirrors the request value regardless of the mode');
+    assert.equal(managed.childEnv.ANTHROPIC_MODEL, 'relay-sonnet-model',
+      'the honored layer in managed mode must carry the request');
+    assert.equal(managed.childEnv.SONNET, 'relay-sonnet-model');
+    assert.equal(managed.settingsEnv.ANTHROPIC_MODEL, 'relay-sonnet-model');
     assert.equal(managed.settingsEnv.SONNET, 'relay-sonnet-model');
 
-    // The [1m] suffix must survive into the settings layer: that value is what
-    // a blank entry used to shadow on the non-managed path.
-    const suffix = runRoutingLayers(managedHome, 'claude-sonnet-4-6[1m]');
+    // The [1m] suffix must survive into both layers: on the non-managed path a blank
+    // settings entry used to shadow it.
+    const suffix = runRoutingLayers(managedHome, 'claude-sonnet-4-6[1m]', 'claude-sonnet-4-6[1m]');
+    assert.equal(suffix.childEnv.SONNET, 'claude-sonnet-4-6[1m]');
     assert.equal(suffix.settingsEnv.SONNET, 'claude-sonnet-4-6[1m]',
       'the tier resolved for the request must keep its [1m] suffix');
     assert.equal(suffix.settingsEnv.ANTHROPIC_MODEL, 'claude-sonnet-4-6[1m]');
@@ -863,8 +941,8 @@ test('provider-management contract: each mode routes through a different layer',
     fs.rmSync(managedHome, { recursive: true, force: true });
   }
 
-  // CLI login: no managed flag, so the inline settings layer IS honored and has
-  // to carry the request values (this is the path the mirroring protects).
+  // CLI login: no managed flag, so the inline settings layer IS honored and has to carry
+  // the request values (this is the path the mirroring protects).
   const loginHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-routing-login-'));
   try {
     writeCodemossClaudeConfig(loginHome, '__cli_login__');
@@ -872,6 +950,8 @@ test('provider-management contract: each mode routes through a different layer',
     const login = runRoutingLayers(loginHome);
     assert.equal(login.childEnv.HOST_MANAGED, undefined,
       'CLI login must not advertise provider management');
+    assert.equal(login.childEnv.ANTHROPIC_MODEL, 'relay-sonnet-model');
+    assert.equal(login.childEnv.SONNET, 'relay-sonnet-model');
     assert.equal(login.settingsEnv.ANTHROPIC_MODEL, 'relay-sonnet-model',
       'without the managed flag the honored layer must agree with the request');
     assert.equal(login.settingsEnv.SONNET, 'relay-sonnet-model');
