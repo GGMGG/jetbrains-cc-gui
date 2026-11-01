@@ -8,6 +8,7 @@
     "timeout": "Le chargement a expiré. Cliquez sur Réessayer.",
     "cancelled": "Le chargement a été annulé. Cliquez sur Réessayer.",
     "failed": "Le chargement a échoué. Cliquez sur Réessayer.",
+    "superseded": "Une activité plus récente a interrompu le chargement. Cliquez sur Réessayer pour le charger.",
     "load": "Charger l’historique",
     "retry": "Réessayer",
     "cancel": "Annuler"

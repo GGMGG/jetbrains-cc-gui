@@ -417,6 +417,36 @@ public class SessionMessageOrchestratorTest {
         assertEquals(1, state.getMessages().size());
         assertEquals("live answer", state.getMessages().get(0).content);
         assertFalse(state.isLoading());
+        assertEquals("A discarded ordinary load must not settle a pending restore",
+                0, orchestrator.getCommittedHistoryLoadCount());
+    }
+
+    @Test
+    public void committedHistoryLoadCountTracksAcceptedOrdinaryTranscripts() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-counted");
+        state.setCwd("/workspace");
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.providerHistory = List.of(
+                createProviderMessage("user", "Where did the restore stop?"),
+                createProviderMessage("assistant", "It timed out before committing."));
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                new SessionCallbackFacade(null),
+                historyAccess,
+                (usedTokens, maxTokens) -> {
+                },
+                0,
+                0
+        );
+        assertEquals(0, orchestrator.getCommittedHistoryLoadCount());
+
+        orchestrator.loadFromServer().join();
+
+        assertEquals(2, state.getMessages().size());
+        assertEquals(1, orchestrator.getCommittedHistoryLoadCount());
     }
 
     @Test

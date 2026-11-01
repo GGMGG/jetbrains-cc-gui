@@ -43,4 +43,19 @@ final class RestoredHistorySession<T> {
             committed = true;
         }
     }
+
+    /** An ordinary load that committed this session's history fulfils the pending restore. */
+    synchronized boolean settleByOrdinaryLoad(T currentSession, String currentSessionId) {
+        if (!isCurrent(currentSession, currentSessionId)) {
+            return false;
+        }
+        committed = true;
+        return true;
+    }
+
+    /** A session swap ends the restore, whichever session object replaces it. */
+    synchronized void retire() {
+        session = null;
+        sessionId = null;
+    }
 }

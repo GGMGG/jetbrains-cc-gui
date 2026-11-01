@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -119,6 +120,8 @@ public class SessionMessageOrchestrator {
      * provides visibility and atomicity — do not read or write it outside that lock.
      */
     private long claudeHistoryVersion;
+    /** Accepted transcript replacements, so callers can tell a committed load from a discarded one. */
+    private final AtomicLong committedHistoryLoads = new AtomicLong();
 
     public SessionMessageOrchestrator(
             Project project,
@@ -224,6 +227,11 @@ public class SessionMessageOrchestrator {
                 }
             }
         }
+    }
+
+    /** Number of history loads whose transcript replaced the live list. */
+    public long getCommittedHistoryLoadCount() {
+        return committedHistoryLoads.get();
     }
 
     /** Load provider history without letting obsolete reads replace a newer transcript. */
@@ -387,6 +395,7 @@ public class SessionMessageOrchestrator {
                                     claudeHistorySessionTitle);
                         }
                         restoreTokenUsage(committedServerMessages);
+                        committedHistoryLoads.incrementAndGet();
                         callbackFacade.notifyMessageUpdate(state.getMessagesSnapshot());
                     });
                     if (!committed) {

@@ -268,22 +268,34 @@ public class MiniMaxHistoryReader {
     private List<JsonObject> getSessionMessagesInternal(String sessionId, String cwd,
                                                          BooleanSupplier cancellation, boolean failMissing) throws IOException {
         HistoryCancellation.check(cancellation);
-        Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
+        SessionLookup lookup = lookupSessionDir(sessionId, cwd, cancellation);
+        Path sessionDir = lookup.dir();
         if (sessionDir == null) {
             if (failMissing) {
+                if (lookup.inconclusive()) {
+                    // A snapshot being rewritten can hide its own session id; retry instead of retiring.
+                    throw new IOException("MiniMax session snapshots are not readable yet: " + sessionId);
+                }
                 throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
             }
 
             return new ArrayList<>();
         }
+        return readSessionDirectory(sessionDir, sessionId, cancellation, failMissing);
+    }
 
+    /** Reads one resolved session directory; strict reads never report an existing directory as missing. */
+    List<JsonObject> readSessionDirectory(Path sessionDir, String sessionId, BooleanSupplier cancellation,
+                                          boolean failMissing) throws IOException {
         // Preferred source: snapshot.json displayMessages.
         Path snapshotPath = sessionDir.resolve("snapshot.json");
+        boolean snapshotReadable = false;
         if (Files.isRegularFile(snapshotPath)) {
             try {
                 JsonObject snapshot = JsonParser
                         .parseString(Files.readString(snapshotPath, StandardCharsets.UTF_8))
                         .getAsJsonObject();
+                snapshotReadable = true;
                 if (snapshot.has("displayMessages")
                         && snapshot.get("displayMessages").isJsonArray()
                         && !snapshot.getAsJsonArray("displayMessages").isEmpty()) {
@@ -302,9 +314,11 @@ public class MiniMaxHistoryReader {
         if (Files.isRegularFile(displayPath)) {
             return parseDisplayJsonl(displayPath, cancellation);
         }
-        if (failMissing) {
-            throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
+        if (failMissing && !snapshotReadable) {
+            // The session directory exists, so an unreadable transcript is retryable, never a retirement signal.
+            throw new IOException("MiniMax session history is not readable yet: " + sessionId);
         }
+        // A readable snapshot without display messages is a valid empty session.
         return new ArrayList<>();
     }
 
@@ -314,14 +328,24 @@ public class MiniMaxHistoryReader {
 
     private Path resolveSessionDir(String sessionId, String cwd,
                                    BooleanSupplier cancellation) throws IOException {
+        return lookupSessionDir(sessionId, cwd, cancellation).dir();
+    }
+
+    /** A session directory lookup that also reports whether an unreadable snapshot could hide the session. */
+    private record SessionLookup(Path dir, boolean inconclusive) {
+    }
+
+    private SessionLookup lookupSessionDir(String sessionId, String cwd,
+                                           BooleanSupplier cancellation) throws IOException {
         HistoryCancellation.check(cancellation);
         if (!isSafeSessionId(sessionId)) {
-            return null;
+            return new SessionLookup(null, false);
         }
         String wanted = sessionId.trim();
         Path best = null;
+        boolean inconclusive = false;
         if (!Files.isDirectory(sessionsRoot)) {
-            return null;
+            return new SessionLookup(null, false);
         }
         // Session dirs are dated mcode-internal names; match by the sessionId
         // inside snapshot.json instead of guessing the dir naming scheme.
@@ -352,14 +376,18 @@ public class MiniMaxHistoryReader {
                                         // Read snapshot.json once per dir — the record
                                         // carries both the id and the workspace.
                                         JsonObject record = readSessionRecord(sessionDir, cancellation);
-                                        if (record == null || !wanted.equals(text(record, "sessionId"))) {
+                                        if (record == null) {
+                                            inconclusive |= mayHideSession(sessionDir, wanted);
+                                            continue;
+                                        }
+                                        if (!wanted.equals(text(record, "sessionId"))) {
                                             continue;
                                         }
                                         // Prefer a session whose workspace matches cwd.
                                         if (cwd != null && !cwd.isBlank()) {
                                             String ws = text(record, "workspaceDir");
                                             if (ws != null && pathsMatch(ws, cwd)) {
-                                                return sessionDir;
+                                                return new SessionLookup(sessionDir, false);
                                             }
                                         }
                                         if (best == null) {
@@ -373,7 +401,29 @@ public class MiniMaxHistoryReader {
                 }
             }
         }
-        return best;
+        return new SessionLookup(best, best == null && inconclusive);
+    }
+
+    /**
+     * True when a directory that could not be identified might still be the wanted session: its
+     * snapshot is mid-rewrite but names the session, or a transcript exists before any snapshot.
+     */
+    private static boolean mayHideSession(Path sessionDir, String wantedSessionId) {
+        Path snapshotPath = sessionDir.resolve("snapshot.json");
+        if (!Files.isRegularFile(snapshotPath)) {
+            return Files.isRegularFile(sessionDir.resolve("display.jsonl"));
+        }
+        try {
+            String text = Files.readString(snapshotPath, StandardCharsets.UTF_8);
+            try {
+                JsonParser.parseString(text).getAsJsonObject();
+                return false;
+            } catch (Exception unparseable) {
+                return text.contains(wantedSessionId);
+            }
+        } catch (IOException unreadable) {
+            return true;
+        }
     }
 
     /**

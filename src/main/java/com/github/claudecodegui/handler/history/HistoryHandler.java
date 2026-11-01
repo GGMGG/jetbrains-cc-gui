@@ -45,6 +45,10 @@ public class HistoryHandler extends BaseMessageHandler {
         void onLoad();
 
         void onCancel(String requestId);
+
+        /** A Codex history selection rebinds the current session in place and supersedes its restore. */
+        default void onCodexSessionSelected() {
+        }
     }
 
     private SessionLoadCallback sessionLoadCallback;
@@ -77,6 +81,8 @@ public class HistoryHandler extends BaseMessageHandler {
 
     public void setRestoredHistoryCallback(RestoredHistoryCallback callback) {
         this.restoredHistoryCallback = callback;
+        historyMessageInjector.setCodexSessionSelectionListener(
+                callback != null ? callback::onCodexSessionSelected : null);
     }
 
     /**

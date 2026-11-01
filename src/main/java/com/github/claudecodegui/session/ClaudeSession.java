@@ -1020,6 +1020,11 @@ public class ClaudeSession {
         return messageOrchestrator.loadFromServer(cancellation);
     }
 
+    /** Number of history loads whose transcript replaced this session's messages. */
+    public long getCommittedHistoryLoadCount() {
+        return messageOrchestrator.getCommittedHistoryLoadCount();
+    }
+
     /**
      * Represents a file attachment (e.g., image).
      */

@@ -70,6 +70,7 @@ public class CodemossSettingsService {
     public static final String GROK_AUTH_METHOD_API_KEY = "api_key";
     public static final String DEFAULT_GROK_AUTH_METHOD = GROK_AUTH_METHOD_OAUTH;
     public static final String LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY = "ccgui.loadHistoryOnStartup";
+    public static final boolean DEFAULT_LOAD_HISTORY_ON_STARTUP = true;
     public static final String HISTORY_LOAD_TIMEOUT_SECONDS_PROPERTY_KEY = "ccgui.historyLoadTimeoutSeconds";
     public static final int DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS = 30;
     public static final int MIN_HISTORY_LOAD_TIMEOUT_SECONDS = 5;
@@ -80,13 +81,22 @@ public class CodemossSettingsService {
      * This is an application-level preference because all project windows share the same behavior.
      */
     public boolean isLoadHistoryOnStartup() {
-        return PropertiesComponent.getInstance().getBoolean(LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY, true);
+        return readLoadHistoryOnStartup(PropertiesComponent.getInstance());
     }
 
     /** Persist the application-level startup history loading preference. */
     public void setLoadHistoryOnStartup(boolean enabled) {
-        PropertiesComponent.getInstance().setValue(LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY, enabled);
+        storeLoadHistoryOnStartup(PropertiesComponent.getInstance(), enabled);
         LOG.info("[CodemossSettingsService] Set load history on startup: " + enabled);
+    }
+
+    static boolean readLoadHistoryOnStartup(PropertiesComponent properties) {
+        return properties.getBoolean(LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY, DEFAULT_LOAD_HISTORY_ON_STARTUP);
+    }
+
+    static void storeLoadHistoryOnStartup(PropertiesComponent properties, boolean enabled) {
+        // The two-argument overload unsets false, which would read back as the enabled default.
+        properties.setValue(LOAD_HISTORY_ON_STARTUP_PROPERTY_KEY, enabled, DEFAULT_LOAD_HISTORY_ON_STARTUP);
     }
 
     /** Returns the bounded timeout used by automatic and manual restored-history loads. */

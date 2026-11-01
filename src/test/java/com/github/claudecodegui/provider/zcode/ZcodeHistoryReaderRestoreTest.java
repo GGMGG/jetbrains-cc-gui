@@ -2,11 +2,14 @@ package com.github.claudecodegui.provider.zcode;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Test;
 
 import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -28,6 +31,16 @@ public class ZcodeHistoryReaderRestoreTest {
         IllegalStateException error = assertThrows(IllegalStateException.class,
                 () -> fixture(null, true).getSessionMessages("session", "/fixture", () -> false));
         assertTrue(error.getCause() instanceof TimeoutException);
+    }
+
+    @Test
+    public void ordinaryListingKeepsItsWarningOnlyTimeoutContract() {
+        JsonObject listing = JsonParser.parseString(fixture(null, true).getSessionsForProjectAsJson("/fixture"))
+                .getAsJsonObject();
+
+        assertFalse(listing.get("success").getAsBoolean());
+        assertEquals("No listSessions result from ZCode channel-manager", listing.get("error").getAsString());
+        assertFalse(fixture(null, true).deleteSession("session", "/fixture"));
     }
 
     private ZcodeHistoryReader fixture(JsonObject response, boolean timeout) {

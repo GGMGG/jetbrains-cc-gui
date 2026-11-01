@@ -85,11 +85,12 @@ public class DshHistoryReader {
         }
         JsonObject stdin = new JsonObject();
         stdin.addProperty("sessionId", sessionId.trim());
-        JsonObject payload = runDshCommand("loadSession", stdin, cancellation);
+        JsonObject payload = propagateFailure
+                ? runDshCommand("loadSession", stdin, cancellation)
+                : runDshCommand("loadSession", stdin);
         if (payload == null || !payload.has("success") || !payload.get("success").getAsBoolean()) {
             if (propagateFailure) {
-                if (payload != null && payload.has("errorCode")
-                        && "HISTORY_LOAD_PROVIDER_TIMEOUT".equals(payload.get("errorCode").getAsString())) {
+                if (isProviderTimeout(payload)) {
                     throw new IllegalStateException("DSH history request timed out",
                             new java.util.concurrent.TimeoutException("DSH history request timed out"));
                 }
@@ -140,7 +141,19 @@ public class DshHistoryReader {
      * object, or null on process/parse failure.
      */
     private JsonObject runDshCommand(String command, JsonObject stdinPayload) {
-        return runDshCommand(command, stdinPayload, () -> false);
+        try {
+            JsonObject payload = runDshCommand(command, stdinPayload, () -> false);
+            // Ordinary list/load/delete calls keep their null-on-timeout contract.
+            return isProviderTimeout(payload) ? null : payload;
+        } catch (CancellationException interrupted) {
+            // Without a cancellation source only an interrupt lands here; the strict runner restored its flag.
+            return null;
+        }
+    }
+
+    private static boolean isProviderTimeout(JsonObject payload) {
+        return payload != null && payload.has("errorCode")
+                && "HISTORY_LOAD_PROVIDER_TIMEOUT".equals(payload.get("errorCode").getAsString());
     }
 
     JsonObject runDshCommand(String command, JsonObject stdinPayload,

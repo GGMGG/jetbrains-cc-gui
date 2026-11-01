@@ -2,7 +2,9 @@ package com.github.claudecodegui.ui.toolwindow;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class RestoredHistorySessionTest {
@@ -31,6 +33,36 @@ public class RestoredHistorySessionTest {
         restore.complete(session, "restored");
         assertFalse(restore.isCurrent(new Object(), "other-tab"));
         assertFalse(restore.isCurrent(session, "restored"));
+    }
+
+    @Test
+    public void retiringTheBindingEndsTheRestoreForEverySession() {
+        RestoredHistorySession<Object> restore = new RestoredHistorySession<>();
+        Object session = new Object();
+        restore.bind(session, "restored");
+        restore.markAttempted();
+
+        restore.retire();
+
+        assertFalse(restore.isCurrent(session, "restored"));
+        assertNull(restore.sessionId());
+    }
+
+    @Test
+    public void anOrdinaryLoadSettlesOnlyTheCurrentBinding() {
+        RestoredHistorySession<Object> restore = new RestoredHistorySession<>();
+        Object session = new Object();
+        restore.bind(session, "restored");
+
+        assertFalse(restore.settleByOrdinaryLoad(new Object(), "restored"));
+        assertFalse(restore.settleByOrdinaryLoad(session, "other"));
+        assertTrue(restore.isCurrent(session, "restored"));
+
+        assertTrue(restore.settleByOrdinaryLoad(session, "restored"));
+        assertFalse(restore.isCurrent(session, "restored"));
+        // The id stays readable until the UI has published the settled state.
+        assertEquals("restored", restore.sessionId());
+        assertFalse(restore.settleByOrdinaryLoad(session, "restored"));
     }
 
     @Test
