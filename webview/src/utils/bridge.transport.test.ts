@@ -5,6 +5,17 @@ const originalBridge = window.sendToJava;
 afterEach(() => { window.sendToJava = originalBridge; });
 
 describe('local bridge dispatch', () => {
+  it('reports an explicit native refusal and permits a later retry through a restored bridge', () => {
+    const refused = vi.fn(() => false);
+    window.sendToJava = refused;
+    expect(sendBridgeEvent('clawbot_bind', '{}')).toBe(false);
+    expect(refused).toHaveBeenCalledWith('clawbot_bind:{}');
+
+    const restored = vi.fn();
+    window.sendToJava = restored;
+    expect(sendBridgeEvent('clawbot_bind', '{}')).toBe(true);
+    expect(restored).toHaveBeenCalledWith('clawbot_bind:{}');
+  });
   it('reports refused undo dispatches without changing the shared bridge contract', () => {
     window.sendToJava = undefined;
     expect(undoFileChanges('/fixture.ts', 'M', [])).toBe(false);
