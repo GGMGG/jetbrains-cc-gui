@@ -1,6 +1,5 @@
 package com.github.claudecodegui.pet;
 
-import com.intellij.openapi.diagnostic.Logger;
 import com.twelvemonkeys.imageio.plugins.webp.WebPImageReaderSpi;
 
 import javax.imageio.ImageIO;
@@ -21,7 +20,7 @@ import java.util.Locale;
 /** Lightweight signature and dimension checks for local and Petdex pet images. */
 public final class CodexPetImageSupport {
 
-    private static final Logger LOG = Logger.getInstance(CodexPetImageSupport.class);
+    private static final System.Logger LOG = System.getLogger(CodexPetImageSupport.class.getName());
 
     public static final int PETDEX_FRAME_WIDTH = 192;
     public static final int PETDEX_FRAME_HEIGHT = 208;
@@ -117,7 +116,7 @@ public final class CodexPetImageSupport {
             throw e;
         } catch (IOException | RuntimeException | LinkageError e) {
             // LinkageError covers IDE readers whose native library or plugin classes are unavailable.
-            LOG.debug("[CodexPet] Image decoder failed: " + reader.getClass().getName(), e);
+            LOG.log(System.Logger.Level.DEBUG, "[CodexPet] Image decoder failed: " + reader.getClass().getName(), e);
         }
         return result;
     }
