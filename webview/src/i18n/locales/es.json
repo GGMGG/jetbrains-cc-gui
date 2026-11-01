@@ -8,6 +8,7 @@
     "timeout": "La carga agotó el tiempo de espera. Pulsa Reintentar.",
     "cancelled": "Se canceló la carga. Pulsa Reintentar para volver a cargar.",
     "failed": "No se pudo cargar el historial. Pulsa Reintentar.",
+    "superseded": "Una actividad más reciente interrumpió la carga del historial. Pulsa Reintentar para cargarlo.",
     "load": "Cargar historial",
     "retry": "Reintentar",
     "cancel": "Cancelar"

@@ -282,6 +282,7 @@ public class GrokHistoryReader {
         Path sessionDir = resolveSessionDir(sessionId, cwd, cancellation);
         if (sessionDir == null) {
             if (failMissing) {
+                requireScannableSessionRoots();
                 throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
             }
 
@@ -291,7 +292,8 @@ public class GrokHistoryReader {
         Path chatPath = sessionDir.resolve("chat_history.jsonl");
         if (!Files.isRegularFile(chatPath)) {
             if (failMissing) {
-                throw new com.github.claudecodegui.provider.common.SessionHistoryNotFoundException(sessionId, cwd);
+                // The session directory exists, so a transcript not written yet is retryable, never a retirement signal.
+                throw new IOException("Grok session history is not readable yet: " + sessionId);
             }
 
             return List.of();
@@ -388,6 +390,17 @@ public class GrokHistoryReader {
             }
         }
         return null;
+    }
+
+    /** A root the id scan could not list proves nothing about the session, so restore retries instead. */
+    private void requireScannableSessionRoots() throws IOException {
+        for (Path sessionsRoot : sessionsRoots) {
+            if (Files.isDirectory(sessionsRoot)) {
+                try (DirectoryStream<Path> ignored = Files.newDirectoryStream(sessionsRoot)) {
+                    // Opening the stream is the readability check.
+                }
+            }
+        }
     }
 
     List<JsonObject> parseChatHistoryToMessages(Path chatPath) throws IOException {

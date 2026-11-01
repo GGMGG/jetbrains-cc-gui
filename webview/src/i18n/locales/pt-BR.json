@@ -8,6 +8,7 @@
     "timeout": "O carregamento excedeu o tempo limite. Selecione Tentar novamente.",
     "cancelled": "O carregamento foi cancelado. Selecione Tentar novamente.",
     "failed": "Falha ao carregar o histórico. Selecione Tentar novamente.",
+    "superseded": "Uma atividade mais recente interrompeu o carregamento. Selecione Tentar novamente para carregá-lo.",
     "load": "Carregar histórico",
     "retry": "Tentar novamente",
     "cancel": "Cancelar"

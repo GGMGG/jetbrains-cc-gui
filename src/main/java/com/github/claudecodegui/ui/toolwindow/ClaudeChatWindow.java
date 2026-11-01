@@ -499,6 +499,8 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
                 if (sessionCallbackAdapter != null) {
                     sessionCallbackAdapter.deactivate();
                 }
+                // Every session swap starts here; the frontend drops the banner on the following clearMessages.
+                ClaudeChatWindow.this.retireRestoredHistory();
             }
 
             @Override
@@ -1946,7 +1948,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
         }
         String errorCode = request.cancellationCode();
         if (errorCode == null) {
-            errorCode = error == null ? "HISTORY_LOAD_SUPERSEDED" : historyLoadErrorCode(error);
+            errorCode = error == null ? RestoredHistoryLoadRequest.SUPERSEDED : historyLoadErrorCode(error);
         }
         String message = error != null ? errorMessage(error) : "History was not committed; retry loading";
         String status = (RestoredHistoryLoadRequest.TIMEOUT.equals(errorCode)
@@ -1957,6 +1959,39 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
                 + ", errorCode=" + errorCode + ", elapsedMs=" + elapsedMillis, error);
         callJavaScript("historyLoadComplete");
         publishRestoredHistoryState(status, request, errorCode, message, 0, true);
+    }
+
+    /** A session swap supersedes the restore, so neither its late outcome nor a replay reaches the new session. */
+    private synchronized void retireRestoredHistory() {
+        RestoredHistoryLoadRequest active = activeRestoredHistoryLoad.getAndSet(null);
+        if (active != null) {
+            active.cancel(RestoredHistoryLoadRequest.SUPERSEDED);
+        }
+        restoredHistoryLoadGeneration.incrementAndGet();
+        restoredHistory.retire();
+        restoredHistoryLoadState = null;
+    }
+
+    /** Settles a pending restore once an ordinary reload of the same session committed its transcript. */
+    private void settleRestoredHistoryIfCommitted(ClaudeSession reloaded, long committedBefore) {
+        if (reloaded.getCommittedHistoryLoadCount() > committedBefore) {
+            settleRestoredHistoryAfterOrdinaryLoad(reloaded);
+        }
+    }
+
+    /** A committed same-session reload fulfils the pending restore and replaces its stale banner. */
+    private synchronized void settleRestoredHistoryAfterOrdinaryLoad(ClaudeSession loadedSession) {
+        String loadedSessionId = loadedSession.getSessionId();
+        if (session != loadedSession || !restoredHistory.settleByOrdinaryLoad(loadedSession, loadedSessionId)) {
+            return;
+        }
+        RestoredHistoryLoadRequest active = activeRestoredHistoryLoad.getAndSet(null);
+        if (active != null) {
+            active.cancel(RestoredHistoryLoadRequest.SUPERSEDED);
+        }
+        restoredHistoryLoadGeneration.incrementAndGet();
+        publishRestoredHistoryState("loaded", null, null, null, loadedSession.getMessages().size(), false);
+        restoredHistory.complete(loadedSession, loadedSessionId);
     }
 
     private boolean isRestoredHistoryRequestCurrent(long generation, ClaudeSession expectedSession,
@@ -2005,7 +2040,7 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
         Throwable current = error;
         while (current != null) {
             if (current instanceof com.github.claudecodegui.session.SessionMessageOrchestrator.HistoryLoadNotCommittedException) {
-                return "HISTORY_LOAD_SUPERSEDED";
+                return RestoredHistoryLoadRequest.SUPERSEDED;
             }
             if (current instanceof java.util.concurrent.TimeoutException) {
                 return "HISTORY_LOAD_PROVIDER_TIMEOUT";
@@ -3130,9 +3165,16 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
         // isSessionActive() check in the continuation additionally blocks any
         // follow-up reload. Two independent guards; neither alone is sufficient.
         ClaudeSession current = session;
+        long committedBefore = current.getCommittedHistoryLoadCount();
         current.loadFromServer().whenComplete((v, ex) -> {
             if (ex != null) {
                 LOG.warn("[ClaudeChatWindow] session reload failed", ex);
+            } else {
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!disposed) {
+                        settleRestoredHistoryIfCommitted(current, committedBefore);
+                    }
+                });
             }
             boolean runAgain;
             synchronized (sessionReloadLock) {
@@ -4631,11 +4673,13 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             // Do not only requestSessionReload: that path never signals historyLoadComplete,
             // so a frontend that cleared the list under __sessionTransitioning stays blank.
             ClaudeSession restoring = current;
+            long committedBefore = restoring.getCommittedHistoryLoadCount();
             restoring.loadFromServer().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
                 if (disposed || session != restoring) {
                     callJavaScript("historyLoadComplete", "0");
                     return;
                 }
+                settleRestoredHistoryIfCommitted(restoring, committedBefore);
                 int count = restoring.getMessages().size();
                 if (streamCoalescer != null) {
                     // Same lock contract as enqueue: the flush may deep-copy live messages.
@@ -4869,6 +4913,11 @@ public class ClaudeChatWindow implements PetOfficeTabNavigator.Target {
             @Override
             public void cancelRestoredHistoryLoad(String requestId) {
                 ClaudeChatWindow.this.cancelRestoredHistoryLoad(requestId);
+            }
+
+            @Override
+            public void retireRestoredHistory() {
+                ClaudeChatWindow.this.retireRestoredHistory();
             }
 
             @Override

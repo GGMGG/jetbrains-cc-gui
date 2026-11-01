@@ -8,6 +8,7 @@
     "timeout": "Session history loading timed out. Select Retry to try again.",
     "cancelled": "Session history loading was cancelled. Select Retry to try again.",
     "failed": "Session history loading failed. Select Retry to try again.",
+    "superseded": "Newer activity interrupted history loading. Select Retry to load it.",
     "load": "Load history",
     "retry": "Retry",
     "cancel": "Cancel"

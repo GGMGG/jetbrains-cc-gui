@@ -47,6 +47,23 @@ public class CodexPetHandlerTest {
     }
 
     @Test
+    public void listsLocalWebpWithoutGlobalWebpProvider() throws Exception {
+        Path root = temporaryFolder.newFolder("webp-list").toPath();
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            Files.createDirectories(root.resolve("webp-pet"));
+            Files.write(root.resolve("webp-pet").resolve("spritesheet.webp"), fixture.sheet());
+
+            JsonArray pets = CodexPetHandler.loadPetAssets(root);
+
+            assertEquals(1, pets.size());
+            JsonObject pet = pets.get(0).getAsJsonObject();
+            assertEquals("webp-pet/spritesheet.webp", pet.get("id").getAsString());
+            assertTrue(pet.get("spriteSheet").getAsBoolean());
+            fixture.assertRegistryUnchanged();
+        }
+    }
+
+    @Test
     public void loadsOnlyVerifiedImageFormatsWithinPetRoot() throws Exception {
         Path tempDir = temporaryFolder.getRoot().toPath();
         Path petDir = Files.createDirectories(tempDir.resolve("pixel-cat"));

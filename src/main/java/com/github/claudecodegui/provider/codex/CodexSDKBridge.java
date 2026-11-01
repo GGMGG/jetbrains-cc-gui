@@ -1468,15 +1468,21 @@ public class CodexSDKBridge extends BaseSDKBridge {
      * Get persisted Codex session history messages.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
-        return this.getSessionMessages(sessionId, cwd, null, () -> false);
+        return this.readSessionMessages(sessionId, cwd, null, () -> false, false);
     }
 
     /** Reads native history on the chat host, with an explicit offline-only legacy fallback. */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd, String channelId) {
-        return this.getSessionMessages(sessionId, cwd, channelId, () -> false);
+        return this.readSessionMessages(sessionId, cwd, channelId, () -> false, false);
     }
 
+    /** Restore read: cancellable, and an unreadable rollout is a retryable failure instead of empty history. */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd, String channelId, BooleanSupplier cancellation) {
+        return this.readSessionMessages(sessionId, cwd, channelId, cancellation, true);
+    }
+
+    private List<JsonObject> readSessionMessages(String sessionId, String cwd, String channelId,
+                                                 BooleanSupplier cancellation, boolean strictLegacyRead) {
         checkHistoryCancellation(cancellation);
         if (this.nativeHistoryEnabled && this.isCodexRuntimeAccessAllowed()) {
             try {
@@ -1513,7 +1519,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     }
                 }
                 try {
-                    List<JsonObject> legacy = this.getLegacySessionMessages(sessionId, cwd, cancellation);
+                    List<JsonObject> legacy = this.getLegacySessionMessages(sessionId, cwd, cancellation, strictLegacyRead);
                     if (CodexNativeHistoryReader.countBlocks(messages, "tool_use") < CodexNativeHistoryReader.countBlocks(legacy, "tool_use")
                             || CodexNativeHistoryReader.countBlocks(messages, "thinking") < CodexNativeHistoryReader.countBlocks(legacy, "thinking")
                             || (!CodexNativeHistoryReader.hasUsage(messages) && CodexNativeHistoryReader.hasUsage(legacy))
@@ -1538,7 +1544,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
             }
         }
         try {
-            return this.getLegacySessionMessages(sessionId, cwd, cancellation);
+            return this.getLegacySessionMessages(sessionId, cwd, cancellation, strictLegacyRead);
         } catch (CancellationException cancelled) {
             throw cancelled;
         } catch (SessionHistoryNotFoundException e) {
@@ -1563,12 +1569,13 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 }
             }
         }
-        List<JsonObject> messages = this.getLegacySessionMessages(sessionId, cwd, cancellation);
+        List<JsonObject> messages = this.getLegacySessionMessages(sessionId, cwd, cancellation, false);
         checkHistoryCancellation(cancellation);
         return messages;
     }
 
-    private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
+    private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd, BooleanSupplier cancellation,
+                                                      boolean strict) {
         try {
             JsonArray historyItems = new JsonArray();
             historyReader.forEachSessionMessage(sessionId, cancellation, historyItems::add);
@@ -1581,6 +1588,11 @@ public class CodexSDKBridge extends BaseSDKBridge {
         } catch (java.nio.file.NoSuchFileException missing) {
             throw new SessionHistoryNotFoundException(sessionId, cwd);
         } catch (Exception e) {
+            if (!strict) {
+                // Ordinary loads keep the legacy contract: an unreadable rollout reads as an empty transcript.
+                LOG.warn("Failed to read Codex session history: " + e.getMessage());
+                return List.of();
+            }
             throw new IllegalStateException("Failed to load Codex session history", e);
         }
     }

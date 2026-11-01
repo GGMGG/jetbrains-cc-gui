@@ -15,6 +15,7 @@ final class RestoredHistoryLoadRequest implements SessionMessageOrchestrator.His
 
     static final String CANCELLED = "HISTORY_LOAD_CANCELLED";
     static final String TIMEOUT = "HISTORY_LOAD_TIMEOUT";
+    static final String SUPERSEDED = "HISTORY_LOAD_SUPERSEDED";
 
     private final String requestId = UUID.randomUUID().toString();
     private final long generation;

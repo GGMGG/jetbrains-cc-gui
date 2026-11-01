@@ -137,6 +137,7 @@ public class ChatWindowDelegate {
         void persistTabSessionState();
         void loadRestoredHistoryManually();
         void cancelRestoredHistoryLoad(String requestId);
+        void retireRestoredHistory();
 
         /**
          * Soft-reload the currently active session's transcript without interrupting
@@ -489,6 +490,11 @@ public class ChatWindowDelegate {
             @Override
             public void onCancel(String requestId) {
                 host.cancelRestoredHistoryLoad(requestId);
+            }
+
+            @Override
+            public void onCodexSessionSelected() {
+                host.retireRestoredHistory();
             }
         });
         host.setHistoryHandler(historyHandler);

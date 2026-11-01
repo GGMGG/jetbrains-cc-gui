@@ -8,6 +8,8 @@ interface StartupHistoryLoadBannerProps {
   currentSessionId: string | null;
 }
 
+const SUPERSEDED_ERROR_CODE = 'HISTORY_LOAD_SUPERSEDED';
+
 const iconByStatus: Record<StartupHistoryLoadState['status'], string> = {
   unloaded: 'codicon-history',
   loading: 'codicon-loading',
@@ -32,15 +34,17 @@ export function StartupHistoryLoadBanner({ state, currentSessionId }: StartupHis
 
   const load = () => window.sendToJava?.('load_restored_history:');
   const cancel = () => window.sendToJava?.(`cancel_restored_history:${state.requestId}`);
-  const messageKey = `startupHistory.${state.status}`;
+  // Newer live work outranked the restore; nothing failed, so say so instead of raising an alert.
+  const superseded = state.status === 'failed' && state.errorCode === SUPERSEDED_ERROR_CODE;
+  const messageKey = superseded ? 'startupHistory.superseded' : `startupHistory.${state.status}`;
 
   return (
     <div
-      className={`${styles.banner} ${styles[state.status] ?? ''}`}
-      role={state.status === 'failed' || state.status === 'timeout' ? 'alert' : 'status'}
+      className={`${styles.banner} ${superseded ? '' : styles[state.status] ?? ''}`}
+      role={!superseded && (state.status === 'failed' || state.status === 'timeout') ? 'alert' : 'status'}
       title={state.message}
     >
-      <span className={`codicon ${iconByStatus[state.status]} ${styles.icon}`} aria-hidden="true" />
+      <span className={`codicon ${superseded ? 'codicon-info' : iconByStatus[state.status]} ${styles.icon}`} aria-hidden="true" />
       <span className={styles.message}>
         {t(messageKey, { count: state.messageCount })}
       </span>

@@ -152,7 +152,12 @@ public class ZcodeHistoryReader {
     // ============================================================================
 
     private JsonObject runCommand(String command, JsonObject stdinPayload) throws Exception {
-        return runCommand(command, stdinPayload, () -> false);
+        try {
+            return runCommand(command, stdinPayload, () -> false);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            // Ordinary list/delete calls keep their warning-only timeout contract; the strict runner already logged it.
+            return null;
+        }
     }
 
     JsonObject runCommand(String command, JsonObject stdinPayload,

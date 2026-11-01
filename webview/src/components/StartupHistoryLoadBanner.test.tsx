@@ -31,6 +31,18 @@ describe('StartupHistoryLoadBanner', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
+  it('explains a superseded restore instead of reporting a failure', () => {
+    render(
+      <StartupHistoryLoadBanner
+        state={{ ...baseState, status: 'failed', errorCode: 'HISTORY_LOAD_SUPERSEDED', generation: 2 }}
+        currentSessionId="session-1"
+      />,
+    );
+
+    expect(screen.getByRole('status').textContent).toContain('startupHistory.superseded');
+    expect(screen.getByRole('button', { name: 'startupHistory.retry' })).toBeTruthy();
+  });
+
   it('cancels only the active request id', () => {
     render(
       <StartupHistoryLoadBanner
