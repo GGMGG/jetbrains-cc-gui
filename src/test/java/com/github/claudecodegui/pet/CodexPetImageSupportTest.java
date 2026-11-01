@@ -5,41 +5,118 @@ import org.junit.Test;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriter;
-import javax.imageio.spi.IIORegistry;
-import javax.imageio.spi.ImageReaderSpi;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 import javax.imageio.stream.ImageOutputStream;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Iterator;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class CodexPetImageSupportTest {
 
     @Test
     public void decodesWebpWithoutRegisteringThePluginProviderInTheIdeRegistry() throws Exception {
-        IIORegistry registry = IIORegistry.getDefaultInstance();
-        List<ImageReaderSpi> removed = new ArrayList<>();
-        registry.getServiceProviders(ImageReaderSpi.class, true).forEachRemaining(provider -> {
-            if (Arrays.stream(provider.getFormatNames()).anyMatch(format -> "webp".equalsIgnoreCase(format))) {
-                removed.add(provider);
-            }
-        });
-        removed.forEach(registry::deregisterServiceProvider);
-        try {
-            assertFalse(ImageIO.getImageReadersByMIMEType("image/webp").hasNext());
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
             bundledImageIoProviderDecodesWebp();
-            assertFalse(ImageIO.getImageReadersByMIMEType("image/webp").hasNext());
-        } finally {
-            removed.forEach(registry::registerServiceProvider);
+            fixture.assertRegistryUnchanged();
+        }
+    }
+
+    @Test
+    public void prefersTheIdeWebpReaderOverTheBundledDecoder() throws Exception {
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            // The bundled decoder could read this sheet too, so a read here proves the IDE reader goes first.
+            StandInWebpReaderSpi ideReader = StandInWebpReaderSpi.decoding(1536, 1872);
+            fixture.register(ideReader);
+
+            BufferedImage image = CodexPetImageSupport.readImage(fixture.sheet());
+
+            assertEquals(1536, image.getWidth());
+            assertEquals(1872, image.getHeight());
+            assertEquals(1, ideReader.reads());
+        }
+    }
+
+    @Test
+    public void loadsSheetsTheBundledDecoderRejectsThroughTheIdeReader() throws Exception {
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            // TwelveMonkeys throws on this sheet, like it does on some valid lossless Petdex sheets.
+            byte[] sheet = Arrays.copyOf(fixture.sheet(), 60);
+            fixture.register(StandInWebpReaderSpi.decoding(1536, 1872));
+
+            BufferedImage image = CodexPetImageSupport.readImage(sheet);
+
+            assertEquals(1536, image.getWidth());
+            assertEquals(1872, image.getHeight());
+        }
+    }
+
+    @Test
+    public void fallsBackToTheBundledDecoderWhenTheIdeWebpReaderFails() throws Exception {
+        assertFallsBackToTheBundledDecoder(StandInWebpReaderSpi.failing(1536, 1872));
+    }
+
+    @Test
+    public void fallsBackToTheBundledDecoderWhenTheIdeWebpReaderCrashes() throws Exception {
+        assertFallsBackToTheBundledDecoder(StandInWebpReaderSpi.crashing(1536, 1872));
+    }
+
+    @Test
+    public void returnsNullWhenEveryDecoderRejectsTheImage() throws Exception {
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            assertNull(CodexPetImageSupport.readImage(Arrays.copyOf(fixture.sheet(), 60)));
+        }
+    }
+
+    @Test
+    public void rejectsOversizedImagesWithoutTryingAnotherDecoder() throws Exception {
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            byte[] sheet = fixture.sheet();
+
+            StandInWebpReaderSpi ideReader = StandInWebpReaderSpi.decoding(8192, 8192);
+            fixture.register(ideReader);
+
+            IOException error = assertThrows(IOException.class, () -> CodexPetImageSupport.readImage(sheet));
+
+            assertEquals("INVALID_PET_IMAGE_DIMENSIONS", error.getMessage());
+            assertEquals(0, ideReader.reads());
+        }
+    }
+
+    @Test
+    public void decodesPngThroughTheRegisteredReader() throws Exception {
+        ByteArrayOutputStream png = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(3, 2, BufferedImage.TYPE_INT_ARGB), "png", png);
+
+        BufferedImage image = CodexPetImageSupport.readImage(png.toByteArray());
+
+        assertEquals(3, image.getWidth());
+        assertEquals(2, image.getHeight());
+    }
+
+    @Test
+    public void readsDecodedDimensionsWithoutGlobalWebpProvider() throws Exception {
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            Path sheet = Files.createTempFile("pet-sheet", ".webp");
+            try {
+                Files.write(sheet, fixture.sheet());
+                CodexPetImageSupport.ImageDimensions dimensions = CodexPetImageSupport.readDecodedDimensions(sheet);
+
+                assertEquals(1536, dimensions.getWidth());
+                assertEquals(1872, dimensions.getHeight());
+            } finally {
+                Files.deleteIfExists(sheet);
+            }
         }
     }
 
@@ -96,10 +173,27 @@ public class CodexPetImageSupportTest {
 
     @Test
     public void bundledImageIoProviderDecodesWebp() throws Exception {
-        byte[] onePixelWebp = Base64.getDecoder().decode(
+        byte[] lossyWebp256 = Base64.getDecoder().decode(
                 "UklGRrYAAABXRUJQVlA4IKoAAACwEACdASoAAQABPm02mUmCAoAIANiWlu4XaxHtwAABPYB77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJwoAP7/Qwv//hyp9O3sf//Ys5bAsQAAAAAAAAAAAA==");
 
-        assertNotNull(CodexPetImageSupport.readImage(onePixelWebp));
+        BufferedImage image = CodexPetImageSupport.readImage(lossyWebp256);
+
+        assertNotNull(image);
+        assertEquals(256, image.getWidth());
+        assertEquals(256, image.getHeight());
+    }
+
+    private static void assertFallsBackToTheBundledDecoder(StandInWebpReaderSpi ideReader) throws Exception {
+        try (WebpTestFixture fixture = new WebpTestFixture()) {
+            fixture.register(ideReader);
+
+            BufferedImage image = CodexPetImageSupport.readImage(fixture.sheet());
+
+            assertEquals(1536, image.getWidth());
+            assertEquals(1872, image.getHeight());
+            assertEquals(1, ideReader.reads());
+            assertEquals(1, ideReader.disposals());
+        }
     }
 
     private static byte[] pngHeader(int width, int height) {

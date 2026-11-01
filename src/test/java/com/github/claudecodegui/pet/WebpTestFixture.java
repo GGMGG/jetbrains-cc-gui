@@ -14,6 +14,7 @@ import static org.junit.Assert.assertFalse;
 public final class WebpTestFixture implements AutoCloseable {
     private final IIORegistry registry = IIORegistry.getDefaultInstance();
     private final List<ImageReaderSpi> removed = new ArrayList<>();
+    private final List<ImageReaderSpi> added = new ArrayList<>();
 
     public WebpTestFixture() {
         registry.getServiceProviders(ImageReaderSpi.class, true).forEachRemaining(provider -> {
@@ -22,7 +23,12 @@ public final class WebpTestFixture implements AutoCloseable {
             }
         });
         removed.forEach(registry::deregisterServiceProvider);
-        assertRegistryUnchanged();
+        try {
+            assertRegistryUnchanged();
+        } catch (AssertionError e) {
+            close();
+            throw e;
+        }
     }
 
     public byte[] sheet() throws IOException {
@@ -34,12 +40,19 @@ public final class WebpTestFixture implements AutoCloseable {
         }
     }
 
+    /** Registers a reader the IDE would own until the fixture closes. */
+    public void register(ImageReaderSpi provider) {
+        registry.registerServiceProvider(provider);
+        added.add(provider);
+    }
+
     public void assertRegistryUnchanged() {
         assertFalse(ImageIO.getImageReadersByMIMEType("image/webp").hasNext());
     }
 
     @Override
     public void close() {
+        added.forEach(registry::deregisterServiceProvider);
         removed.forEach(registry::registerServiceProvider);
     }
 }
