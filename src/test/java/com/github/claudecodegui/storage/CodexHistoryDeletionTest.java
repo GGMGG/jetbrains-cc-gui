@@ -206,17 +206,23 @@ public class CodexHistoryDeletionTest {
         assertEquals(0L, f.count("state_5.sqlite", "threads"));
     }
 
-    @Test public void anUnknownLogsTriggerStillBlocksDeletionWithoutChangingAnySelectedData() throws Exception {
+    @Test public void anAdditionalLogsTriggerDoesNotBlockDeletion() throws Exception {
         var f = new CodexStorageFixture(temporary.newFolder().toPath());
         f.thread("remove", "/project", 10);
         var remove = f.rollout("remove", null, false);
         f.sql("logs_2.sqlite", "DROP TRIGGER block_log_inserts");
-        f.sql("logs_2.sqlite", "CREATE TRIGGER unexpected_log_mutation AFTER DELETE ON logs BEGIN SELECT 1; END");
+        f.thread("keep", "/other-project", 10);
+        f.sql("logs_2.sqlite", "CREATE TRIGGER log_delete_observer AFTER DELETE ON logs BEGIN SELECT 1; END");
+        f.sql("logs_2.sqlite", "INSERT INTO logs(ts,ts_nanos,level,target,feedback_log_body,thread_id) VALUES(1,0,'INFO','fixture','remove','remove')");
+        f.sql("logs_2.sqlite", "INSERT INTO logs(ts,ts_nanos,level,target,feedback_log_body,thread_id) VALUES(1,0,'INFO','fixture','keep','keep')");
         var result = f.service().deleteHistorySessions(List.of("remove"));
-        assertEquals(result.toString(), "FAILED_CLEAN", result.get("state").getAsString());
-        assertEquals("DATABASE_SCHEMA_UNSUPPORTED", result.get("error").getAsString());
-        assertTrue(Files.exists(remove));
+        assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+        assertFalse(Files.exists(remove));
         assertEquals(1L, f.count("state_5.sqlite", "threads"));
         assertEquals(1L, f.count(CodexStoragePaths.HISTORY_DATABASE, "thread_items"));
+        try (var connection = CodexStorageDatabase.open(f.root.resolve("logs_2.sqlite"), true)) {
+            assertEquals(1L, CodexStorageDatabase.scalar(connection, "SELECT count(*) FROM logs WHERE thread_id='keep'"));
+            assertEquals(0L, CodexStorageDatabase.scalar(connection, "SELECT count(*) FROM logs WHERE thread_id='remove'"));
+        }
     }
 }

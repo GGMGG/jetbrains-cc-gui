@@ -34,7 +34,7 @@ export const HistoryConfirmDialogs = memo(({
       {/* Delete confirmation dialog */}
       {deletingSessionId && (
         <div className="modal-overlay" onClick={onCancelDelete} role="presentation">
-          <div className="modal-content" onClick={stopPropagationHandler}>
+          <div className="modal-content" onClick={stopPropagationHandler} role="dialog" aria-modal="true" aria-label={t('history.confirmDelete')}>
             <h3>{t('history.confirmDelete')}</h3>
             <p>{t('history.deleteMessage')}</p>
             <div className="modal-actions">

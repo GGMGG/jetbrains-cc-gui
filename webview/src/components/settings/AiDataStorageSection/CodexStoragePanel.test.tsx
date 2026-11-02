@@ -1,7 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CodexStoragePanel from './CodexStoragePanel';
-import { storageRequest, type CodexStoragePage } from './codexStorageBridge';
+import { receiveCodexStorageResponse, storageRequest, type CodexStorageMutationStatus, type CodexStoragePage } from './codexStorageBridge';
+
+const activity = vi.hoisted(() => ({ status: null as CodexStorageMutationStatus | null, refresh: vi.fn() }));
+vi.mock('./useCodexStorageMutationStatus', () => ({ useCodexStorageMutationStatus: () => ({ status: activity.status, refresh: activity.refresh }) }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('./codexStorageBridge', async importOriginal => ({
@@ -11,10 +14,16 @@ const session = { sessionId: 'fixture-id', title: 'Local fixture', cwd: '/projec
   fileSize: 100, lastTimestamp: 0, firstTimestamp: 0, archived: false, running: false, readable: true };
 const page: CodexStoragePage = { sessions: [session], total: 1, page: 1, pageSize: 20, hasMore: false, complete: true, errors: [] };
 
-describe('read-only storage browser', () => {
-  beforeEach(() => { vi.mocked(storageRequest).mockReset(); });
+describe('storage browser', () => {
+  beforeEach(() => {
+    vi.mocked(storageRequest).mockReset();
+    activity.status = null;
+    activity.refresh.mockReset();
+    localStorage.clear();
+    window.sendToJava = vi.fn();
+  });
 
-  it('reads transcript pages on demand and offers no mutation controls', async () => {
+  it('reads transcript pages on demand and keeps advanced maintenance outside this panel', async () => {
     vi.mocked(storageRequest).mockImplementation(async action => {
       if (action === 'list_ai_storage_sessions') return page;
       if (action === 'get_ai_storage_session') return { sessionId: session.sessionId,
@@ -66,5 +75,40 @@ describe('read-only storage browser', () => {
     fireEvent.click(screen.getByText('settings.codexStorage.refresh'));
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(screen.queryByText('settings.codexStorage.allSessions')).toBeNull();
+  });
+
+  it('requires confirmation and retains the row until the database and file receipt arrives', async () => {
+    activity.status = { available: true, deletionAvailable: true, runningSessionIds: [], writerSessionIds: [] };
+    vi.mocked(storageRequest).mockResolvedValue(page);
+    render(<CodexStoragePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'common.delete' }));
+    expect(window.sendToJava).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'common.delete' }));
+    expect(screen.getByText('Local fixture')).toBeTruthy();
+    const call = vi.mocked(window.sendToJava!).mock.calls[0][0];
+    const request = JSON.parse(call.slice(call.indexOf(':') + 1)) as { requestId: string; operationId: string };
+    vi.mocked(storageRequest).mockResolvedValue({ ...page, sessions: [], total: 0 });
+    await act(async () => receiveCodexStorageResponse(JSON.stringify({ requestId: request.requestId,
+      action: 'delete_ai_storage_sessions', success: true, data: { operationId: request.operationId,
+        kind: 'DELETE_SESSIONS', state: 'COMPLETED', targets: [session.sessionId], createdAt: 'now', updatedAt: 'now',
+        result: { deletedSessionIds: [session.sessionId], metadataStatus: 'COMPLETE' } } })));
+    await waitFor(() => expect(screen.queryByText('Local fixture')).toBeNull());
+  });
+
+  it('cancels confirmation when the target starts running and excludes it from bulk selection', async () => {
+    activity.status = { available: true, deletionAvailable: true, runningSessionIds: [], writerSessionIds: [] };
+    vi.mocked(storageRequest).mockResolvedValue(page);
+    const view = render(<CodexStoragePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'common.delete' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    activity.status = { ...activity.status, runningSessionIds: [session.sessionId] };
+    view.rerender(<CodexStoragePanel />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect((screen.getByRole('button', { name: 'common.delete' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'history.selectMode' }) as HTMLButtonElement).disabled).toBe(true);
+    activity.status = { ...activity.status, runningSessionIds: [] };
+    view.rerender(<CodexStoragePanel />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(window.sendToJava).not.toHaveBeenCalled();
   });
 });

@@ -49,7 +49,8 @@ final class CodexStorageMaintenanceHandler {
             CodexStorageMaintenance maintenance = new CodexStorageMaintenance(CodexStoragePaths.current());
             JsonElement data = switch (action) {
                 case "get_ai_storage_database_status" -> maintenance.databaseStatus();
-                case "get_ai_storage_mutation_status" -> maintenance.mutationStatus();
+                case "get_ai_storage_mutation_status" -> CodexStorageDeletionHandler.mutationStatus(
+                        maintenance, context.getSession(), context.getCodexSDKBridge());
                 case "compact_ai_storage_database" -> maintenance.compact(
                         CodexStorageHandler.required(request, "databaseId"), CodexStorageHandler.required(request, "operationId"));
                 case "preview_ai_storage_orphans" -> maintenance.previewOrphans();

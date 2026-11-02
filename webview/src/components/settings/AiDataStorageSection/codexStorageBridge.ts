@@ -106,6 +106,7 @@ interface StorageData {
   compact_ai_storage_database: CodexMaintenanceOperation;
   preview_ai_storage_orphans: CodexOrphanPreview;
   clean_ai_storage_orphans: CodexMaintenanceOperation;
+  delete_ai_storage_sessions: CodexMaintenanceOperation;
   get_ai_storage_maintenance_operation: CodexMaintenanceOperation;
   list_ai_storage_maintenance_operations: CodexMaintenanceOperation[];
   get_ai_storage_usage: CodexStorageUsage;
@@ -149,7 +150,7 @@ function operation(value: unknown): value is CodexMaintenanceOperation {
 function validData(action: keyof StorageData, value: unknown): boolean {
   if (action === 'list_ai_storage_maintenance_operations') return Array.isArray(value) && value.every(operation);
   if (action === 'compact_ai_storage_database' || action === 'clean_ai_storage_orphans'
-    || action === 'get_ai_storage_maintenance_operation') return operation(value);
+    || action === 'delete_ai_storage_sessions' || action === 'get_ai_storage_maintenance_operation') return operation(value);
   if (!object(value)) return false;
   switch (action) {
     case 'reveal_ai_storage_session': return typeof value.sessionId === 'string' && value.sessionId.length > 0;
@@ -209,7 +210,13 @@ export function receiveCodexStorageResponse(json: string): void {
   if (!request || request.action !== value.action) return;
   if (!value.success) request.reject(new CodexStorageError(typeof value.error === 'string' ? value.error : 'STORAGE_OPERATION_FAILED'));
   else if (!validData(request.action, value.data)) request.reject(new CodexStorageError('STORAGE_RESPONSE_INVALID'));
-  else request.resolve(value.data);
+  else {
+    request.resolve(value.data);
+    if (operation(value.data)) publishOperation(value.data);
+    else if (request.action === 'list_ai_storage_maintenance_operations' && Array.isArray(value.data)) {
+      value.data.filter(operation).forEach(publishOperation);
+    }
+  }
 }
 if (typeof window !== 'undefined') window.onCodexStorageResponse = receiveCodexStorageResponse;
 let nextRequest = 0;
@@ -242,4 +249,87 @@ export function storageRequest<K extends keyof StorageData>(action: K, fields: R
       reject(new CodexStorageError('STORAGE_BRIDGE_UNAVAILABLE'));
     }
   });
+}
+
+export interface CodexDeletionAttempt {
+  operationId: string;
+  sessionIds: string[];
+  origin: 'storage' | 'history';
+}
+const deletionKey = 'ccgui.codex.session-deletion.pending';
+export const deletionPendingEvent = 'codex-deletion-pending';
+const completedListeners = new Set<(value: CodexMaintenanceOperation) => void>();
+const emittedDeletions = new Set<string>();
+let deletionInFlight = false;
+
+export function operationSucceeded(value: CodexMaintenanceOperation): boolean {
+  return value.state === 'COMPLETED' || value.state === 'COMPLETED_WITH_WARNINGS';
+}
+export function pendingCodexDeletion(): CodexDeletionAttempt | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(deletionKey) ?? 'null');
+    return object(value) && typeof value.operationId === 'string'
+      && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.operationId)
+      && strings(value.sessionIds) && value.sessionIds.length > 0 && value.sessionIds.length <= 1000
+      && value.sessionIds.every(id => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))
+      && (value.origin === 'storage' || value.origin === 'history') ? value as unknown as CodexDeletionAttempt : null;
+  } catch { return null; }
+}
+export function codexDeletionInFlight(): boolean { return deletionInFlight; }
+function notifyDeletionPending() { window.dispatchEvent(new Event(deletionPendingEvent)); }
+function publishOperation(value: CodexMaintenanceOperation) {
+  if (pendingCodexDeletion()?.operationId === value.operationId && (
+    ['FAILED_CLEAN', 'CANCELLED_CLEAN'].includes(value.state)
+    || operationSucceeded(value) && value.result?.metadataStatus === 'COMPLETE')) {
+    try { localStorage.removeItem(deletionKey); } catch { /* Retaining an identity is safe to retry. */ }
+    notifyDeletionPending();
+  }
+  if (operationSucceeded(value) && value.result?.deletedSessionIds?.length && !emittedDeletions.has(value.operationId)) {
+    emittedDeletions.add(value.operationId);
+    if (emittedDeletions.size > 500) emittedDeletions.delete(emittedDeletions.values().next().value!);
+    for (const listener of completedListeners) {
+      try { listener(value); } catch { console.warn('[CodexStorage] Deletion observer failed'); }
+    }
+  }
+}
+function operationId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+async function dispatchDeletion(attempt: CodexDeletionAttempt): Promise<CodexMaintenanceOperation> {
+  if (deletionInFlight) throw new CodexStorageError('STORAGE_OPERATION_PENDING');
+  // Persist targets as well as identity: a retry must never adopt a newer selection.
+  try { localStorage.setItem(deletionKey, JSON.stringify(attempt)); }
+  catch { throw new CodexStorageError('STORAGE_RECOVERY_UNAVAILABLE'); }
+  deletionInFlight = true;
+  notifyDeletionPending();
+  try { return await storageRequest('delete_ai_storage_sessions', { ...attempt }); }
+  finally { deletionInFlight = false; notifyDeletionPending(); }
+}
+export function retryCodexDeletion(): Promise<CodexMaintenanceOperation> {
+  const attempt = pendingCodexDeletion();
+  return attempt ? dispatchDeletion(attempt) : Promise.reject(new CodexStorageError('STORAGE_OPERATION_NOT_FOUND'));
+}
+function deleteSessions(ids: string[], origin: CodexDeletionAttempt['origin']): Promise<CodexMaintenanceOperation> {
+  if (pendingCodexDeletion()) return Promise.reject(new CodexStorageError('STORAGE_OPERATION_PENDING'));
+  const sessionIds = Array.from(new Set(ids));
+  if (sessionIds.length === 0 || sessionIds.length > 1000
+    || sessionIds.some(id => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))) {
+    return Promise.reject(new CodexStorageError('INVALID_SESSION_SELECTION'));
+  }
+  return dispatchDeletion({ operationId: operationId(), sessionIds, origin });
+}
+export function deleteCodexStorageSessions(ids: string[]): Promise<CodexMaintenanceOperation> {
+  return deleteSessions(ids, 'storage');
+}
+export function deleteCodexHistorySessions(ids: string[]): Promise<CodexMaintenanceOperation> {
+  return deleteSessions(ids, 'history');
+}
+export function subscribeCodexDeletion(listener: (value: CodexMaintenanceOperation) => void): () => void {
+  completedListeners.add(listener);
+  return () => { completedListeners.delete(listener); };
 }

@@ -1,8 +1,13 @@
-import { useDeferredValue, useEffect, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { HistoryConfirmDialogs } from '../../history/HistoryConfirmDialogs';
+import { useHistorySelection } from '../../history/useHistorySelection';
+import CodexDeletionRecovery from './CodexDeletionRecovery';
 import CodexStorageContentRecord from './CodexStorageContentRecord';
-import { CodexStorageError, storageRequest, type CodexStorageContent, type CodexStoragePage,
+import { CodexStorageError, deleteCodexStorageSessions, deletionPendingEvent, pendingCodexDeletion,
+  operationSucceeded, storageRequest, subscribeCodexDeletion, type CodexStorageContent, type CodexStoragePage,
   type CodexStorageSession, type CodexStorageUsage } from './codexStorageBridge';
+import { useCodexStorageMutationStatus } from './useCodexStorageMutationStatus';
 import styles from './codexStorage.module.less';
 
 function bytes(size: number): string {
@@ -14,7 +19,7 @@ function errorCode(error: unknown): string {
   return error instanceof CodexStorageError ? error.code : 'STORAGE_OPERATION_FAILED';
 }
 
-/** Cross-project read-only inventory; transcript pages are fetched only on request. */
+/** Cross-project inventory with confirmed, journaled deletion of eligible sessions. */
 export default function CodexStoragePanel() {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
@@ -39,6 +44,51 @@ export default function CodexStoragePanel() {
   const [contentLoading, setContentLoading] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const locationRef = useRef<AbortController | null>(null);
+  const { status: admission, refresh: refreshAdmission } = useCodexStorageMutationStatus();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletionError, setDeletionError] = useState<string | null>(null);
+  const [hasPendingDeletion, setHasPendingDeletion] = useState(() => pendingCodexDeletion() !== null);
+  const lifetime = useRef<AbortController | null>(null);
+  const allowed = admission?.deletionAvailable === true && !hasPendingDeletion && !listLoading;
+  const eligible = useMemo(() => !allowed || !admission ? [] : (page?.sessions ?? []).filter(session => {
+    if (admission.runningSessionIds.includes(session.sessionId) || admission.writerSessionIds.includes(session.sessionId)) return false;
+    // The backend can unload the current window's idle writer. Other owners stay protected.
+    return !session.deletionUnavailableReason || session.deletionUnavailableReason === 'SESSION_WRITER_BUSY';
+  }), [admission, allowed, page]);
+  const eligibleIds = useMemo(() => new Set(eligible.map(session => session.sessionId)), [eligible]);
+  const deleteSessions = useCallback((ids: string[]) => {
+    if (ids.some(id => !eligibleIds.has(id))) return;
+    setDeletionError(null);
+    const signal = lifetime.current?.signal;
+    void deleteCodexStorageSessions(ids).then(result => {
+      if (!signal?.aborted && (!operationSucceeded(result) || result.result?.warning)) {
+        setDeletionError(result.error ?? result.result?.warning ?? 'STORAGE_OPERATION_FAILED');
+      }
+    }).catch(error => { if (!signal?.aborted) setDeletionError(errorCode(error)); })
+      .finally(() => { if (!signal?.aborted) void refreshAdmission(); });
+  }, [eligibleIds, refreshAdmission]);
+  const selectionRows = useMemo(() => eligible.map(({ sessionId, title, running }) => ({ sessionId, title, running })), [eligible]);
+  const selection = useHistorySelection(selectionRows, deleteSessions);
+
+  useEffect(() => {
+    if (deletingId && !eligibleIds.has(deletingId)) setDeletingId(null);
+  }, [deletingId, eligibleIds]);
+
+  useEffect(() => {
+    const changed = () => setHasPendingDeletion(pendingCodexDeletion() !== null);
+    window.addEventListener(deletionPendingEvent, changed);
+    window.addEventListener('storage', changed);
+    return () => {
+      window.removeEventListener(deletionPendingEvent, changed);
+      window.removeEventListener('storage', changed);
+    };
+  }, []);
+  useEffect(() => subscribeCodexDeletion(operation => {
+    const deleted = new Set(operation.result?.deletedSessionIds);
+    setSelected(previous => previous && deleted.has(previous.sessionId) ? null : previous);
+    setUsage(null);
+    setRevision(value => value + 1);
+  }), []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -74,11 +124,16 @@ export default function CodexStoragePanel() {
     return () => controller.abort();
   }, [contentCursors, contentPage, selected]);
 
-  useEffect(() => () => {
-    const scan = scanRef.current;
-    scanRef.current = null;
-    scan?.abort();
-    locationRef.current?.abort();
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => {
+      controller.abort();
+      const scan = scanRef.current;
+      scanRef.current = null;
+      scan?.abort();
+      locationRef.current?.abort();
+    };
   }, []);
 
   function scan() {
@@ -142,17 +197,40 @@ export default function CodexStoragePanel() {
       <button type="button" disabled={listLoading} onClick={() => setRevision(value => value + 1)}>{t('settings.codexStorage.refresh')}</button>
     </div>
     <p>{t('settings.codexStorage.sessionSizeHint')}</p>
+    <CodexDeletionRecovery />
+    {admission && !admission.deletionAvailable && <p role="status">{t(
+      `settings.codexStorage.errors.${admission.deletionUnavailableReason}`, {
+        defaultValue: t('settings.codexStorage.errors.STORAGE_OPERATION_FAILED'),
+      })}</p>}
+    {deletionError && <p role="alert">{t(`settings.codexStorage.errors.${deletionError}`, {
+      defaultValue: t('settings.codexStorage.errors.STORAGE_OPERATION_FAILED'),
+    })}</p>}
+    <div className={styles.toolbar}>
+      {selection.isSelectionMode ? <>
+        <button type="button" onClick={selection.exitSelectionMode}>{t('history.exitSelectMode')}</button>
+        <button type="button" disabled={!allowed || eligible.length === 0} onClick={selection.toggleSelectAllVisible}>
+          {t(selection.allVisibleSelected ? 'history.clearSelection' : 'history.selectAll')}
+        </button>
+        <button type="button" disabled={!allowed || selection.selectedCount === 0} onClick={selection.startDeleteSelected}>
+          {t('history.deleteSelected', { count: selection.selectedCount })}
+        </button>
+      </> : <button type="button" disabled={!allowed || eligible.length === 0} onClick={selection.enterSelectionMode}>{t('history.selectMode')}</button>}
+    </div>
     {listError && <p role="alert">{t('settings.codexStorage.sessionLoadFailed')} {listError}</p>}
     {locationError && <p role="alert">{locationError}</p>}
     {listLoading ? <p role="status">{t('common.loading')}</p> : page && <>
       <h4>{t(page.complete ? 'settings.codexStorage.allSessions' : 'settings.codexStorage.partialSessions', { count: page.total })}</h4>
       {page.sessions.length === 0 ? <p>{t('settings.codexStorage.empty')}</p> : <ul className={styles.sessions}>
         {page.sessions.map(session => <li key={session.sessionId}>
+          {selection.isSelectionMode && <input type="checkbox" disabled={!eligibleIds.has(session.sessionId)}
+            aria-label={t('settings.codexDeletion.selectSession', { title: session.title })}
+            checked={selection.selectedSessionIds.has(session.sessionId)} onChange={() => selection.toggleSessionSelection(session.sessionId)} />}
           <div className={styles.identity}><strong>{session.title}</strong><code>{session.cwd}</code><small>{session.sessionId}</small></div>
           <span>{bytes(session.fileSize)}</span>
           <div className={styles.actions}>
             <button type="button" onClick={() => openContent(session)} disabled={!session.readable}>{t('settings.codexStorage.view')}</button>
             <button type="button" onClick={() => reveal(session)}>{t('settings.codexStorage.openLocation')}</button>
+            <button type="button" disabled={!eligibleIds.has(session.sessionId)} onClick={() => setDeletingId(session.sessionId)}>{t('common.delete')}</button>
           </div>
         </li>)}
       </ul>}
@@ -169,6 +247,13 @@ export default function CodexStoragePanel() {
       <summary>{t('settings.codexStorage.scanErrors', { count: errors.length })}</summary>
       <ul>{errors.slice(0, 20).map((error, index) => <li key={index}>{error}</li>)}</ul>
     </details>}
+    <HistoryConfirmDialogs deletingSessionId={deletingId && eligibleIds.has(deletingId) ? deletingId : null} convertingSessionId={null}
+      isDeletingSelected={selection.isDeletingSelected && allowed && selection.selectedCount > 0} selectedCount={selection.selectedCount} t={t}
+      onCancelDelete={() => setDeletingId(null)} onConfirmDelete={() => {
+        if (deletingId && eligibleIds.has(deletingId)) deleteSessions([deletingId]);
+        setDeletingId(null);
+      }} onCancelConvert={() => {}} onConfirmConvert={() => {}}
+      onCancelDeleteSelected={selection.cancelDeleteSelected} onConfirmDeleteSelected={selection.confirmDeleteSelected} />
     {selected && <section className={styles.content} aria-label={t('settings.codexStorage.sessionContent')}>
       <div className={styles.toolbar}><h4>{selected.title}</h4><button type="button" onClick={() => setSelected(null)}>{t('settings.codexStorage.close')}</button></div>
       {contentLoading && <p role="status">{t('common.loading')}</p>}

@@ -5,6 +5,7 @@ import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.github.claudecodegui.testing.SessionMetadataBridgeFixture;
 import org.junit.Rule;
 import org.junit.Test;
@@ -36,6 +37,18 @@ public class HistoryDeleteServiceTest {
 
     @Rule
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @Test
+    public void codexDeletionRequiresAConfirmedDatabaseAndFileReceipt() throws Exception {
+        HistoryDeleteService.confirmedCodexDeletion(JsonParser.parseString(
+                "{\"state\":\"COMPLETED\",\"result\":{\"deletedSessionIds\":[\"parent\",\"child\"]}}"
+        ).getAsJsonObject());
+        for (String state : List.of("FAILED_CLEAN", "RECONCILIATION_REQUIRED", "COMMITTING")) {
+            var error = assertThrows(java.io.IOException.class, () -> HistoryDeleteService.confirmedCodexDeletion(
+                    JsonParser.parseString("{\"state\":\"" + state + "\",\"error\":\"DATABASE_BUSY\"}").getAsJsonObject()));
+            assertEquals("DATABASE_BUSY", error.getMessage());
+        }
+    }
 
     @Test
     public void parseSessionIdsAcceptsArrayPayload() {

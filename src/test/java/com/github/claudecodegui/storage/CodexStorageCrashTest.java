@@ -158,13 +158,6 @@ public class CodexStorageCrashTest {
                 Class.forName("kotlin.Unit"))) {
             locations.add(location(type));
         }
-        var schema = CodexStorageMaintenance.class.getResource("/codex-storage-schemas.json");
-        if (schema.getProtocol().equals("jar")) {
-            String file = schema.getFile();
-            locations.add(Path.of(java.net.URI.create(file.substring(0, file.indexOf("!/")))).toString());
-        } else {
-            locations.add(Path.of(schema.toURI()).getParent().toString());
-        }
         String executable = System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java";
         var command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", executable).toString()));
         String jnaPath = System.getProperty("jna.boot.library.path");

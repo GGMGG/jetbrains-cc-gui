@@ -26,5 +26,6 @@ failures or errors. Checkstyle passed. The affected frontend suite passed all
 
 These checks use disposable fixtures and do not alter an installed Codex home.
 They do not establish live IDE rendering or cross-platform filesystem behavior.
-The panel exposes no mutation command; later maintenance work must retain its
-own schema, platform, activity, ownership and recovery gates.
+The original inventory review unit exposes no mutation command. Dependent
+maintenance and session-deletion changes retain their own schema, platform,
+activity, ownership and recovery gates, documented in their separate test notes.
