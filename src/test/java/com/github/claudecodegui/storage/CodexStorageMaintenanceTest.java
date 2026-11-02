@@ -26,7 +26,7 @@ public class CodexStorageMaintenanceTest {
         var fixture = fixture();
         for (String name : CodexStoragePaths.DATABASES) {
             try (Connection connection = CodexStorageDatabase.open(fixture.root.resolve(name), true)) {
-                CodexStorageDatabase.requireSupported(connection, name);
+                CodexStorageDatabase.requirePatchedEngine(connection);
                 CodexStorageDatabase.checkIntegrity(connection);
             }
         }
@@ -59,16 +59,21 @@ public class CodexStorageMaintenanceTest {
         assertFalse(new CodexMaintenanceJournal(f.coordination).hasPending());
     }
 
-    @Test public void unknownSchemaRejectsBeforeAnyRolloutDeletion() throws Exception {
+    @Test public void additionalTablesDoNotBlockDeletionOrChangeUnselectedData() throws Exception {
         var f = fixture();
         f.thread("selected", "/project", 100);
         var rollout = f.rollout("selected", null, false);
-        f.sql("goals_1.sqlite", "CREATE TABLE new_owned_store(thread_id TEXT)");
+        f.thread("keep", "/other-project", 100);
+        f.sql("goals_1.sqlite", "CREATE TABLE client_metadata(key TEXT PRIMARY KEY,value TEXT)");
+        f.sql("goals_1.sqlite", "INSERT INTO client_metadata VALUES('preserved','metadata')");
         var result = f.service().deleteSessions(List.of("selected"), UUID.randomUUID().toString(), false);
-        assertEquals("FAILED_CLEAN", result.get("state").getAsString());
-        assertEquals("DATABASE_SCHEMA_UNSUPPORTED", result.get("error").getAsString());
-        assertTrue(Files.exists(rollout));
+        assertEquals(result.toString(), "COMPLETED", result.get("state").getAsString());
+        assertFalse(Files.exists(rollout));
+        assertEquals(1L, f.count("state_5.sqlite", "threads"));
         assertEquals(1L, f.count(CodexStoragePaths.HISTORY_DATABASE, "thread_items"));
+        try (var connection = CodexStorageDatabase.open(f.root.resolve("goals_1.sqlite"), true)) {
+            assertEquals(1L, CodexStorageDatabase.scalar(connection, "SELECT count(*) FROM client_metadata WHERE key='preserved' AND value='metadata'"));
+        }
     }
 
     @Test public void ambiguousMemoryJobBlocksTheEntireDelete() throws Exception {

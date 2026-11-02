@@ -48,7 +48,7 @@ final class CodexStorageStores implements AutoCloseable {
                     identities.put(name, CodexStoragePaths.identity(real));
                     // Reserve writes and a consistent snapshot without excluding idle native WAL connections.
                     connection.setAutoCommit(false);
-                    CodexStorageDatabase.requireSupported(connection, name);
+                    CodexStorageDatabase.requirePatchedEngine(connection);
                     CodexStorageDatabase.checkIntegrity(connection);
                 }
             }

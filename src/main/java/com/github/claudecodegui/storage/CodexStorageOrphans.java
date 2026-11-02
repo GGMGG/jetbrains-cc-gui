@@ -31,7 +31,7 @@ final class CodexStorageOrphans {
         }
         Map<String, long[]> totals = new LinkedHashMap<>();
         try (Connection connection = CodexStorageDatabase.open(paths.existingFile(paths.root().resolve(CodexStoragePaths.HISTORY_DATABASE)), true)) {
-            CodexStorageDatabase.requireSupported(connection, CodexStoragePaths.HISTORY_DATABASE);
+            CodexStorageDatabase.requirePatchedEngine(connection);
             for (String table : List.of("thread_items", "thread_turns", "thread_realtime_items", "thread_history_projection_state")) {
                 String bytes = table.equals("thread_items") || table.equals("thread_realtime_items")
                         ? "COALESCE(SUM(length(CAST(item_json AS BLOB))),0)" : "0";
