@@ -12,6 +12,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.List;
+import java.util.function.Consumer;
 
 final class CodexStorageFixture {
     final Path root;
@@ -39,6 +40,14 @@ final class CodexStorageFixture {
                 }
             }
         }
+    }
+
+    CodexStorageMaintenance service() {
+        return service(checkpoint -> { });
+    }
+
+    CodexStorageMaintenance service(Consumer<String> observer) {
+        return new CodexStorageMaintenance(paths, gate, coordination, path -> Long.MAX_VALUE, true, observer);
     }
 
     void thread(String id, String cwd, int payloadSize) throws Exception {

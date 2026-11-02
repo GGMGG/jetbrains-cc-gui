@@ -68,6 +68,10 @@ public final class AiDataMigrationCoordinator {
                     channel.close();
                     return null;
                 }
+                if (!"codex-storage".equals(operation)
+                        && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                    throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+                }
                 String ownerId = UUID.randomUUID().toString();
                 Files.deleteIfExists(coordinationDirectory.resolve(CANCEL_FILE));
                 writeOwner(ownerId, operation);
@@ -97,15 +101,15 @@ public final class AiDataMigrationCoordinator {
     }
 
     public ProcessLock tryAcquireProcessLock() throws IOException {
-        return tryAcquireSharedLock();
+        return tryAcquireSharedLock(false);
     }
 
     /** Maintenance may resume its own pending journal while keeping directory migration excluded. */
     public ProcessLock tryAcquireMaintenanceReadLock() throws IOException {
-        return tryAcquireSharedLock();
+        return tryAcquireSharedLock(true);
     }
 
-    private ProcessLock tryAcquireSharedLock() throws IOException {
+    private ProcessLock tryAcquireSharedLock(boolean maintenance) throws IOException {
         prepareDirectory();
         Path path = lockPath();
         SharedProcessLock shared = lockState();
@@ -115,6 +119,9 @@ public final class AiDataMigrationCoordinator {
             }
             if (shared.references > 0) {
                 requireRecoveredMigration();
+                if (!maintenance && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                    throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+                }
                 shared.references++;
                 return new ProcessLock(shared);
             }
@@ -133,6 +140,11 @@ public final class AiDataMigrationCoordinator {
                     return null;
                 }
                 requireRecoveredMigration();
+                if (!maintenance && com.github.claudecodegui.storage.CodexMaintenanceJournal.blocksAdmission(coordinationDirectory)) {
+                    lock.release();
+                    channel.close();
+                    throw new IOException("AI_DATA_MAINTENANCE_PENDING");
+                }
                 shared.channel = channel;
                 shared.lock = lock;
                 shared.references = 1;
