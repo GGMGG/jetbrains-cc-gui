@@ -236,6 +236,7 @@ public class ClaudeSession {
 
         // Initialize managers
         this.state = new com.github.claudecodegui.session.SessionState();
+        com.github.claudecodegui.storage.CodexStorageActivity.register(this.state);
         this.messageParser = new com.github.claudecodegui.session.MessageParser();
         this.messageMerger = new com.github.claudecodegui.session.MessageMerger();
         this.contextCollector = new com.github.claudecodegui.session.EditorContextCollector(project);
