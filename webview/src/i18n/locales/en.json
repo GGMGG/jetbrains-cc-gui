@@ -1550,7 +1550,17 @@
       "scan": "Scan storage",
       "pagination": "Session pages",
       "pageSize": "Sessions per page",
-      "refresh": "Refresh"
+      "refresh": "Refresh",
+      "relations": {
+        "subagent": "Subagent",
+        "mainSession": "Main session",
+        "parentSession": "Parent session",
+        "childCount_one": "{{count}} subagent",
+        "childCount_other": "{{count}} subagents",
+        "childCountHint": "Direct subagents with session files, including archived sessions",
+        "parentMissing": "(no session file)",
+        "parentUnknown": "Parent session unavailable"
+      }
     }
   },
   "history": {
