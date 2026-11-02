@@ -1,7 +1,6 @@
 package com.github.claudecodegui.storage;
 
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.sqlite.SQLiteConfig;
 
 import java.io.IOException;
@@ -20,9 +19,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
-/** Native WAL-aware connections. Mutation is enabled only for a reviewed complete schema fingerprint. */
+/** Native WAL-aware connections with engine and operation identity checks. */
 public final class CodexStorageDatabase {
-    private static final JsonObject SCHEMAS = loadSchemas();
 
     private CodexStorageDatabase() { }
 
@@ -99,15 +97,6 @@ public final class CodexStorageDatabase {
             }
         }
         return HexFormat.of().formatHex(digest.digest());
-    }
-
-    public static String requireSupported(Connection connection, String name) throws SQLException, IOException {
-        requirePatchedEngine(connection);
-        String actual = fingerprint(connection);
-        if (!SCHEMAS.has(name) || SCHEMAS.getAsJsonArray(name).asList().stream().noneMatch(schema -> schema.getAsString().equals(actual))) {
-            throw new IOException("DATABASE_SCHEMA_UNSUPPORTED");
-        }
-        return actual;
     }
 
     public static List<String> columns(Connection connection, String table) throws SQLException {
@@ -248,14 +237,4 @@ public final class CodexStorageDatabase {
         }
     }
 
-    private static JsonObject loadSchemas() {
-        try (InputStream stream = CodexStorageDatabase.class.getResourceAsStream("/codex-storage-schemas.json")) {
-            if (stream == null) {
-                throw new IOException("Schema registry missing");
-            }
-            return JsonParser.parseString(new String(stream.readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
-        } catch (IOException error) {
-            throw new ExceptionInInitializerError(error);
-        }
-    }
 }

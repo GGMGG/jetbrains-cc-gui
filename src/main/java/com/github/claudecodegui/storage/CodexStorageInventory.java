@@ -128,7 +128,7 @@ public final class CodexStorageInventory {
                     return "DATABASE_DEPENDENCY_UNSUPPORTED";
                 }
                 try (Connection connection = CodexStorageDatabase.open(paths.existingFile(file), true)) {
-                    CodexStorageDatabase.requireSupported(connection, name);
+                    CodexStorageDatabase.requirePatchedEngine(connection);
                 }
             }
             return null;

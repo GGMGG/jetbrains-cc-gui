@@ -49,7 +49,6 @@ public class CodexSqliteNativeLibraryTest {
             String resource = type.getName().replace('.', '/') + ".class";
             copyResource(classes, resource);
         }
-        copyResource(classes, "codex-storage-schemas.json");
         Path sqlite = jarFor(JDBC.class);
         String classPath = String.join(java.io.File.pathSeparator, classes.toString(), sqlite.toString(), jarFor(JsonObject.class).toString());
         Path output = root.resolve("peer-output.txt");

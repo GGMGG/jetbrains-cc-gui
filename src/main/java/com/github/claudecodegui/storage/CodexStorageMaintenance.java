@@ -89,7 +89,7 @@ public final class CodexStorageMaintenance {
                         status.addProperty("pageCount", CodexStorageDatabase.scalar(connection, "PRAGMA page_count"));
                         status.addProperty("pageSize", CodexStorageDatabase.scalar(connection, "PRAGMA page_size"));
                         status.addProperty("freelistCount", CodexStorageDatabase.scalar(connection, "PRAGMA freelist_count"));
-                        CodexStorageDatabase.requireSupported(connection, CodexStoragePaths.HISTORY_DATABASE);
+                        CodexStorageDatabase.requirePatchedEngine(connection);
                     }
                 }
             } catch (SQLException | IOException | IllegalStateException error) {
