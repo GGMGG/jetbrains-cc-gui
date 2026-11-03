@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -29,9 +30,10 @@ public final class ClawBotIdeClient implements AutoCloseable {
     private final Map<String, ClawBotSessionRegistration> registrations = new ConcurrentHashMap<>();
     private final ScheduledExecutorService heartbeatExecutor;
     private final Object requestLock = new Object();
+    private final Object deliveryLock = new Object();
     private volatile ScheduledFuture<?> heartbeatTask;
     private final java.util.concurrent.atomic.AtomicBoolean closeRequested = new java.util.concurrent.atomic.AtomicBoolean();
-    private volatile ClawBotLocalIpcClient activeTransport;
+    private final Set<ClawBotLocalIpcClient> activeTransports = ConcurrentHashMap.newKeySet();
     private boolean snapshotPending;
     private boolean ownerRecoveryPending;
     private volatile Runnable sessionRecoveryListener = () -> { };
@@ -194,13 +196,13 @@ public final class ClawBotIdeClient implements AutoCloseable {
     }
 
     public boolean replyToPreview(String sessionHandleId, String messageId, String text) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = new JsonObject();
             payload.addProperty("sessionHandleId", requireValue(sessionHandleId, "sessionHandleId"));
             payload.addProperty("messageId", requireBoundedValue(messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("text", requireText(text));
-            return readAccepted(send("SESSION_PREVIEW_REPLY", payload));
+            return readAccepted(sendDelivery("SESSION_PREVIEW_REPLY", payload));
         }
     }
 
@@ -258,27 +260,27 @@ public final class ClawBotIdeClient implements AutoCloseable {
 
     /** Sends the reply and confirms the queued inbound message in one gateway request. */
     public boolean replyToInbound(String sessionHandleId, String messageId, String text) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = new JsonObject();
             payload.addProperty("sessionHandleId", requireValue(sessionHandleId, "sessionHandleId"));
             payload.addProperty("messageId", requireBoundedValue(
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("text", requireText(text));
-            return readAccepted(send("SESSION_REPLY", payload));
+            return readAccepted(sendDelivery("SESSION_REPLY", payload));
         }
     }
 
     /** Rejects an inbound message before provider execution and consumes it after replying. */
     public boolean rejectInbound(String sessionHandleId, String messageId, String text) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = new JsonObject();
             payload.addProperty("sessionHandleId", requireValue(sessionHandleId, "sessionHandleId"));
             payload.addProperty("messageId", requireBoundedValue(
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("text", requireText(text));
-            return readAccepted(send("SESSION_REJECT", payload));
+            return readAccepted(sendDelivery("SESSION_REJECT", payload));
         }
     }
 
@@ -308,25 +310,25 @@ public final class ClawBotIdeClient implements AutoCloseable {
     }
 
     public boolean replyToCommand(String sessionHandleId, String messageId, String text) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = ownerPayload(sessionHandleId);
             payload.addProperty("messageId", requireBoundedValue(
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("text", requireText(text));
-            return readAccepted(send("SESSION_CONTROL_REPLY", payload));
+            return readAccepted(sendDelivery("SESSION_CONTROL_REPLY", payload));
         }
     }
 
     /** Rejects a control action before execution and consumes it after replying. */
     public boolean rejectCommand(String sessionHandleId, String messageId, String text) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = ownerPayload(sessionHandleId);
             payload.addProperty("messageId", requireBoundedValue(
                     messageId, "messageId", ClawBotInboundMessage.MAX_MESSAGE_ID_LENGTH));
             payload.addProperty("text", requireText(text));
-            return readAccepted(send("SESSION_CONTROL_REJECT", payload));
+            return readAccepted(sendDelivery("SESSION_CONTROL_REJECT", payload));
         }
     }
 
@@ -345,13 +347,13 @@ public final class ClawBotIdeClient implements AutoCloseable {
 
     /** Publishes an IDE-origin question to peers that currently selected this exact session generation. */
     public boolean publishLocalInteraction(String handle, String generation, String token, String prompt) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = ownerPayload(handle);
             payload.addProperty("generation", requireBoundedValue(generation, "generation", 256));
             payload.addProperty("interactionToken", token == null ? "" : token);
             payload.addProperty("text", prompt == null ? "" : prompt);
-            JsonObject result = send("SESSION_LOCAL_INTERACTION", payload);
+            JsonObject result = sendDelivery("SESSION_LOCAL_INTERACTION", payload);
             return readAccepted(result) && (!result.has("deliveryStatus") || !"PENDING".equals(result.get("deliveryStatus").getAsString()));
         }
     }
@@ -363,7 +365,7 @@ public final class ClawBotIdeClient implements AutoCloseable {
 
     public boolean sendProgress(
             String sessionHandleId, String messageId, String eventId, String text, boolean important) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = ownerPayload(sessionHandleId);
             payload.addProperty("messageId", requireBoundedValue(
@@ -371,7 +373,7 @@ public final class ClawBotIdeClient implements AutoCloseable {
             payload.addProperty("eventId", requireBoundedValue(eventId, "eventId", 256));
             payload.addProperty("text", requireText(text));
             payload.addProperty("important", important);
-            JsonObject result = send("SESSION_PROGRESS", payload);
+            JsonObject result = sendDelivery("SESSION_PROGRESS", payload);
             // A concurrent attempt is still pending; retry the same event instead of advancing its cursor.
             return readAccepted(result) && (!result.has("deliveryStatus")
                     || !"PENDING".equals(result.get("deliveryStatus").getAsString()));
@@ -389,7 +391,7 @@ public final class ClawBotIdeClient implements AutoCloseable {
     /** Sends a reply on behalf of a session after the gateway validates its ownership. */
     public void sendText(
             String sessionHandleId, String toUserId, String contextToken, String text) throws IOException {
-        synchronized (requestLock) {
+        synchronized (deliveryLock) {
             ensureOpen();
             JsonObject payload = new JsonObject();
             payload.addProperty("sessionHandleId", requireValue(sessionHandleId, "sessionHandleId"));
@@ -397,23 +399,25 @@ public final class ClawBotIdeClient implements AutoCloseable {
             payload.addProperty("contextToken", requireBoundedValue(
                     contextToken, "contextToken", ClawBotInboundMessage.MAX_CONTEXT_TOKEN_LENGTH));
             payload.addProperty("text", requireText(text));
-            send("SEND_TEXT", payload);
+            sendDelivery("SEND_TEXT", payload);
         }
     }
 
     /** Starts bounded heartbeat/reconnect work for all locally registered sessions. */
-    public synchronized void startHeartbeat() {
-        if (closed || heartbeatTask != null) {
-            return;
-        }
-        try {
-            heartbeatTask = heartbeatExecutor.scheduleWithFixedDelay(
-                    this::heartbeatTick,
-                    heartbeatIntervalMillis,
-                    heartbeatIntervalMillis,
-                    TimeUnit.MILLISECONDS);
-        } catch (java.util.concurrent.RejectedExecutionException stopped) {
-            if (!closed) { throw stopped; }
+    public void startHeartbeat() {
+        synchronized (requestLock) {
+            if (closed || heartbeatTask != null) {
+                return;
+            }
+            try {
+                heartbeatTask = heartbeatExecutor.scheduleWithFixedDelay(
+                        this::heartbeatTick,
+                        heartbeatIntervalMillis,
+                        heartbeatIntervalMillis,
+                        TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.RejectedExecutionException stopped) {
+                if (!closed) { throw stopped; }
+            }
         }
     }
 
@@ -424,8 +428,9 @@ public final class ClawBotIdeClient implements AutoCloseable {
         closed = true;
         var task = heartbeatTask;
         if (task != null) { task.cancel(false); }
-        var active = activeTransport;
-        if (active != null) { active.close(); }
+        for (ClawBotLocalIpcClient active : activeTransports) {
+            active.close();
+        }
         registrations.clear();
         heartbeatExecutor.shutdownNow();
         // Normal tab removal still unregisters explicitly. Abandoned ownership expires by heartbeat lease.
@@ -495,6 +500,21 @@ public final class ClawBotIdeClient implements AutoCloseable {
     }
 
     private JsonObject send(String type, JsonObject payload) throws IOException {
+        recoverSnapshot(type);
+        return sendRequest(type, payload);
+    }
+
+    /** Keeps wire delivery ordered without holding up session ownership, heartbeat, or control polling. */
+    private JsonObject sendDelivery(String type, JsonObject payload) throws IOException {
+        synchronized (requestLock) {
+            ensureOpen();
+            recoverSnapshot(type);
+        }
+        return sendRequest(type, payload);
+    }
+
+    /** Called with requestLock held so snapshot recovery cannot race registration changes. */
+    private void recoverSnapshot(String type) throws IOException {
         if (snapshotPending && !"SESSION_SNAPSHOT".equals(type) && !"SESSION_HEARTBEAT".equals(type)) {
             if (!replaceSnapshotInternal(new ArrayList<>(registrations.values()))) {
                 throw new IOException("CLAWBOT_SESSION_SNAPSHOT_RECOVERY_FAILED");
@@ -502,10 +522,14 @@ public final class ClawBotIdeClient implements AutoCloseable {
             snapshotPending = false;
             notifyOwnerRecovery();
         }
+    }
+
+    private JsonObject sendRequest(String type, JsonObject payload) throws IOException {
+        ClawBotLocalIpcClient client = null;
         try {
             ClawBotLocalIpcServer.Endpoint endpoint = endpointResolver.resolve();
-            ClawBotLocalIpcClient client = new ClawBotLocalIpcClient(endpoint, instanceId, connectionEpoch);
-            activeTransport = client;
+            client = new ClawBotLocalIpcClient(endpoint, instanceId, connectionEpoch);
+            activeTransports.add(client);
             if (closed) {
                 client.close();
                 throw new IOException("CLAWBOT_IDE_CLIENT_CLOSED");
@@ -521,22 +545,24 @@ public final class ClawBotIdeClient implements AutoCloseable {
             if ("ERROR".equals(response.type())) {
                 String errorCode = readString(response.payload(), "code");
                 if (!errorCode.matches("(?:CLAWBOT|ILINK)_[A-Z0-9_]{1,64}")) { throw new IOException("CLAWBOT_IPC_RESULT_INVALID"); }
-                if (isSessionRecoveryError(errorCode)) {
-                    snapshotPending = true;
-                    ownerRecoveryPending = true;
-                }
                 throw new IOException(errorCode);
             }
             String expected = "LIST_SESSIONS".equals(type) ? "SESSION_LIST_RESULT" : type + "_RESULT";
             if (!expected.equals(response.type())) { throw new IOException("CLAWBOT_IPC_RESULT_INVALID"); }
             return response.payload();
         } catch (IOException error) {
-            snapshotPending = true;
+            synchronized (requestLock) {
+                snapshotPending = true;
+                if (isSessionRecoveryError(error.getMessage())) {
+                    ownerRecoveryPending = true;
+                }
+            }
             throw error;
         } finally {
-            var finished = activeTransport;
-            activeTransport = null;
-            if (finished != null) { finished.close(); }
+            if (client != null) {
+                activeTransports.remove(client);
+                client.close();
+            }
         }
     }
 
