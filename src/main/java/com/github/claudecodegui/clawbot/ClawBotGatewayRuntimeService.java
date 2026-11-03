@@ -594,8 +594,8 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         for (ClawBotInboundMessage preview : expiredPreviews) {
             try {
                 sendChannelText(preview.fromUserId(), preview.contextToken(),
-                        "\u6682\u65f6\u65e0\u6cd5\u83b7\u53d6\u4f1a\u8bdd\u6458\u8981\uff0c\u53ef\u53d1\u9001 /status \u91cd\u8bd5\u3002",
-                        stableEventId(preview.messageId(), "preview-timeout"), true);
+                        "\u6682\u65f6\u65e0\u6cd5\u83b7\u53d6\u4f1a\u8bdd\u6458\u8981\uff0c\u8bf7\u91cd\u65b0\u53d1\u9001 /use <\u7f16\u53f7\u6216handle> \u91cd\u8bd5\u3002",
+                        stableEventId(preview.messageId(), "preview-timeout"), true, true, false, null, preview);
             } catch (IOException error) {
                 LOG.debug("[ClawBot] Preview timeout notification unavailable");
             }
@@ -1155,12 +1155,16 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
         if (accepted) {
             try {
                 sendChannelText(preview.fromUserId(), preview.contextToken(), text,
-                        stableEventId(preview.messageId(), "preview"), true);
+                        stableEventId(preview.messageId(), "preview"), true, true, false, null, preview);
             } catch (IOException error) {
-                if (!"CLAWBOT_OUTBOUND_UNKNOWN".equals(error.getMessage())) {
+                if (PROGRESS_SUPPRESSED.equals(error.getMessage())) {
+                    accepted = false;
+                    deliveryStatus = "REJECTED";
+                } else if ("CLAWBOT_OUTBOUND_UNKNOWN".equals(error.getMessage())) {
+                    deliveryStatus = "UNKNOWN";
+                } else {
                     throw error;
                 }
-                deliveryStatus = "UNKNOWN";
             }
         }
         JsonObject result = new JsonObject();
@@ -1837,10 +1841,13 @@ public final class ClawBotGatewayRuntimeService implements Disposable {
             String toUserId, String contextToken, String text, String clientId, boolean stableEvent)
             throws IOException {
         long queuedGeneration = currentOutboundGeneration();
+        // Foreground command acknowledgements can use the lifecycle reserve.
+        // Capture authorization before queueing so revocation cannot downgrade a queued reply to public traffic.
+        boolean requireAuthorizedSender = senderAccessStore.isAllowed(toUserId);
         try {
             replyExecutor.execute(() -> {
                 try {
-                    sendReliableText(toUserId, contextToken, text, clientId, false, null, queuedGeneration);
+                    sendReliableText(toUserId, contextToken, text, clientId, requireAuthorizedSender, null, queuedGeneration);
                     outboundLastError = "";
                 } catch (IOException | RuntimeException error) {
                     outboundLastError = describeOutboundError(error, "CLAWBOT_ILINK_SEND_FAILED");
