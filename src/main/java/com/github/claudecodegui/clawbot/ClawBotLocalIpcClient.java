@@ -15,7 +15,9 @@ import static com.github.claudecodegui.clawbot.ClawBotIpcAuthentication.number;
 import static com.github.claudecodegui.clawbot.ClawBotIpcAuthentication.text;
 
 /** A mutually authenticated, correlated transaction. The secret never appears in a packet. */
-public final class ClawBotLocalIpcClient {
+public final class ClawBotLocalIpcClient implements AutoCloseable {
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+    private final Set<Socket> activeSockets = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final ScheduledThreadPoolExecutor DEADLINES = new ScheduledThreadPoolExecutor(1,
             task -> ClawBotLocalIpcServer.daemon(task, "Claw IPC client deadline"));
     static { DEADLINES.setRemoveOnCancelPolicy(true); }
@@ -43,6 +45,7 @@ public final class ClawBotLocalIpcClient {
 
     public ClawBotIpcEnvelope request(ClawBotIpcEnvelope request) throws IOException {
         Objects.requireNonNull(request, "request");
+        if (closed.get()) { throw new IOException("CLAWBOT_IPC_CLIENT_CLOSED"); }
         if (!instanceId.equals(request.instanceId()) || connectionEpoch != request.connectionEpoch()) {
             throw new IOException("CLAWBOT_IPC_OWNER_MISMATCH");
         }
@@ -51,6 +54,11 @@ public final class ClawBotLocalIpcClient {
             throw new IOException("CLAWBOT_IPC_NON_LOOPBACK_ENDPOINT");
         }
         try (Socket socket = new Socket()) {
+            activeSockets.add(socket);
+            if (closed.get()) {
+                activeSockets.remove(socket);
+                throw new IOException("CLAWBOT_IPC_CLIENT_CLOSED");
+            }
             var deadline = DEADLINES.schedule(() -> ClawBotLocalIpcServer.closeSocket(socket), socketTimeoutMillis, TimeUnit.MILLISECONDS);
             try {
                 socket.connect(new InetSocketAddress(InetAddress.getByName(endpoint.host()), endpoint.port()), connectTimeoutMillis);
@@ -92,8 +100,16 @@ public final class ClawBotLocalIpcClient {
             } catch (IllegalArgumentException invalid) {
                 throw new IOException("CLAWBOT_IPC_ENVELOPE_INVALID");
             } finally {
+                activeSockets.remove(socket);
                 deadline.cancel(false);
             }
+        }
+    }
+
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            activeSockets.forEach(ClawBotLocalIpcServer::closeSocket);
         }
     }
 
