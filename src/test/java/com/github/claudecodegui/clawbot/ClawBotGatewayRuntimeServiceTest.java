@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertThrows;
@@ -1034,6 +1035,257 @@ public class ClawBotGatewayRuntimeServiceTest {
             assertTrue(fixture.reply());
             assertEquals(1, fixture.transport.requestCount);
             assertEquals("Final answer", fixture.transport.lastParams.get("text").getAsString());
+        }
+    }
+
+    @Test
+    public void useOffAcknowledgementUsesReservedCapacityAfterOrdinaryBudgetIsSpent() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("outboundProtection");
+            field.setAccessible(true);
+            ClawBotOutboundProtection protection = (ClawBotOutboundProtection) field.get(fixture.service);
+            for (int index = 0; index < ClawBotOutboundProtection.ORDINARY_LIMIT; index++) {
+                assertTrue(protection.acquire(System.currentTimeMillis(), true));
+            }
+            assertFalse(protection.acquire(System.currentTimeMillis(), true));
+            assertTrue(protection.acquire(System.currentTimeMillis(), false));
+            pollUseOff(fixture, "off-after-budget");
+
+            assertEquals(List.of("已清除当前微信会话的页签选择。"), fixture.transport.sentTexts);
+            assertEquals("reply-message", fixture.pending().messageId());
+            assertTrue(sessionRegistry(fixture.service).isInboundDispatched("session-1", "ide-instance", 4, "reply-message"));
+        }
+    }
+
+    @Test
+    public void useOffAcknowledgementRemainsQueuedDuringServerCooldown() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("outboundProtection");
+            field.setAccessible(true);
+            ((ClawBotOutboundProtection) field.get(fixture.service)).coolDown(System.currentTimeMillis());
+
+            pollUseOff(fixture, "off-during-cooldown");
+
+            assertEquals(0, fixture.transport.requestCount);
+            assertTrue(new ClawBotPendingDeliveryStore(fixture.runtime).pending("fixture-token").stream()
+                    .anyMatch(delivery -> delivery.text().equals("已清除当前微信会话的页签选择。")));
+        }
+    }
+
+    @Test
+    public void useOffAcknowledgementRemainsQueuedAtTotalWindowLimit() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            Field field = ClawBotGatewayRuntimeService.class.getDeclaredField("outboundProtection");
+            field.setAccessible(true);
+            ClawBotOutboundProtection protection = (ClawBotOutboundProtection) field.get(fixture.service);
+            for (int index = 0; index < ClawBotOutboundProtection.WINDOW_LIMIT; index++) {
+                assertTrue(protection.acquire(System.currentTimeMillis(), false));
+            }
+
+            pollUseOff(fixture, "off-at-total-limit");
+
+            assertEquals(0, fixture.transport.requestCount);
+            assertTrue(new ClawBotPendingDeliveryStore(fixture.runtime).pending("fixture-token").stream()
+                    .anyMatch(delivery -> delivery.text().equals("已清除当前微信会话的页签选择。")));
+        }
+    }
+
+    @Test
+    public void unauthorizedSenderCanStillRequestItsOwnIdentity() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false)) {
+            JsonObject revoke = new JsonObject();
+            revoke.addProperty("senderId", "sender");
+            fixture.service.control("REVOKE_SENDER", revoke);
+
+            pollChannelCommand(fixture, "unauthorized-whoami", "/whoami");
+            awaitChannelReplies(fixture);
+
+            assertEquals(1, fixture.transport.requestCount);
+            assertTrue(fixture.transport.lastParams.get("text").getAsString().contains("sender"));
+        }
+    }
+
+    @Test
+    public void queuedAuthorizedCommandReplyCannotSendAfterRevocation() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            Field replies = ClawBotGatewayRuntimeService.class.getDeclaredField("replyExecutor");
+            replies.setAccessible(true);
+            CountDownLatch workerEntered = new CountDownLatch(1);
+            CountDownLatch releaseWorker = new CountDownLatch(1);
+            ((ExecutorService) replies.get(fixture.service)).submit(() -> {
+                workerEntered.countDown();
+                try {
+                    releaseWorker.await();
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try {
+                assertTrue(workerEntered.await(5, TimeUnit.SECONDS));
+                pollChannelCommand(fixture, "off-before-revoke", "/use off");
+                JsonObject revoke = new JsonObject();
+                revoke.addProperty("senderId", "sender");
+                fixture.service.control("REVOKE_SENDER", revoke);
+                releaseWorker.countDown();
+                awaitChannelReplies(fixture);
+
+                assertEquals(0, fixture.transport.requestCount);
+            } finally {
+                releaseWorker.countDown();
+            }
+        }
+    }
+
+    private void pollUseOff(ReplyFixture fixture, String messageId) throws Exception {
+        pollChannelCommand(fixture, messageId, "/use off");
+        awaitChannelReplies(fixture);
+    }
+
+    private void pollChannelCommand(ReplyFixture fixture, String messageId, String text) throws Exception {
+        JsonObject message = inboundJson(messageId);
+        message.addProperty("text", text);
+        com.google.gson.JsonArray messages = new com.google.gson.JsonArray();
+        messages.add(message);
+        JsonObject updates = new JsonObject();
+        updates.add("messages", messages);
+        fixture.transport.inboundUpdates = updates;
+        Method poll = ClawBotGatewayRuntimeService.class.getDeclaredMethod("pollInbound");
+        poll.setAccessible(true);
+        poll.invoke(fixture.service);
+    }
+
+    private void awaitChannelReplies(ReplyFixture fixture) throws Exception {
+        Field replies = ClawBotGatewayRuntimeService.class.getDeclaredField("replyExecutor");
+        replies.setAccessible(true);
+        ((ExecutorService) replies.get(fixture.service)).submit(() -> { }).get(5, TimeUnit.SECONDS);
+    }
+
+    @Test
+    public void currentSelectionCanStillSendItsPreview() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            assertNotNull(fixture.client.pollPreview("session-1"));
+
+            assertTrue(fixture.client.replyToPreview("session-1", "select-before", "Current preview"));
+            assertEquals(List.of("Current preview"), fixture.transport.sentTexts);
+        }
+    }
+
+    @Test
+    public void slowPreviewDeliveryDoesNotDelayStopPollingOnTheSameIdeClient() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            assertNotNull(fixture.client.pollPreview("session-1"));
+            assertTrue(fixture.client.updateSession("session-1", "codex", "Chat", "generation-1", "reply-message"));
+            CountDownLatch release = new CountDownLatch(1);
+            fixture.transport.release = release;
+            ExecutorService workers = Executors.newFixedThreadPool(2);
+            try {
+                var preview = workers.submit(() -> fixture.client.replyToPreview("session-1", "select-before", "Preview"));
+                assertTrue(fixture.transport.entered.await(5, TimeUnit.SECONDS));
+                var stop = workers.submit(() -> {
+                    fixture.route("stop-during-preview", "停止当前会话");
+                    assertTrue(fixture.client.heartbeat("session-1", ClawBotSessionStatus.BUSY));
+                    ClawBotInboundMessage command = fixture.client.pollCommand("session-1");
+                    assertNotNull(command);
+                    assertEquals(ClawBotInboundAction.INTERRUPT, command.action());
+                    assertTrue(fixture.client.validateCommand("session-1", command.messageId()));
+                    return command;
+                });
+                assertEquals("stop-during-preview", stop.get(3, TimeUnit.SECONDS).messageId());
+                release.countDown();
+                assertTrue(preview.get(5, TimeUnit.SECONDS));
+                assertEquals(List.of("Preview"), fixture.transport.sentTexts);
+            } finally {
+                release.countDown();
+                workers.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    public void clearingSelectionSuppressesPreviewWaitingForSendAdmission() throws Exception {
+        assertSupersededPreviewIsNotSent(false, false);
+    }
+
+    @Test
+    public void reselectingSameTabCannotSendPreviewFromOldSelection() throws Exception {
+        assertSupersededPreviewIsNotSent(true, false);
+    }
+
+    @Test
+    public void currentSelectionCanStillReceivePreviewTimeoutNotice() throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            ClawBotInboundMessage preview = fixture.client.pollPreview("session-1");
+            assertNotNull(preview);
+            Method notify = ClawBotGatewayRuntimeService.class.getDeclaredMethod("notifyExpiredPreviews", List.class);
+            notify.setAccessible(true);
+
+            notify.invoke(fixture.service, List.of(preview));
+
+            assertEquals(1, fixture.transport.requestCount);
+            assertTrue(fixture.transport.sentTexts.get(0).contains("/use <编号或handle>"));
+        }
+    }
+
+    @Test
+    public void clearingSelectionSuppressesPreviewTimeoutWaitingForSendAdmission() throws Exception {
+        assertSupersededPreviewIsNotSent(false, true);
+    }
+
+    @Test
+    public void reselectingSameTabCannotReceiveTimeoutFromOldSelection() throws Exception {
+        assertSupersededPreviewIsNotSent(true, true);
+    }
+
+    private void assertSupersededPreviewIsNotSent(boolean reselect, boolean timeout) throws Exception {
+        try (ReplyFixture fixture = new ReplyFixture(false, false, true)) {
+            String previewId = UUID.nameUUIDFromBytes(((timeout ? "preview-timeout:" : "preview:") + "select-before")
+                    .getBytes(StandardCharsets.UTF_8)).toString();
+            CountDownLatch beforeAdmission = new CountDownLatch(1);
+            CountDownLatch releaseAdmission = new CountDownLatch(1);
+            setField(fixture.service, "outboundEventStates", new java.util.concurrent.ConcurrentHashMap<String, String>() {
+                @Override
+                public String putIfAbsent(String key, String value) {
+                    if (previewId.equals(key)) {
+                        beforeAdmission.countDown();
+                        try {
+                            if (!releaseAdmission.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("Preview admission release timed out");
+                            }
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(error);
+                        }
+                    }
+                    return super.putIfAbsent(key, value);
+                }
+            });
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            try {
+                ClawBotInboundMessage source = fixture.client.pollPreview("session-1");
+                assertNotNull(source);
+                var preview = worker.submit(() -> {
+                    if (timeout) {
+                        Method notify = ClawBotGatewayRuntimeService.class.getDeclaredMethod("notifyExpiredPreviews", List.class);
+                        notify.setAccessible(true);
+                        notify.invoke(fixture.service, List.of(source));
+                        return false;
+                    }
+                    return fixture.client.replyToPreview("session-1", "select-before", "Old preview");
+                });
+                assertTrue(beforeAdmission.await(5, TimeUnit.SECONDS));
+                fixture.route("selection-off", "/use off");
+                if (reselect) {
+                    fixture.route("selection-again", "/use session-1");
+                }
+                releaseAdmission.countDown();
+
+                assertFalse(preview.get(5, TimeUnit.SECONDS));
+                assertEquals(0, fixture.transport.requestCount);
+                assertFalse(fixture.transport.sentTexts.contains("Old preview"));
+            } finally {
+                releaseAdmission.countDown();
+                worker.shutdownNow();
+            }
         }
     }
 
