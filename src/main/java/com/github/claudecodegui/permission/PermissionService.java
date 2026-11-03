@@ -29,6 +29,11 @@ public class PermissionService {
     private volatile long lastActivityTime = System.currentTimeMillis();
     private volatile PermissionDecisionListener decisionListener;
     private volatile Supplier<SessionExecutionOwnership> executionOwner;
+    private final java.util.concurrent.atomic.AtomicInteger pendingIdeReviews = new java.util.concurrent.atomic.AtomicInteger();
+
+    public boolean hasPendingIdeReview() {
+        return pendingIdeReviews.get() > 0;
+    }
 
     public void setExecutionOwnerSupplier(Supplier<SessionExecutionOwnership> supplier) {
         this.executionOwner = supplier;
@@ -62,7 +67,6 @@ public class PermissionService {
             return future;
         });
     }
-
 
     private static final int DIALOG_SHOWER_POLL_INTERVAL_MS = 100;
     private static final int DIALOG_SHOWER_POLL_MAX_ATTEMPTS = 20;
@@ -456,6 +460,7 @@ public class PermissionService {
     private void dispatchPermissionFallback(String requestId, String toolName,
                                             JsonObject inputs, Path requestFile, String fileName, JsonObject request) {
         debugLog("FALLBACK_DIALOG", "Using JOptionPane for: " + toolName);
+        pendingIdeReviews.incrementAndGet();
         try {
             CompletableFuture<Integer> future = observeFileDialog(request, CompletableFuture::new,
                     SessionExecutionState.WaitReason.PERMISSION);
@@ -474,6 +479,8 @@ public class PermissionService {
         } catch (Exception e) {
             debugLog("FALLBACK_ERROR", "Error: " + e.getMessage());
             LOG.error("Error occurred", e);
+        } finally {
+            pendingIdeReviews.decrementAndGet();
         }
     }
 
@@ -659,6 +666,8 @@ public class PermissionService {
             return false;
         }
 
+        pendingIdeReviews.incrementAndGet();
+        reviewFuture.whenComplete((result, error) -> pendingIdeReviews.decrementAndGet());
         safeDeleteFile(requestFile, "DIFF_REVIEW");
         reviewFuture.thenAccept(result -> {
             handleDiffReviewResult(result, requestId, toolName, inputs);
