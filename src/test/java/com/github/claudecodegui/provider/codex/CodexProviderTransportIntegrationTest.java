@@ -34,6 +34,48 @@ public class CodexProviderTransportIntegrationTest {
     public TemporaryFolder folder = new TemporaryFolder();
 
     @Test
+    public void nativeBootstrapHistoryAndChatPreserveLegacyUserConfiguration() throws Exception {
+        for (int entryPoint = 0; entryPoint < 3; entryPoint++) {
+            try (Fixture fixture = fixture("early-notification")) {
+                Path home = Path.of(fixture.scope);
+                String legacy = "disable_response_storage = true\nnetwork_access = \"enabled\"\n"
+                        + "windows_wsl_setup_acknowledged = true\n[model_aliases]\n\"test-model\" = \"vendor-model\"\n";
+                Files.writeString(home.resolve("config.toml"), legacy);
+                if (entryPoint == 0) {
+                    JsonObject result = fixture.bridge.preconnectCodex("fixture", fixture.cwd.toString(), null).get(15, TimeUnit.SECONDS);
+                    assertFalse(result.toString(), result.has("error"));
+                } else if (entryPoint == 1) {
+                    JsonObject result = fixture.bridge.readCodexNative("codex.readThread", "fixture", fixture.cwd.toString(),
+                            "th-test-root-0001", new JsonObject()).get(15, TimeUnit.SECONDS);
+                    assertFalse(result.toString(), result.has("error"));
+                } else {
+                    assertTrue(fixture.send().get(15, TimeUnit.SECONDS).success);
+                }
+                String migrated = Files.readString(home.resolve("config.toml"));
+                assertTrue(migrated.contains("disable_response_storage = true"));
+                assertFalse(migrated.contains("model_aliases"));
+                assertTrue(migrated.contains("network_access = \"enabled\""));
+                assertEquals(legacy, Files.readString(home.resolve("config.toml.pre-cli-migration.bak")));
+                assertEquals("vendor-model", new com.github.claudecodegui.settings.CodexSettingsManager(new com.google.gson.Gson(), home)
+                        .resolveModelAlias("test-model"));
+            }
+        }
+    }
+
+    @Test
+    public void malformedConfigurationReturnsASettingsErrorInsteadOfThrowingOrLosingTheAcknowledgement() throws Exception {
+        try (Fixture fixture = fixture("early-notification")) {
+            JsonObject connected = fixture.bridge.preconnectCodex("fixture", fixture.cwd.toString(), null).get(15, TimeUnit.SECONDS);
+            assertFalse(connected.toString(), connected.has("error"));
+            Path config = Path.of(fixture.scope).resolve("config.toml");
+            Files.writeString(config, "model = [\n");
+            JsonObject result = fixture.bridge.updateCodexSettings("fixture", fixture.cwd.toString(), new JsonObject());
+            assertTrue(result.toString(), result.has("error"));
+            assertEquals("model = [\n", Files.readString(config));
+        }
+    }
+
+    @Test
     public void nativeOperationMigratesPluginAliasesAndBacksUpTheOriginalBeforeDispatch() throws Exception {
         try (Fixture fixture = this.fixture("early-notification")) {
             Path home = Path.of(fixture.scope);
@@ -504,7 +546,7 @@ public class CodexProviderTransportIntegrationTest {
     }
 
     private Fixture fixture(String scenario) throws Exception {
-        Path root = this.folder.newFolder(scenario).toPath();
+        Path root = Files.createTempDirectory(this.folder.getRoot().toPath(), scenario + "-");
         Path cwd = Files.createDirectory(root.resolve("workspace"));
         Path trace = root.resolve("trace.ndjson");
         AtomicReference<Process> process = new AtomicReference<>();

@@ -1231,7 +1231,8 @@
     "invalidJsonConfig": "잘못된 JSON 설정 형식",
     "providerAdded": "제공자 추가됨",
     "providerUpdated": "제공자 업데이트됨",
-    "providerDeleted": "제공자 삭제됨"
+    "providerDeleted": "제공자 삭제됨",
+    "codexSettingsDispatchFailed": "Codex ??? IDE? ?? ? ????. ??? ?? ?? ?????."
   },
   "config": {
     "clickToCopy": "클릭하여 복사",

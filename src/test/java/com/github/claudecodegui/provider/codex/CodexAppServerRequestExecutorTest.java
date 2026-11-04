@@ -258,7 +258,7 @@ public class CodexAppServerRequestExecutorTest {
 
     /** Keeps the user message separate from a copied native context snapshot. */
     @Test
-    public void sendParamsCarryNativeSettingsWithoutInternalMetadata() {
+    public void sendParamsCarrySandboxProvenanceWithoutInternalRevision() {
         JsonObject nativeSettings = new JsonObject();
         nativeSettings.addProperty("collaborationMode", "plan");
         nativeSettings.addProperty("approvalPreset", "request");
@@ -280,12 +280,12 @@ public class CodexAppServerRequestExecutorTest {
         assertEquals("plan", params.get("collaborationMode").getAsString());
         assertEquals("request", params.get("approvalPreset").getAsString());
         assertEquals("workspace-write", params.get("sandboxSelection").getAsString());
+        assertEquals("user", params.get("sandboxSource").getAsString());
         assertEquals("task", params.get("message").getAsString());
         assertEquals(additionalContext, params.getAsJsonObject("additionalContext"));
         editor.addProperty("value", "changed after enqueue");
         assertEquals("Active file: src/Editor.java",
                 params.getAsJsonObject("additionalContext").getAsJsonObject("ide_context").get("value").getAsString());
-        assertTrue(!params.has("sandboxSource"));
         assertTrue(!params.has("revision"));
         // Managed credentials are resolved daemon-side; they never travel per request.
         assertTrue(!params.has("apiKey"));
