@@ -681,6 +681,8 @@ async function runDaemonMain() {
   sendDaemonEvent('ready', {
     pid: process.pid,
     sdkPreloaded: false, // SDK is loading in the background
+    // WSL sets this in every process; Java checks it against the project's distro.
+    wslDistro: process.env.WSL_DISTRO_NAME,
   });
 
   // Pre-load SDK in the background (non-blocking). Errors are logged but do
@@ -985,8 +987,8 @@ async function runDaemonMain() {
     // later FIFO operation and never mutate an active native turn in place.
     if (request.method === 'codex.updateSettings') {
       const controlId = request.id || '0';
-      Promise.resolve(codexUpdateSettingsPersistent(request.params || {}))
-        .then(() => writeRawLine({ id: controlId, done: true, success: true }))
+      Promise.resolve().then(() => codexUpdateSettingsPersistent(request.params || {}))
+        .then((result) => writeRawLine({ id: controlId, done: true, success: true, result }))
         .catch((error) => writeRawLine({
           id: controlId,
           done: true,
